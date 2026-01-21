@@ -35,3 +35,19 @@ def idea(creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
                 yield f"data: {lines[-1]}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for AWS App Runner"""
+    return {"status": "healthy"}
+
+# Serve static files (our Next.js export) - MUST BE LAST!
+static_path = Path("static")
+if static_path.exists():
+    # Serve index.html for the root path
+    @app.get("/")
+    async def serve_root():
+        return FileResponse(static_path / "index.html")
+    
+    # Mount static files for all other routes
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")
