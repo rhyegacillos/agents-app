@@ -746,6 +746,22 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
     if doctor_email and normalize_space(doctor_email) not in source_lower:
         doctor_email = ""
 
+    if not doctor_name:
+        label_patterns = [
+            r"(?:Physician|Doctor|Provider|Clinician|Attending|Consultant)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:Physician|Doctor|Provider|Clinician|Attending|Consultant)\s+(Dr\.?\s+[^\n\r]+)",
+        ]
+        for pattern in label_patterns:
+            match = re.search(pattern, source_text, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1).strip()
+            candidate = re.split(r"\s{2,}", candidate)[0].strip()
+            candidate = re.split(r"\s+\w+\s*:", candidate)[0].strip()
+            if matches_text(candidate, source_normalized):
+                doctor_name = candidate
+                break
+
     return {
         "doctor_name": doctor_name,
         "doctor_phone": doctor_phone,

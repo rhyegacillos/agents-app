@@ -647,11 +647,14 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
             "doctor_phone": "",
             "clinic_name": "",
             "doctor_email": "",
+            "patient_name": "",
+            "patient_email": "",
         }
 
     system = (
         "You extract doctor contact details from clinical notes. "
-        "Return ONLY valid JSON with keys: doctor_name, doctor_phone, clinic_name, doctor_email. "
+        "Return ONLY valid JSON with keys: doctor_name, doctor_phone, clinic_name, doctor_email, "
+        "patient_name, patient_email. "
         "Use the exact substrings from the source. "
         "If a value is not explicitly present, return an empty string for that key. "
         "Do not guess or fabricate."
@@ -674,6 +677,8 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
             "doctor_phone": "",
             "clinic_name": "",
             "doctor_email": "",
+            "patient_name": "",
+            "patient_email": "",
         }
 
     start = content.find("{")
@@ -684,6 +689,8 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
             "doctor_phone": "",
             "clinic_name": "",
             "doctor_email": "",
+            "patient_name": "",
+            "patient_email": "",
         }
 
     try:
@@ -694,6 +701,8 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
             "doctor_phone": "",
             "clinic_name": "",
             "doctor_email": "",
+            "patient_name": "",
+            "patient_email": "",
         }
 
     def normalize(value: str) -> str:
@@ -724,6 +733,14 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
     doctor_phone = normalize(str(data.get("doctor_phone", "")))
     clinic_name = normalize(str(data.get("clinic_name", "")))
     doctor_email = normalize(str(data.get("doctor_email", "")))
+    patient_name = normalize(str(data.get("patient_name", "")))
+    patient_email = normalize(str(data.get("patient_email", "")))
+
+    def normalize_email(value: str) -> str:
+        return value.strip().strip(".,;:")
+
+    email_pattern = re.compile(r"^[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}$")
+    patient_email = normalize_email(patient_email)
 
     if doctor_name and not matches_text(doctor_name, source_normalized):
         doctor_name = ""
@@ -735,12 +752,59 @@ def extract_doctor_info(source_text: str, client: OpenAI) -> dict:
         clinic_name = ""
     if doctor_email and normalize_space(doctor_email) not in source_lower:
         doctor_email = ""
+    if patient_name and not matches_text(patient_name, source_normalized):
+        patient_name = ""
+    if patient_email:
+        if not email_pattern.match(patient_email):
+            patient_email = ""
+        elif patient_email.lower() not in source_lower:
+            patient_email = ""
+
+    if not doctor_name:
+        label_patterns = [
+            r"(?:Physician|Doctor|Provider|Clinician|Attending|Consultant)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:Physician|Doctor|Provider|Clinician|Attending|Consultant)\s+(Dr\.?\s+[^\n\r]+)",
+        ]
+        for pattern in label_patterns:
+            match = re.search(pattern, source_text, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1).strip()
+            candidate = re.split(r"\s{2,}", candidate)[0].strip()
+            candidate = re.split(r"\s+\w+\s*:", candidate)[0].strip()
+            if matches_text(candidate, source_normalized):
+                doctor_name = candidate
+                break
+
+    if not patient_name:
+        label_patterns = [
+            r"(?:Patient Name|Patient)\s*[:\-]\s*([^\n\r]+)",
+        ]
+        for pattern in label_patterns:
+            match = re.search(pattern, source_text, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1).strip()
+            candidate = re.split(r"\s{2,}", candidate)[0].strip()
+            candidate = re.split(r"\s+(?:Patient\s+ID|ID|Age|Gender)\b", candidate, flags=re.IGNORECASE)[0].strip()
+            if matches_text(candidate, source_normalized):
+                patient_name = candidate
+                break
+
+    if not patient_email:
+        match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", source_text)
+        if match:
+            candidate = normalize_email(match.group(0))
+            if email_pattern.match(candidate):
+                patient_email = candidate
 
     return {
         "doctor_name": doctor_name,
         "doctor_phone": doctor_phone,
         "clinic_name": clinic_name,
         "doctor_email": doctor_email,
+        "patient_name": patient_name,
+        "patient_email": patient_email,
     }
 
 

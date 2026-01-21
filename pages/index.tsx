@@ -14,7 +14,7 @@ export default function Home() {
         <div className="absolute top-40 left-[-6%] h-80 w-80 rounded-full bg-gradient-to-br from-sky-200/50 to-teal-200/30 blur-3xl dark:from-sky-900/40 dark:to-teal-900/20" />
       </div>
 
-      <div className="relative mx-auto max-w-6xl px-6 py-10">
+      <div className="relative mx-auto max-w-6xl px-6 pt-16 pb-10">
         <nav className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
@@ -56,21 +56,21 @@ export default function Home() {
               Premium Consultation Intelligence
             </p>
             <h2 className="font-display text-4xl text-slate-900 md:text-5xl dark:text-slate-100">
-              Everything clinicians need to deliver a polished visit summary.
+              Everything clinicians need to deliver a polished, patient-ready visit summary.
             </h2>
             <p className="mt-4 max-w-2xl text-base text-slate-600 dark:text-slate-300">
-              Premium unlocks document and audio ingestion, English transcription, doctor detail extraction, and
-              one-click patient email delivery with a clinic-branded header.
+              Premium unlocks secure document and audio ingestion, English transcription, structured clinical detail
+              extraction, and one-click patient email delivery with clinic-branded formatting.
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               {[
                 'Structured summaries',
-                'Action items',
-                'Patient email drafts',
-                'PDF/DOCX/MD uploads',
+                'Clinical templates',
+                'Doctor detail extraction',
+                'Secure document ingestion',
                 'Prescription images',
                 'Audio to English',
-                'Send email with reply-to',
+                'Clinic-branded email',
               ].map((item) => (
                 <span
                   key={item}
@@ -106,27 +106,27 @@ export default function Home() {
             <ul className="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
-                Professional summaries, action items, and patient-friendly email drafts.
+                Structured visit summaries, next steps, and patient-ready email drafts in consistent clinical language.
               </li>
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
-                Secure PDF, DOCX, and markdown uploads for consultation notes.
+                Secure PDF, DOCX, TXT, and markdown ingestion with extraction for comprehensive visit context.
               </li>
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
-                Handwritten prescription image transcription to English.
+                Prescription image transcription to English for medication capture and follow-up clarity.
               </li>
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
-                Audio uploads with Whisper transcription to English.
+                Audio uploads transcribed to English to turn spoken consults into actionable summaries.
               </li>
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
-                Doctor name, clinic, phone, and reply-to extraction for signatures.
+                Auto-extraction of doctor name, clinic, phone, and reply-to email for signature-ready messages.
               </li>
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
-                One-click email sending with clinic-branded headers.
+                One-click email sending with clinic-branded HTML formatting and optional language translation.
               </li>
             </ul>
           </div>
@@ -136,27 +136,27 @@ export default function Home() {
           {[
             {
               title: 'Professional Summaries',
-              body: 'Structured visit summaries for medical records in seconds.',
+              body: 'Generate structured summaries tailored to clinical records, with consistent headings and clarity.',
             },
             {
               title: 'Action Items',
-              body: 'Clear follow-ups and next steps for every consultation.',
+              body: 'Deliver clear follow-ups and next steps so clinicians can act immediately after each visit.',
             },
             {
               title: 'Patient Email Drafts',
-              body: 'Friendly, ready-to-send patient communication templates.',
+              body: 'Patient-friendly drafts that can be sent instantly with clinic branding and reply-to routing.',
             },
             {
               title: 'Documents + Prescriptions (Premium)',
-              body: 'Ingest PDFs, DOCX, markdown, and prescription images for richer summaries.',
+              body: 'Upload PDFs, DOCX, TXT, MD, and prescription images to enrich the summary with source evidence.',
             },
             {
               title: 'Audio Transcription (Premium)',
-              body: 'Upload audio and receive English transcription instantly.',
+              body: 'Convert recorded consults into English transcripts and feed them directly into summary creation.',
             },
             {
               title: 'Email Delivery (Premium)',
-              body: 'Send emails with clinic-branded headers and reply-to routing.',
+              body: 'Send HTML emails with clinic-branded headers, doctor reply-to, and language translation options.',
             },
           ].map((feature) => (
             <div

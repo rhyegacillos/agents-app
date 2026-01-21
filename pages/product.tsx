@@ -892,7 +892,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                                 : `${attachmentCount} file${attachmentCount === 1 ? '' : 's'}`}
                                         </span>
                                     </div>
-                                    {attachmentCount > 1 && (
+                                    {attachmentCount > 0 && (
                                         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                                             {attachmentFiles.map((file) => (
                                                 <li key={file.filename} className="break-words">
@@ -964,7 +964,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                                 : `${imageCount} file${imageCount === 1 ? '' : 's'}`}
                                         </span>
                                     </div>
-                                    {imageCount > 1 && (
+                                    {imageCount > 0 && (
                                         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                                             {imageFiles.map((file) => (
                                                 <li key={file.filename} className="break-words">
@@ -1034,7 +1034,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                                 : `${audioCount} file${audioCount === 1 ? '' : 's'}`}
                                         </span>
                                     </div>
-                                    {audioCount > 1 && (
+                                    {audioCount > 0 && (
                                         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                                             {audioFiles.map((file) => (
                                                 <li key={file.filename} className="break-words">
@@ -1065,7 +1065,9 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                     <button
                         type="submit"
                         disabled={loading || parsingFile || parsingImage || parsingAudio}
-                        className="w-full rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-200/60 transition hover:bg-emerald-700 disabled:bg-emerald-300 dark:shadow-emerald-900/40"
+                        className={`w-full rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-200/60 transition hover:bg-emerald-700 disabled:bg-emerald-300 dark:shadow-emerald-900/40 ${
+                            loading ? 'glow-loading' : ''
+                        }`}
                     >
                         {loading ? 'Generating Summary...' : 'Generate Summary'}
                     </button>
@@ -1291,7 +1293,9 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                     type="button"
                                     onClick={handleSendEmail}
                                     disabled={sendingEmail}
-                                    className="w-full rounded-xl bg-slate-900 py-3 text-sm font-semibold text-white shadow-lg shadow-slate-200/60 transition hover:bg-slate-800 disabled:bg-slate-400 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400 dark:shadow-emerald-500/20 dark:disabled:bg-emerald-300"
+                                    className={`w-full rounded-xl bg-slate-900 py-3 text-sm font-semibold text-white shadow-lg shadow-slate-200/60 transition hover:bg-slate-800 disabled:bg-slate-400 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400 dark:shadow-emerald-500/20 dark:disabled:bg-emerald-300 ${
+                                        sendingEmail ? 'glow-loading' : ''
+                                    }`}
                                 >
                                     {sendingEmail ? 'Sending Email...' : 'Send Email to Patient'}
                                 </button>
@@ -1320,7 +1324,7 @@ export default function Product() {
             </div>
 
             <div className="relative">
-                <header className="mx-auto max-w-5xl px-6 pt-10 pb-6">
+                <header className="mx-auto max-w-5xl px-6 pt-16 pb-6">
                     <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
                         <div>
                             <h1 className="font-display text-4xl text-slate-900 md:text-5xl dark:text-slate-100">
