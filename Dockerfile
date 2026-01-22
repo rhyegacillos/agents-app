@@ -17,10 +17,19 @@ ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 # Build the Next.js app (creates 'out' directory with static files)
 RUN npm run build
 
+
+
 # Stage 2: Create the final Python container
 FROM python:3.12-slim
 
 WORKDIR /app
+
+# Install system dependencies for xhtml2pdf/pycairo
+RUN apt-get update && apt-get install -y \
+    gcc \
+    pkg-config \
+    libcairo2-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .

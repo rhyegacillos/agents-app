@@ -2,3 +2,7 @@ fastapi
 uvicorn
 openai
 fastapi-clerk-auth
+resend
+xhtml2pdf
+google-generativeai
+python-dotenv

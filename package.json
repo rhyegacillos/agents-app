@@ -11,6 +11,8 @@
   "dependencies": {
     "@clerk/nextjs": "^6.36.8",
     "@microsoft/fetch-event-source": "^2.0.1",
+    "html2pdf.js": "^0.14.0",
+    "jwt-decode": "^4.0.0",
     "next": "16.1.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -20,6 +22,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@tailwindcss/typography": "^0.5.19",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
