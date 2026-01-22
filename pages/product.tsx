@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useAuth, UserButton, Protect } from '@clerk/nextjs';
 
@@ -38,7 +38,7 @@ const INDUSTRIES = [
     "Retail Operations",
     "SMB Back Office (Accounting, Payroll, Invoicing)"
   ];
-  
+
 const CONSTRAINTS = [
     "None",
     "Low Startup Cost (<$5k)",
@@ -98,6 +98,8 @@ const PERSONAS = [
     }
   ];
 
+
+
 const MODELS = [{ id: "gpt-5-nano", label: "OpenAI" }, { id: "gemini-3-pro-preview", label: "Gemini" }, { id: "deepseek-chat", label: "DeepSeek" }, { id: "grok-4-1-fast-reasoning", label: "Grok" }];
 
 type IdeaResults = { [key: string]: string; };
@@ -109,20 +111,38 @@ function IdeaGenerator({ isPremium = false }: { isPremium?: boolean }) {
     const [isLoading, setIsLoading] = useState(false);
     const [activeTab, setActiveTab] = useState<string>('');
     const [industry, setIndustry] = useState(INDUSTRIES[0]);
-    const [constraint, setConstraint] = useState(CONSTRAINTS[0]);
+    const [constraints, setConstraints] = useState<string[]>([CONSTRAINTS[0]]);
     const [tone, setTone] = useState(PERSONAS[0].id);
     const [selectedModels, setSelectedModels] = useState<string[]>([MODELS[0].id]);
     const [email, setEmail] = useState('');
     const [sendingEmail, setSendingEmail] = useState(false);
     const [emailStatus, setEmailStatus] = useState('');
+    const [recoLoading, setRecoLoading] = useState(false);
+    const [recoHtml, setRecoHtml] = useState<string>("");
+
 
     useEffect(() => {
         if (!isPremium) {
-            if (CONSTRAINTS.indexOf(constraint) >= 3) setConstraint(CONSTRAINTS[0]);
-            if (PERSONAS.findIndex(p => p.id === tone) > 0) setTone(PERSONAS[0].id);
-            setSelectedModels(prev => prev.filter((_, i) => i === 0));
+          // keep only free-allowed constraints (first 3)
+          const allowed = new Set(CONSTRAINTS.slice(0, 3));
+          const filtered = constraints.filter(c => allowed.has(c));
+      
+          // if user has none after filtering, default to first option
+          if (filtered.length === 0) {
+            setConstraints([CONSTRAINTS[0]]);
+          } else if (filtered.length !== constraints.length) {
+            setConstraints(filtered);
+          }
+      
+          // enforce free persona
+          const toneIdx = PERSONAS.findIndex(p => p.id === tone);
+          if (toneIdx > 0) setTone(PERSONAS[0].id);
+      
+          // only first model
+          setSelectedModels(prev => prev.length > 0 ? [prev[0]] : prev);
         }
-    }, [isPremium, constraint, tone]);
+      }, [isPremium, constraints, tone, setConstraints, setTone, setSelectedModels]);
+      
 
     const handleModelSelection = (modelId: string, isChecked: boolean) => {
         setSelectedModels(prev => isChecked ? [...prev, modelId] : prev.filter(id => id !== modelId));
@@ -138,7 +158,7 @@ function IdeaGenerator({ isPremium = false }: { isPremium?: boolean }) {
             const response = await fetch('/api', {
                 method: "POST",
                 headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ industry, constraint, tone, models: selectedModels }),
+                body: JSON.stringify({ industry, constraints, tone, models: selectedModels }),
             });
             if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
             const data = await response.json();
@@ -149,27 +169,96 @@ function IdeaGenerator({ isPremium = false }: { isPremium?: boolean }) {
             setIsLoading(false);
         }
     };
+
+    const recommendCombination = async () => {
+      if (!isPremium) return;
     
-    const getReportPayload = () => ({ industry, constraint, tone, models: selectedModels, results });
+      setRecoLoading(true);
+      setRecoHtml("");
+    
+      const jwt = await getToken();
+    
+      try {
+        const res = await fetch("/api/recommend-combination", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            industry,
+            constraints: CONSTRAINTS,
+            personas: PERSONAS,
+          }),
+        });
+    
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.detail || res.statusText);
+    
+        // IMPORTANT: plural field name + array
+        const nextConstraints: string[] =
+          Array.isArray(data?.recommended_constraints) && data.recommended_constraints.length
+            ? data.recommended_constraints
+            : [CONSTRAINTS[0]];
+    
+        setConstraints(nextConstraints);
+    
+        if (data?.recommended_persona) setTone(data.recommended_persona);
+        if (data?.reason_html) setRecoHtml(data.reason_html);
+    
+      } catch (e: any) {
+        alert(`Recommend error: ${e.message}`);
+      } finally {
+        setRecoLoading(false);
+      }
+    };
+    
+      
+    
+    const getReportPayload = () => ({ industry, constraints, tone, models: selectedModels, results });
 
     const downloadPDF = async () => {
-        const response = await fetch('/api/download-pdf', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(getReportPayload()),
-        });
-        if (response.ok) {
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'business-idea-report.pdf';
-            a.click();
-            a.remove();
-        } else {
-            alert('Failed to download PDF.');
-        }
+      const response = await fetch("/api/download-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(getReportPayload()),
+      });
+    
+      if (!response.ok) {
+        alert("Failed to download PDF.");
+        return;
+      }
+    
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+    
+      // sanitize industry for filenames
+      const safeIndustry = String(industry || "industry")
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^a-zA-Z0-9_-]/g, "");
+    
+      // timestamp (no time)
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      const stamp = `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
+    
+      const filename = `IdeaGen_${safeIndustry}_${stamp}.pdf`;
+    
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      a.remove();
+    
+      window.URL.revokeObjectURL(url);
     };
+    
 
     const sendEmail = async () => {
         if (!email) return;
@@ -196,17 +285,73 @@ function IdeaGenerator({ isPremium = false }: { isPremium?: boolean }) {
                             {INDUSTRIES.map(ind => <option key={ind} value={ind}>{ind}</option>)}
                         </select>
                     </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Constraints</label>
-                        <select value={constraint} onChange={(e) => setConstraint(e.target.value)} className="w-full p-3 bg-gray-50 dark:bg-gray-700 border rounded-xl">
-                            {CONSTRAINTS.map((c, i) => <option key={c} value={c} disabled={!isPremium && i >= 3}>{c}{!isPremium && i >= 3 ? " (Premium)" : ""}</option>)}
-                        </select>
+                    <div className="relative">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            Constraints
+                        </label>
+
+                        {/* Free users: single select */}
+                        {!isPremium ? (
+                            <select
+                            value={constraints[0] ?? CONSTRAINTS[0]}
+                            onChange={(e) => setConstraints([e.target.value])}
+                            className="w-full p-3 bg-gray-50 dark:bg-gray-700 border rounded-xl"
+                            >
+                            {CONSTRAINTS.map((c, i) => (
+                                <option key={c} value={c} disabled={i >= 3}>
+                                {c}{i >= 3 ? " (Premium)" : ""}
+                                </option>
+                            ))}
+                            </select>
+                        ) : (
+                            <ConstraintMultiSelectDropdown
+                            options={CONSTRAINTS}
+                            value={constraints}
+                            onChange={setConstraints}
+                            maxSelected={3} // optional cap
+                            />
+                        )}
                     </div>
+
+
+
                     <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI Persona</label>
                         <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full p-3 bg-gray-50 dark:bg-gray-700 border rounded-xl">
                             {PERSONAS.map((p, i) => <option key={p.id} value={p.id} disabled={!isPremium && i > 0}>{p.label}{!isPremium && i > 0 ? " (Premium)" : ""}</option>)}
                         </select>
+                    </div>
+                    <div>
+                        <button
+                        onClick={recommendCombination}
+                        disabled={!isPremium || recoLoading}
+                        className={`w-full py-3 rounded-xl font-semibold border ${
+                            !isPremium
+                            ? "opacity-50 cursor-not-allowed"
+                            : recoLoading
+                            ? "opacity-70 cursor-wait"
+                            : "hover:bg-gray-50 dark:hover:bg-gray-700"
+                        }`}
+                        >
+                        {recoLoading ? "Recommending..." : "Recommend Combination (Premium)"}
+                        </button>
+
+                        {recoHtml && (
+                          <div className="mt-3 p-4 rounded-xl border bg-gray-50 dark:bg-gray-700">
+                            <div
+                              className="max-h-70 overflow-y-auto pr-2 text-sm leading-relaxed"
+                              style={{ scrollbarGutter: "stable" as any }}
+                              dangerouslySetInnerHTML={{ __html: recoHtml }}
+                            />
+                            <style jsx>{`
+                              :global([data-section="recommendation_reason"] ul) { margin: 0.5rem 0 0.25rem 1rem; }
+                              :global([data-section="recommendation_reason"] li) { margin: 0.35rem 0; }
+                              :global([data-section="recommendation_reason"] h3) { margin: 0 0 0.5rem 0; font-weight: 700; }
+                            `}</style>
+                          </div>
+                        )}
+
+
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI Models</label>
@@ -222,6 +367,7 @@ function IdeaGenerator({ isPremium = false }: { isPremium?: boolean }) {
                             })}
                         </div>
                     </div>
+
                     <button onClick={generateIdeas} disabled={isLoading} className={`w-full py-3 rounded-xl text-white font-semibold ${isLoading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
                         {isLoading ? 'Generating...' : 'Generate Ideas'}
                     </button>
@@ -267,6 +413,115 @@ function IdeaGenerator({ isPremium = false }: { isPremium?: boolean }) {
         </div>
     );
 }
+
+function ConstraintMultiSelectDropdown({
+    options,
+    value,
+    onChange,
+    maxSelected = 3,
+  }: {
+    options: string[];
+    value: string[];
+    onChange: (next: string[]) => void;
+    maxSelected?: number;
+  }) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef<HTMLDivElement | null>(null);
+  
+    // Close when clicking outside
+    useEffect(() => {
+      const onDocMouseDown = (e: MouseEvent) => {
+        if (!ref.current) return;
+        if (!ref.current.contains(e.target as Node)) setOpen(false);
+      };
+      document.addEventListener("mousedown", onDocMouseDown);
+      return () => document.removeEventListener("mousedown", onDocMouseDown);
+    }, []);
+  
+    const toggle = (opt: string) => {
+      const exists = value.includes(opt);
+      if (exists) {
+        const next = value.filter((v) => v !== opt);
+        onChange(next.length ? next : [options[0]]);
+        return;
+      }
+      if (value.length >= maxSelected) return;
+      onChange([...value, opt]);
+    };
+  
+    const clear = () => onChange([options[0]]);
+  
+    const summary = value?.length ? value.join(", ") : "None";
+    const buttonLabel =
+      value.length === 0
+        ? "Select constraints…"
+        : value.length === 1
+        ? value[0]
+        : `${value.length} selected`;
+  
+    return (
+      <div className="relative" ref={ref}>
+        {/* Button looks like a dropdown */}
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="w-full p-3 bg-gray-50 dark:bg-gray-700 border rounded-xl flex items-center justify-between"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+        >
+          <span className={`text-sm ${value.length ? "text-gray-900 dark:text-gray-100" : "text-gray-500"}`}>
+            {buttonLabel}
+          </span>
+          <span className="text-gray-500 dark:text-gray-300 text-sm">▾</span>
+        </button>
+  
+        {/* Dropdown panel */}
+        {open && (
+          <div className="absolute z-50 mt-2 w-full rounded-xl border bg-white dark:bg-gray-800 shadow-lg">
+            <div className="p-2 max-h-64 overflow-auto">
+              {options.map((opt) => {
+                const checked = value.includes(opt);
+                const disabled = !checked && value.length >= maxSelected;
+  
+                return (
+                  <label
+                    key={opt}
+                    className={`flex items-center gap-2 px-2 py-2 rounded-lg ${
+                      disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => {
+                        if (!disabled) toggle(opt);
+                      }}
+                    />
+                    <span className="text-sm text-gray-900 dark:text-gray-100">{opt}</span>
+                  </label>
+                );
+              })}
+            </div>
+  
+            <div className="flex items-center justify-between gap-2 p-2 border-t dark:border-gray-700">
+              <div className="text-xs text-gray-500 dark:text-gray-300">
+                Max {maxSelected} • Selected: {summary}
+              </div>
+              <button
+                type="button"
+                onClick={clear}
+                className="text-xs font-semibold px-2 py-1 rounded-lg border hover:bg-gray-50 dark:hover:bg-gray-700"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+  
 
 export default function Product() {
     return (

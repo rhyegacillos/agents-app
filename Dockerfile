@@ -47,8 +47,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 
 # Copy the FastAPI server
+COPY api/ ./
 COPY api/index.py ./server.py
-COPY api/instructions_prompt.py ./instructions_prompt.py
+
 
 # Copy the Next.js static export from builder stage
 COPY --from=frontend-builder /app/out ./static

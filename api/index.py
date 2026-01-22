@@ -1,3 +1,4 @@
+from calendar import c
 import os
 import asyncio
 from pathlib import Path
@@ -16,7 +17,12 @@ from pydantic import BaseModel
 from typing import List, Dict
 from datetime import datetime
 from html import escape
-from instructions_prompt import system_instructions, user_instruction
+from instructions.instructions_prompt import system_instructions, user_instruction
+from agent.email_agent import run_email_agent
+import json
+from typing import Any, Optional
+
+
 
 # --- App Setup ---
 load_dotenv()
@@ -38,19 +44,46 @@ except Exception as e:
 # --- Pydantic Models ---
 class ReportData(BaseModel):
     industry: str
-    constraint: str
+    constraints: List[str] = []
     tone: str
     models: List[str]
     results: Dict[str, str]
 
+    @property
+    def constraints_text(self) -> str:
+        if self.constraints:
+            return ", ".join(self.constraints)
+        return "None"
+
 class IdeaRequest(BaseModel):
     industry: str
-    constraint: str
+    constraints: List[str] = []
     tone: str
     models: List[str]
 
+
 class EmailRequest(ReportData):
     to_email: str
+
+class PersonaOption(BaseModel):
+    id: str
+    label: str
+
+class RecommendCombinationRequest(BaseModel):
+    industry: str
+    constraints: List[str]
+    personas: List[PersonaOption]
+
+class RecommendCombinationResponse(BaseModel):
+    recommended_constraints: List[str]
+    recommended_persona: str
+    reason_html: str
+
+
+def build_pdf_filename(industry: str) -> str:
+    safe_industry = re.sub(r"[^a-zA-Z0-9_-]+", "_", industry.strip())
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return f"IdeaGen_{safe_industry}_{ts}.pdf"
 
 # --- PDF Generation ---
 def create_report_html(data: "ReportData") -> str:
@@ -279,7 +312,7 @@ def create_report_html(data: "ReportData") -> str:
             </tr>
             <tr>
                 <td class="cfg-label">Constraint</td>
-                <td class="cfg-value">{escape(data.constraint or "None")}</td>
+                <td class="cfg-value">{escape(data.constraints_text)}</td>
             </tr>
             <tr>
                 <td class="cfg-label">AI Persona</td>
@@ -330,11 +363,42 @@ async def generate_gemini(model, system_instruction, user_content):
                 return f"Error - Limit Reach: {e2}"
         return f"Error: {e}"
 
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    text = text.strip()
+
+    # direct JSON
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # try to extract first {...} block
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            return None
+
+    return None
+
+
 # --- API Endpoints ---
 @app.post("/api")
 async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    constraints_text = ", ".join(request.constraints) if request.constraints else "None"
     system_instruction = system_instructions(request.tone)
-    user_content = user_instruction(request.industry, request.constraint)
+    user_content = user_instruction(request.industry, constraints_text)
+    
 
     tasks = []
     for model_id in request.models:
@@ -355,16 +419,188 @@ def download_pdf(request: ReportData):
     pdf_bytes = html_to_pdf_bytes(report_html)
     return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers={"Content-Disposition": "attachment;filename=report.pdf"})
 
+
 @app.post("/api/email")
-def send_email(request: EmailRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+async def send_email(
+    request: EmailRequest,
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
+):
     report_html = create_report_html(request)
     pdf_bytes = html_to_pdf_bytes(report_html)
+
+    constraints_text = ", ".join(request.constraints) if request.constraints else "None"
+
+    agent_result = await run_email_agent(
+        to_email=request.to_email,
+        industry=request.industry,
+        constraints_text=constraints_text,
+    )
+
+    # enforced wrapper (final authority)
+    final_html = f"""
+    <div style="font-family: Arial, sans-serif; font-size:14px; color:#111;">
+      <p>Hi There,</p>
+
+      {agent_result["html_body"]}
+
+      <p style="margin-top:24px;">
+        Best regards,<br/>
+        <strong>Ideagen</strong>
+      </p>
+
+      <p style="font-size:12px;color:#666;">
+        This is an auto-generated email. Please do not reply.
+      </p>
+    </div>
+    """
+
+    filename = build_pdf_filename(request.industry)
+
     resend.Emails.send({
-        "from": "no-reply@agentairg.site", "to": request.to_email,
-        "subject": f"IdeaGen Report: {request.industry}", "html": "Your report is attached.",
-        "attachments": [{"filename": "report.pdf", "content": list(pdf_bytes)}]
+        "from": "no-reply@agentairg.site",
+        "to": agent_result["to"],
+        "subject": agent_result["subject"],
+        "html": final_html,
+        "attachments": [{
+            "filename": filename,
+            "content": list(pdf_bytes),
+        }],
     })
-    return {"status": "sent"}
+
+    return {
+        "status": "sent",
+        "subject": agent_result["subject"],
+    }
+
+
+
+@app.post("/api/recommend-combination", response_model=RecommendCombinationResponse)
+async def recommend_combination(
+    request: RecommendCombinationRequest,
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard)
+):
+    allowed_constraints = request.constraints
+    allowed_persona_ids = [p.id for p in request.personas]
+
+    system_prompt = """
+    You are a product strategist selecting the best configuration for generating a high-quality AI agent business idea.
+
+    STRICT RULES (DO NOT VIOLATE):
+    - You MUST select constraints ONLY from the provided "Allowed constraints" list.
+    - You MUST select persona ONLY from the provided "Allowed personas" list (use the persona id exactly).
+    - You MUST NOT invent, paraphrase, shorten, or modify any option text.
+    - All selected strings MUST match the allowed options EXACTLY (character-for-character).
+    - Choose 1 or 2 constraints only. NEVER choose more than 2.
+    - If unsure, choose the FIRST option(s) from the allowed lists.
+    - Return ONLY valid JSON. No prose, no markdown, no explanation outside JSON.
+
+    OPTIMIZATION GOALS:
+    - Fastest path to validation
+    - Clear economic ROI
+    - Strong workflow alignment in the selected industry
+    - Practical execution feasibility for a small team
+
+    SELECTION GUIDELINES:
+    - Prefer constraints that force concrete workflows and measurable outcomes.
+    - Avoid combinations that contradict each other.
+    - If multiple options are plausible, choose the one that reduces ambiguity and increases execution clarity.
+
+    FAILURE HANDLING:
+    - If any requirement cannot be satisfied, fall back to the first allowed constraint and first allowed persona.
+    """
+
+    user_prompt = f"""
+    Industry: "{request.industry}"
+
+    Allowed constraints (use EXACT strings from this list only):
+    {json.dumps(allowed_constraints, ensure_ascii=False)}
+    IMPORTANT: Copy the chosen constraint strings exactly as they appear in the Allowed constraints list.
+
+
+    Allowed personas (use EXACT persona id from this list only):
+    {json.dumps([p.model_dump() for p in request.personas], ensure_ascii=False)}
+
+    Return ONLY valid JSON with this exact schema:
+    {{
+    "recommended_constraints": ["string", "string"],
+    "recommended_persona": "string",
+    "reason_html": "<section data-section='recommendation_reason'><h3>Why this combination</h3><ul><li>...</li></ul></section>"
+    }}
+
+    Rules:
+    - recommended_constraints MUST be an array with 1 or 2 items.
+    - Each item in recommended_constraints MUST exactly match one item in Allowed constraints.
+    - recommended_persona MUST exactly match one persona id in Allowed personas.
+    - Do NOT output any constraint/persona that is not in the allowed lists.
+    - If you are unsure, choose the FIRST constraint and FIRST persona from the allowed lists.
+
+    Rules for reason_html:
+    - Must be semantic HTML only.
+    - Must contain 3–5 <li> bullet points explaining:
+    1) why the chosen constraints fit the industry's workflows,
+    2) why the chosen persona lens is best for producing useful output,
+    3) one explicit tradeoff/risk of this choice.
+    """
+
+
+    raw = await generate_openai_compatible(
+        grok_client,
+        "grok-4-1-fast-reasoning",
+        system_prompt,
+        user_prompt
+    )
+
+    obj = _extract_json_object(raw) or {}
+
+    # recommended_constraint = str(obj.get("recommended_constraint", "")).strip()
+    recommended_persona = str(obj.get("recommended_persona", "")).strip()
+    reason_html = str(obj.get("reason_html", "")).strip()
+
+    # Validate membership; fallback safely
+    raw_constraints = obj.get("recommended_constraints", [])
+    if isinstance(raw_constraints, str):
+        # if model mistakenly returns a single string, wrap it
+        raw_constraints = [raw_constraints]
+
+    if not isinstance(raw_constraints, list):
+        raw_constraints = []
+
+    # normalize + validate + dedupe
+    seen = set()
+    recommended_constraints: List[str] = []
+    for c in raw_constraints:
+        c = str(c).strip()
+        if c in allowed_constraints and c not in seen:
+            seen.add(c)
+            recommended_constraints.append(c)
+
+    # cap to 3
+    recommended_constraints = recommended_constraints[:3]
+
+    # fallback
+    if not recommended_constraints:
+        recommended_constraints = [allowed_constraints[0]] if allowed_constraints else ["None"]
+
+
+    if recommended_persona not in allowed_persona_ids:
+        recommended_persona = allowed_persona_ids[0] if allowed_persona_ids else "Neutral"
+
+    if not reason_html:
+        reason_html = (
+            "<section data-section='recommendation_reason'>"
+            "<h3>Recommendation</h3>"
+            "<ul><li>No rationale provided.</li></ul>"
+            "</section>"
+        )
+
+    return RecommendCombinationResponse(
+        recommended_constraints=recommended_constraints,
+        recommended_persona=recommended_persona,
+        reason_html=reason_html
+    )
+
+
+
 
 @app.get("/health")
 def health_check(): return {"status": "healthy"}
