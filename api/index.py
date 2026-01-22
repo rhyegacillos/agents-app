@@ -3,6 +3,7 @@ import os
 import asyncio
 from pathlib import Path
 import re
+from token import OP
 from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,14 +20,28 @@ from datetime import datetime
 from html import escape
 from instructions.instructions_prompt import system_instructions, user_instruction
 from agent.email_agent import run_email_agent
+from agent.recommend_combination_agent import recommend_combination_agent
+from agent.idea_generation_agent import generate_idea_agentic
+
+
 import json
 from typing import Any, Optional
 
+import logging
+import uuid
 
 
 # --- App Setup ---
 load_dotenv()
 app = FastAPI()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # --- API Clients & Config ---
 clerk_config = ClerkConfig(jwks_url=os.getenv("CLERK_JWKS_URL"))
@@ -35,6 +50,28 @@ openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 deepseek_client = AsyncOpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os.getenv("DEEPSEEK_API_URL"))
 grok_client = AsyncOpenAI(api_key=os.getenv("GROK_API_KEY"), base_url=os.getenv("GROK_API_URL"))
 resend.api_key = os.getenv("RESEND_API_KEY")
+GROK_MODEL = "grok-4-1-fast-reasoning"
+GEMINI_MODEL = "gemini-2.5-pro"
+OPENAI_MODEL = "gpt-5-nano"
+DEEPSEEK_MODEL = "deepseek-chat"
+GROK_MODEL_FALLBACK = "grok-4-fast-non-reasoning"
+GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
+OPENAI_MODEL_FALLBACK = "gpt-4.1-mini"
+DEEPSEEK_MODEL_FALLBACK = "deepseek-chat-v3.1"
+
+
+
+FALLBACK_CHAINS = {
+    # Grok
+    GROK_MODEL: ("grok", [GROK_MODEL, GROK_MODEL_FALLBACK]),
+    # Gemini
+    GEMINI_MODEL: ("gemini", [GEMINI_MODEL, GEMINI_MODEL_FALLBACK]),
+    # OpenAI    
+    OPENAI_MODEL: ("openai", [OPENAI_MODEL, OPENAI_MODEL_FALLBACK]),
+    # DeepSeek
+    DEEPSEEK_MODEL: ("deepseek", [DEEPSEEK_MODEL, DEEPSEEK_MODEL_FALLBACK]),    
+}
+
 
 try:
     gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -88,10 +125,10 @@ def build_pdf_filename(industry: str) -> str:
 # --- PDF Generation ---
 def create_report_html(data: "ReportData") -> str:
     model_names = {
-        "gpt-5-nano": "OpenAI",
-        "gemini-3-pro-preview": "Google",
-        "deepseek-chat": "DeepSeek",
-        "grok-4-1-fast-reasoning": "Grok",
+        OPENAI_MODEL: "OpenAI",
+        GEMINI_MODEL: "Google",
+        DEEPSEEK_MODEL: "DeepSeek",
+        GROK_MODEL: "Grok",
     }
 
     left_brand = "IdeaGen"
@@ -338,10 +375,15 @@ def html_to_pdf_bytes(html_content: str) -> bytes:
 
 # --- AI Generation Helpers ---
 async def generate_openai_compatible(client, model, system_instruction, user_content):
-    try:
-        r = await client.chat.completions.create(model=model, messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": user_content}])
-        return r.choices[0].message.content or ""
-    except Exception as e: return f"Error: {e}"
+    r = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    return r.choices[0].message.content or ""
+
 
 async def generate_gemini(model, system_instruction, user_content):
     try:
@@ -353,7 +395,7 @@ async def generate_gemini(model, system_instruction, user_content):
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
             try:
-                fallback_model = "gemini-2.5-pro"
+                fallback_model = GEMINI_FALLBACK_MODEL
                 r = await gemini_client.aio.models.generate_content(
                     model=fallback_model,
                     contents=f"{system_instruction}\n\n{user_content}"
@@ -393,25 +435,80 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 
 # --- API Endpoints ---
+# index.py (agentic /api replacement)
+# index.py - updated /api endpoint using FALLBACK_CHAINS + agentic generation + partial success
+
+
 @app.post("/api")
 async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    request_id = str(uuid.uuid4())
+
     constraints_text = ", ".join(request.constraints) if request.constraints else "None"
     system_instruction = system_instructions(request.tone)
     user_content = user_instruction(request.industry, constraints_text)
-    
 
-    tasks = []
-    for model_id in request.models:
-        if model_id == "gpt-5-nano": tasks.append(generate_openai_compatible(openai_client, "gpt-5-nano", system_instruction, user_content))
-        elif model_id == "deepseek-chat": tasks.append(generate_openai_compatible(deepseek_client, "deepseek-chat", system_instruction, user_content))
-        elif model_id == "grok-4-1-fast-reasoning": tasks.append(generate_openai_compatible(grok_client, "grok-4-1-fast-reasoning", system_instruction, user_content))
-        elif model_id == "gemini-3-pro-preview": tasks.append(generate_gemini("gemini-3-pro-preview", system_instruction, user_content))
-    
-    if not tasks:
+    def infer_provider(model_id: str) -> str:
+        mid = (model_id or "").lower()
+        if mid.startswith("grok-"):
+            return "grok"
+        if mid.startswith("gemini-"):
+            return "gemini"
+        if mid.startswith("deepseek-"):
+            return "deepseek"
+        if mid.startswith("gpt-") or mid.startswith("o-"):
+            return "openai"
+        return "unknown"
+
+    async def run_one(model_id: str):
+        provider, chain = FALLBACK_CHAINS.get(model_id, (infer_provider(model_id), [model_id]))
+
+        # Choose client + generator per provider
+        if provider == "grok":
+            client = grok_client
+            gen = generate_openai_compatible
+        elif provider == "openai":
+            client = openai_client
+            gen = generate_openai_compatible
+        elif provider == "deepseek":
+            client = deepseek_client
+            gen = generate_openai_compatible
+        elif provider == "gemini":
+            client = None
+
+            async def gen(_client, _model, _sys, _user):
+                return await generate_gemini(_model, _sys, _user)
+        else:
+            return {"text": "Error: Unknown model/provider.", "meta": {"fallback_used": True}}
+
+        # Agentic generate (validate->retry) + model fallback (limit/timeout->lower model)
+        return await generate_idea_agentic(
+            generate=gen,
+            client=client,
+            provider=provider,
+            model_chain=chain,
+            system_instruction=system_instruction,
+            user_content=user_content,
+            max_attempts=3,
+            request_id=request_id,
+        )
+
+    models = request.models or []
+    if not models:
         return JSONResponse(content={"error": "No valid models selected."}, status_code=400)
-        
-    results = await asyncio.gather(*tasks)
-    return JSONResponse(content={model: result for model, result in zip(request.models, results)})
+
+    tasks = [run_one(m) for m in models]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Keep same response shape: { "<selected_model_id>": "<html_output>" }
+    out = {}
+    for model_id, r in zip(models, results):
+        if isinstance(r, Exception):
+            out[model_id] = "Error: Model call failed."
+        else:
+            out[model_id] = r.get("text", "Error: Empty response.")
+
+    return JSONResponse(content=out)
+
 
 @app.post("/api/download-pdf")
 def download_pdf(request: ReportData):
@@ -474,131 +571,36 @@ async def send_email(
 
 
 
+import uuid
+
 @app.post("/api/recommend-combination", response_model=RecommendCombinationResponse)
 async def recommend_combination(
     request: RecommendCombinationRequest,
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard)
 ):
-    allowed_constraints = request.constraints
-    allowed_persona_ids = [p.id for p in request.personas]
+    request_id = str(uuid.uuid4())
 
-    system_prompt = """
-    You are a product strategist selecting the best configuration for generating a high-quality AI agent business idea.
+    allowed_constraints = request.constraints or []
 
-    STRICT RULES (DO NOT VIOLATE):
-    - You MUST select constraints ONLY from the provided "Allowed constraints" list.
-    - You MUST select persona ONLY from the provided "Allowed personas" list (use the persona id exactly).
-    - You MUST NOT invent, paraphrase, shorten, or modify any option text.
-    - All selected strings MUST match the allowed options EXACTLY (character-for-character).
-    - Choose 1 or 2 constraints only. NEVER choose more than 2.
-    - If unsure, choose the FIRST option(s) from the allowed lists.
-    - Return ONLY valid JSON. No prose, no markdown, no explanation outside JSON.
-
-    OPTIMIZATION GOALS:
-    - Fastest path to validation
-    - Clear economic ROI
-    - Strong workflow alignment in the selected industry
-    - Practical execution feasibility for a small team
-
-    SELECTION GUIDELINES:
-    - Prefer constraints that force concrete workflows and measurable outcomes.
-    - Avoid combinations that contradict each other.
-    - If multiple options are plausible, choose the one that reduces ambiguity and increases execution clarity.
-
-    FAILURE HANDLING:
-    - If any requirement cannot be satisfied, fall back to the first allowed constraint and first allowed persona.
-    """
-
-    user_prompt = f"""
-    Industry: "{request.industry}"
-
-    Allowed constraints (use EXACT strings from this list only):
-    {json.dumps(allowed_constraints, ensure_ascii=False)}
-    IMPORTANT: Copy the chosen constraint strings exactly as they appear in the Allowed constraints list.
-
-
-    Allowed personas (use EXACT persona id from this list only):
-    {json.dumps([p.model_dump() for p in request.personas], ensure_ascii=False)}
-
-    Return ONLY valid JSON with this exact schema:
-    {{
-    "recommended_constraints": ["string", "string"],
-    "recommended_persona": "string",
-    "reason_html": "<section data-section='recommendation_reason'><h3>Why this combination</h3><ul><li>...</li></ul></section>"
-    }}
-
-    Rules:
-    - recommended_constraints MUST be an array with 1 or 2 items.
-    - Each item in recommended_constraints MUST exactly match one item in Allowed constraints.
-    - recommended_persona MUST exactly match one persona id in Allowed personas.
-    - Do NOT output any constraint/persona that is not in the allowed lists.
-    - If you are unsure, choose the FIRST constraint and FIRST persona from the allowed lists.
-
-    Rules for reason_html:
-    - Must be semantic HTML only.
-    - Must contain 3–5 <li> bullet points explaining:
-    1) why the chosen constraints fit the industry's workflows,
-    2) why the chosen persona lens is best for producing useful output,
-    3) one explicit tradeoff/risk of this choice.
-    """
-
-
-    raw = await generate_openai_compatible(
-        grok_client,
-        "grok-4-1-fast-reasoning",
-        system_prompt,
-        user_prompt
+    result = await recommend_combination_agent(
+        generate=generate_openai_compatible,
+        extract_json=_extract_json_object,
+        client=grok_client,
+        model=GROK_MODEL,
+        industry=request.industry,
+        allowed_constraints=allowed_constraints,
+        personas=[p.model_dump() for p in (request.personas or [])],
+        max_attempts=3,
+        request_id=request_id,
     )
-
-    obj = _extract_json_object(raw) or {}
-
-    # recommended_constraint = str(obj.get("recommended_constraint", "")).strip()
-    recommended_persona = str(obj.get("recommended_persona", "")).strip()
-    reason_html = str(obj.get("reason_html", "")).strip()
-
-    # Validate membership; fallback safely
-    raw_constraints = obj.get("recommended_constraints", [])
-    if isinstance(raw_constraints, str):
-        # if model mistakenly returns a single string, wrap it
-        raw_constraints = [raw_constraints]
-
-    if not isinstance(raw_constraints, list):
-        raw_constraints = []
-
-    # normalize + validate + dedupe
-    seen = set()
-    recommended_constraints: List[str] = []
-    for c in raw_constraints:
-        c = str(c).strip()
-        if c in allowed_constraints and c not in seen:
-            seen.add(c)
-            recommended_constraints.append(c)
-
-    # cap to 3
-    recommended_constraints = recommended_constraints[:3]
-
-    # fallback
-    if not recommended_constraints:
-        recommended_constraints = [allowed_constraints[0]] if allowed_constraints else ["None"]
-
-
-    if recommended_persona not in allowed_persona_ids:
-        recommended_persona = allowed_persona_ids[0] if allowed_persona_ids else "Neutral"
-
-    if not reason_html:
-        reason_html = (
-            "<section data-section='recommendation_reason'>"
-            "<h3>Recommendation</h3>"
-            "<ul><li>No rationale provided.</li></ul>"
-            "</section>"
-        )
 
     return RecommendCombinationResponse(
-        recommended_constraints=recommended_constraints,
-        recommended_persona=recommended_persona,
-        reason_html=reason_html
+        recommended_constraints=result["recommended_constraints"],
+        recommended_persona=result["recommended_persona"],
+        reason_html=result["reason_html"],
     )
 
+    
 
 
 
