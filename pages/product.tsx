@@ -4,9 +4,100 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth, UserButton, Protect } from '@clerk/nextjs';
 
-const INDUSTRIES = ["FinTech", "HealthTech", "EdTech", "AgriTech", "E-commerce", "Real Estate", "Cybersecurity", "LegalTech", "MarTech", "CleanTech", "Gaming", "Logistics", "Travel & Tourism", "HR Tech", "PropTech"];
-const CONSTRAINTS = ["None", "Low Startup Cost (<$5k)", "No-Code Solution", "Enterprise Scale", "B2B SaaS", "B2C Mobile App", "Bootstrapped Friendly"];
-const PERSONAS = [{ id: "Neutral", label: "Neutral / Professional" }, { id: "Critical VC", label: "Critical VC Investor (Risk Focused)" }, { id: "Optimistic Visionary", label: "Optimistic Visionary (Growth Focused)" }];
+const INDUSTRIES = [
+    "FinTech",
+    "HealthTech",
+    "EdTech",
+    "AgriTech",
+    "E-commerce",
+    "Real Estate",
+    "Cybersecurity",
+    "LegalTech",
+    "MarTech",
+    "CleanTech",
+    "Gaming",
+    "Logistics",
+    "Travel & Tourism",
+    "HR Tech",
+    "PropTech",
+  
+    // --- NEW: higher-signal, agent-native verticals ---
+    "InsuranceTech",
+    "Supply Chain & Procurement",
+    "Customer Support Operations",
+    "Sales Operations & RevOps",
+    "Healthcare Operations (Non-Clinical)",
+    "Pharma & Life Sciences Ops",
+    "Financial Compliance & Audit",
+    "Construction & Field Services",
+    "Manufacturing Operations",
+    "Energy & Utilities Operations",
+    "Government & Public Sector Ops",
+    "Media & Content Operations",
+    "Creator Economy Tools",
+    "Retail Operations",
+    "SMB Back Office (Accounting, Payroll, Invoicing)"
+  ];
+  
+const CONSTRAINTS = [
+    "None",
+    "Low Startup Cost (<$5k)",
+    "No-Code Solution",
+    "Enterprise Scale",
+    "B2B SaaS",
+    "B2C Mobile App",
+    "Bootstrapped Friendly",
+  
+    // --- NEW: design-enforcing constraints ---
+    "Human-in-the-Loop Required",
+    "Regulated Environment (HIPAA, SOC2, GDPR)",
+    "Data Cannot Leave Customer Environment",
+    "API-First (No UI MVP)",
+    "Single-Person Buyer (Founder / Manager)",
+    "Long Sales Cycle (6+ months)",
+    "Usage-Based Pricing Required",
+    "Offline / Low-Connectivity Environment",
+    "International / Multi-Language Users",
+    "Legacy Systems Only (Email, Excel, PDFs)"
+  ];
+
+const PERSONAS = [
+    {
+      id: "Neutral",
+      label: "Neutral / Professional (Execution Focused)"
+    },
+    {
+      id: "Critical VC",
+      label: "Critical VC Investor (Risk, Moat, Distribution)"
+    },
+    {
+      id: "Optimistic Visionary",
+      label: "Optimistic Visionary (Platform & Expansion)"
+    },
+  
+    // --- NEW personas that meaningfully change outputs ---
+    {
+      id: "Operator",
+      label: "Experienced Operator (Workflow & ROI Focused)"
+    },
+    {
+      id: "Compliance Officer",
+      label: "Compliance / Risk Officer (Safety & Controls)"
+    },
+    {
+      id: "Solo Founder",
+      label: "Solo Founder (Speed, Simplicity, Cashflow)"
+    },
+    {
+      id: "Enterprise Buyer",
+      label: "Enterprise Buyer (Security, Procurement, Governance)"
+    },
+    {
+      id: "Growth Marketer",
+      label: "Growth Marketer (Acquisition & Retention)"
+    }
+  ];
+
 const MODELS = [{ id: "gpt-5-nano", label: "OpenAI" }, { id: "gemini-3-pro-preview", label: "Gemini" }, { id: "deepseek-chat", label: "DeepSeek" }, { id: "grok-4-1-fast-reasoning", label: "Grok" }];
 
 type IdeaResults = { [key: string]: string; };

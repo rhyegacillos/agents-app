@@ -3,6 +3,6 @@ uvicorn
 openai
 fastapi-clerk-auth
 resend
-xhtml2pdf
-google-generativeai
+weasyprint
+google-genai
 python-dotenv

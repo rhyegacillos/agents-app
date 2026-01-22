@@ -25,18 +25,30 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies for xhtml2pdf/pycairo
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     pkg-config \
+    libcairo2 \
     libcairo2-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libpangoft2-1.0-0 \
+    libgdk-pixbuf-2.0-0 \
+    libffi8 \
+    shared-mime-info \
+    fonts-dejavu-core \
+    fonts-liberation \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+
+
 # Copy the FastAPI server
 COPY api/index.py ./server.py
+COPY api/instructions_prompt.py ./instructions_prompt.py
 
 # Copy the Next.js static export from builder stage
 COPY --from=frontend-builder /app/out ./static
