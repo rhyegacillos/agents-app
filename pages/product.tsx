@@ -273,6 +273,39 @@ function UpgradeModal({
   );
 }
 
+function LimitModal({
+  open,
+  onClose,
+  title,
+  message,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  message: string;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
+        <div className="text-lg font-semibold text-red-200">{title}</div>
+        <p className="mt-2 text-sm text-white/70">
+          {message}
+        </p>
+        <div className="mt-5 flex gap-2">
+          <button
+            type="button"
+            className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConstraintMultiSelectDropdown({
   options,
   value,
@@ -445,9 +478,11 @@ function ConstraintMultiSelectDropdown({
 function IdeaGenerator({
   isPremium = false,
   planLoaded = true,
+  initialUsage = {},
 }: {
   isPremium?: boolean;
   planLoaded?: boolean;
+  initialUsage?: any;
 }) {
   const { getToken } = useAuth();
 
@@ -460,7 +495,38 @@ function IdeaGenerator({
   const [selectedModels, setSelectedModels] = useState<string[]>([MODELS[0].id]);
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
-  const [tokenUsage, setTokenUsage] = useState<any>({});
+  const [tokenUsage, setTokenUsage] = useState<any>(initialUsage);
+  const [limitModal, setLimitModal] = useState({ open: false, title: "", message: "" });
+
+  const apiLimit = isPremium ? 5 : 1;
+  const emailLimit = isPremium ? 10 : 0;
+  const isApiLimited = (tokenUsage.api_calls_count || 0) >= apiLimit;
+  const isEmailLimited = (tokenUsage.emails_sent_count || 0) >= emailLimit;
+
+  useEffect(() => {
+    if (initialUsage && typeof initialUsage.total_tokens === 'number') {
+      setTokenUsage(initialUsage);
+    }
+  }, [initialUsage]);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const jwt = await getToken();
+        if (!jwt) return;
+        const res = await fetch("/api/subscription", {
+          headers: { Authorization: `Bearer ${jwt}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.usage) setTokenUsage(data.usage);
+        }
+      } catch (e) {
+        // silent
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [getToken]);
 
   const [email, setEmail] = useState("");
   const [sendingEmail, setSendingEmail] = useState(false);
@@ -496,6 +562,8 @@ function IdeaGenerator({
       total_tokens: (prev.total_tokens || 0) + (newUsage.total_tokens || 0),
       prompt_tokens: (prev.prompt_tokens || 0) + (newUsage.prompt_tokens || 0),
       completion_tokens: (prev.completion_tokens || 0) + (newUsage.completion_tokens || 0),
+      api_calls_count: newUsage.api_calls_count ?? prev.api_calls_count,
+      emails_sent_count: newUsage.emails_sent_count ?? prev.emails_sent_count,
     }));
   };
 
@@ -593,7 +661,15 @@ function IdeaGenerator({
       const keys = Object.keys(resultsData);
       if (keys.length > 0) setActiveTab(keys[0]);
     } catch (e: any) {
-      alert(`An error occurred: ${e.message}`);
+      if (e.message.includes("429")) {
+        setLimitModal({
+          open: true,
+          title: "Rate Limit Reached",
+          message: "You have reached the API call limit for this minute. Please wait a moment before trying again."
+        });
+      } else {
+        alert(`An error occurred: ${e.message}`);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -781,6 +857,12 @@ function IdeaGenerator({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6 lg:gap-8">
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} onUpgrade={upgradeTo} />
+      <LimitModal 
+        open={limitModal.open} 
+        onClose={() => setLimitModal({ ...limitModal, open: false })} 
+        title={limitModal.title} 
+        message={limitModal.message} 
+      />
 
       {isLoading ? (
         <FullPageLoader
@@ -1148,18 +1230,20 @@ function IdeaGenerator({
               <button
                 type="button"
                 onClick={recommendCombination}
-                disabled={recoLoading}
+                disabled={recoLoading || isApiLimited}
                 className={cx(
                   "w-full rounded-xl border px-3 py-2.5 text-sm font-semibold",
                   "border-black/10 dark:border-white/10",
                   "bg-white/50 dark:bg-white/5",
-                  recoLoading && "opacity-70 cursor-wait",
-                  !recoLoading && "hover:bg-white/70 dark:hover:bg-white/10"
+                  (recoLoading || isApiLimited) && "opacity-70 cursor-not-allowed",
+                  (!recoLoading && !isApiLimited) && "hover:bg-white/70 dark:hover:bg-white/10"
                 )}
               >
                 <span className="inline-flex items-center justify-center gap-2">
                   {recoLoading ? <Spinner className="h-4 w-4" /> : null}
-                  <span>{recoLoading ? "Recommending..." : "Recommend Combination"}</span>
+                  <span>
+                    {recoLoading ? "Recommending..." : isApiLimited ? "Rate Limit Reached" : "Recommend Combination"}
+                  </span>
                   {!isPremium ? (
                     <span className="ml-2 text-[10px] font-semibold text-gray-600 dark:text-gray-400">Premium</span>
                   ) : null}
@@ -1292,15 +1376,17 @@ function IdeaGenerator({
             <button
               type="button"
               onClick={generateIdeas}
-              disabled={isLoading}
+              disabled={isLoading || isApiLimited}
               className={cx(
                 "w-full rounded-xl px-3 py-3 text-sm font-semibold text-white",
-                isLoading ? "bg-gray-400 cursor-wait" : "bg-blue-600 hover:bg-blue-700"
+                (isLoading || isApiLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
               )}
             >
               <span className="inline-flex items-center justify-center gap-2">
                 {isLoading ? <Spinner className="h-4 w-4" /> : null}
-                <span>{isLoading ? "Generating..." : "Generate Ideas"}</span>
+                <span>
+                  {isLoading ? "Generating..." : isApiLimited ? "Rate Limit Reached" : "Generate Ideas"}
+                </span>
               </span>
             </button>
 
@@ -1349,16 +1435,18 @@ function IdeaGenerator({
                   <button
                     type="button"
                     onClick={sendEmail}
-                    disabled={sendingEmail || !email || !isPremium}
+                    disabled={sendingEmail || !email || !isPremium || isEmailLimited}
                     className={cx(
                       "w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-white",
-                      sendingEmail ? "bg-blue-500 cursor-wait" : "bg-blue-600 hover:bg-blue-700",
-                      (!email || sendingEmail || !isPremium) && "disabled:bg-blue-400 opacity-60"
+                      (sendingEmail || isEmailLimited) ? "bg-blue-500 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700",
+                      (!email || !isPremium) && "opacity-60"
                     )}
                   >
                     <span className="inline-flex items-center justify-center gap-2">
                       {sendingEmail ? <Spinner className="h-4 w-4" /> : null}
-                      <span>{sendingEmail ? "Sending..." : "Send Email"}</span>
+                      <span>
+                        {sendingEmail ? "Sending..." : isEmailLimited ? "Daily Limit Reached" : "Send Email"}
+                      </span>
                     </span>
                   </button>
 
@@ -1384,20 +1472,45 @@ function IdeaGenerator({
 
       {/* Main content */}
       <section>
-        <GlassCard className="mb-6 p-4 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Current Usage</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Total tokens used</p>
-          </div>
-          <div className="text-right">
-            <div className="text-lg font-bold text-gray-900 dark:text-white">
-              {(tokenUsage.total_tokens || 0).toLocaleString()}
-              <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
-                {" / " + (isPremium ? "2,000,000" : "100,000")}
-              </span>
+        <GlassCard className="mb-6 p-5">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-4">Current Usage</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              
+              <div className="flex flex-col">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Tokens</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Total usage</p>
+                <div className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+                  {(tokenUsage.total_tokens || 0).toLocaleString()}
+                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
+                    {" / " + (isPremium ? "2M" : "100k")}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-col">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">API Calls</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Last minute</p>
+                <div className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+                  {(tokenUsage.api_calls_count || 0)}
+                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
+                    {" / " + (isPremium ? "5" : "1")}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-col">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Emails</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Today</p>
+                <div className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+                  {(tokenUsage.emails_sent_count || 0)}
+                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
+                    {" / " + (isPremium ? "10" : "0")}
+                  </span>
+                </div>
+              </div>
+
             </div>
-          </div>
-        </GlassCard>
+          </GlassCard>
 
         <GlassCard className="min-h-[680px] p-6 lg:p-8">
           <div className="flex items-start justify-between gap-4">
@@ -1473,6 +1586,7 @@ export default function Product() {
 
   const [isPremium, setIsPremium] = useState(false);
   const [planLoading, setPlanLoading] = useState(true);
+  const [initialUsage, setInitialUsage] = useState<any>({});
 
   const displayName = !isLoaded
     ? ""
@@ -1498,7 +1612,10 @@ export default function Product() {
         const plan = String(data?.plan || "");
         const premiumByPlan = plan === "u:premium_subscription" || plan.includes("premium");
 
-        if (!cancelled) setIsPremium(premiumByFlag || premiumByPlan);
+        if (!cancelled) {
+          setIsPremium(premiumByFlag || premiumByPlan);
+          setInitialUsage(data.usage || {});
+        }
       } catch {
         if (!cancelled) setIsPremium(false);
       } finally {
@@ -1553,7 +1670,7 @@ export default function Product() {
         </div>
 
         <Protect fallback={<IdeaGenerator isPremium={false} planLoaded={true} />}>
-          <IdeaGenerator isPremium={isPremium} planLoaded={!planLoading} />
+          <IdeaGenerator isPremium={isPremium} planLoaded={!planLoading} initialUsage={initialUsage} />
         </Protect>
       </div>
     </main>

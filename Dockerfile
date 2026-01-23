@@ -58,6 +58,9 @@ COPY --from=frontend-builder /app/out ./static
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
+# Create volume for persistent data
+VOLUME /app/data
+
 # Expose port 8000 (FastAPI will serve everything)
 EXPOSE 8000
 

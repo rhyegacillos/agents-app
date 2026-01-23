@@ -29,11 +29,19 @@ from typing import Any, Optional
 
 import logging
 import uuid
+try:
+    from . import db
+except ImportError:
+    import db
 
 
 # --- App Setup ---
 load_dotenv()
 app = FastAPI()
+
+@app.on_event("startup")
+def startup_event():
+    db.init_db()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -523,12 +531,19 @@ def require_premium(creds: HTTPAuthorizationCredentials):
 @app.get("/api/subscription")
 async def subscription(creds=Depends(clerk_guard)):
     decoded = getattr(creds, "decoded", {}) or {}
+    user_id = decoded.get("sub")
     plan = decoded.get("pla") or "u:free_user"
+    
+    # Sync plan/stats
+    db.get_or_create_user(db.get_db(), user_id, plan)
+    stats = db.get_user_stats(user_id)
+    
     return {
-        "user_id": decoded.get("sub"),
+        "user_id": user_id,
         "plan": plan,
         "is_premium": plan in PREMIUM_PLANS,
         "status": decoded.get("sts"),
+        "usage": stats
     }
 
 
@@ -537,7 +552,13 @@ async def subscription(creds=Depends(clerk_guard)):
 @app.post("/api")
 async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
     request_id = str(uuid.uuid4())
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
     print(f"user: {creds.decoded} temp: {request.temperature} top_p: {request.top_p}")
+
+    allowed, msg = db.check_and_increment_api_call(user_id, plan)
+    if not allowed:
+        return JSONResponse(content={"error": msg}, status_code=429)
 
     constraints_text = ", ".join(request.constraints) if request.constraints else "None"
     system_instruction = system_instructions(request.tone)
@@ -631,6 +652,14 @@ async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depen
                 total_usage["completion_tokens"] += usage.get("completion_tokens", 0) or 0
                 total_usage["total_tokens"] += usage.get("total_tokens", 0) or 0
 
+    if total_usage["total_tokens"] > 0:
+        db.track_token_usage(user_id, total_usage["total_tokens"])
+
+    # Include updated limits in response
+    stats = db.get_user_stats(user_id)
+    total_usage["api_calls_count"] = stats["api_calls_count"]
+    total_usage["emails_sent_count"] = stats["emails_sent_count"]
+
     return JSONResponse(content={"results": out_results, "usage": total_usage})
 
 
@@ -646,6 +675,13 @@ async def send_email(
     request: EmailRequest,
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
 ):
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
+
+    allowed, msg = db.check_and_increment_email(user_id, plan)
+    if not allowed:
+        return JSONResponse(content={"error": msg}, status_code=429)
+
     report_html = create_report_html(request)
     pdf_bytes = html_to_pdf_bytes(report_html)
 
@@ -692,6 +728,13 @@ async def recommend_combination(
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard)
 ):
     require_premium(creds)
+    
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
+
+    allowed, msg = db.check_and_increment_api_call(user_id, plan)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=msg)
 
     request_id = str(uuid.uuid4())
 
@@ -708,6 +751,12 @@ async def recommend_combination(
         max_attempts=3,
         request_id=request_id,
     )
+    
+    usage = result.get("usage", {})
+    if usage:
+        total = usage.get("total_tokens", 0)
+        if total > 0:
+            db.track_token_usage(user_id, total)
 
     return RecommendCombinationResponse(
         recommended_constraints=result["recommended_constraints"],
