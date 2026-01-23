@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Protect, UserButton, useAuth, useUser, useClerk } from "@clerk/nextjs";
 
@@ -497,11 +497,48 @@ function IdeaGenerator({
   const [topP, setTopP] = useState(0.9);
   const [tokenUsage, setTokenUsage] = useState<any>(initialUsage);
   const [limitModal, setLimitModal] = useState({ open: false, title: "", message: "" });
+  const [usageNotices, setUsageNotices] = useState<{ id: string; message: string }[]>([]);
+  const noticeTimeouts = useRef<number[]>([]);
 
-  const apiLimit = isPremium ? 5 : 1;
-  const emailLimit = isPremium ? 10 : 0;
+  const apiLimit: number = isPremium ? 5 : 1;
+  const emailLimit: number = isPremium ? 10 : 0;
+  const tokenLimitFree = Number(process.env.NEXT_PUBLIC_TOKEN_LIMIT_FREE ?? "50000");
+  const tokenLimitPremium = Number(process.env.NEXT_PUBLIC_TOKEN_LIMIT_PREMIUM ?? "100000");
+  const tokenLimit = isPremium ? tokenLimitPremium : tokenLimitFree;
+  const formatTokenLimit = (value: number) => {
+    if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
+    if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
+    return String(value);
+  };
+  const tokenLimitLabel = formatTokenLimit(tokenLimit);
   const isApiLimited = (tokenUsage.api_calls_count || 0) >= apiLimit;
   const isEmailLimited = (tokenUsage.emails_sent_count || 0) >= emailLimit;
+  const isTokenLimited = (tokenUsage.total_tokens || 0) >= tokenLimit;
+  const usageTone = (value: number, limit: number) => {
+    if (limit <= 0) return "text-gray-400 dark:text-gray-500";
+    const ratio = value / limit;
+    if (ratio >= 1) return "text-rose-600 dark:text-rose-400";
+    if (ratio >= 0.8) return "text-amber-600 dark:text-amber-400";
+    return "text-gray-900 dark:text-white";
+  };
+  const tokenTone = usageTone(tokenUsage.total_tokens || 0, tokenLimit);
+  const apiTone = usageTone(tokenUsage.api_calls_count || 0, apiLimit);
+  const emailTone = usageTone(tokenUsage.emails_sent_count || 0, emailLimit);
+
+  const pushNotice = useCallback((message: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setUsageNotices((prev) => [...prev, { id, message }].slice(-3));
+    const timeoutId = window.setTimeout(() => {
+      setUsageNotices((prev) => prev.filter((notice) => notice.id !== id));
+    }, 6500);
+    noticeTimeouts.current.push(timeoutId);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      noticeTimeouts.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    };
+  }, []);
 
   useEffect(() => {
     if (initialUsage && typeof initialUsage.total_tokens === 'number') {
@@ -519,14 +556,36 @@ function IdeaGenerator({
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.usage) setTokenUsage(data.usage);
+          if (data.usage) {
+            setTokenUsage((prev: any) => {
+              const next = { ...prev, ...data.usage };
+              const prevApi = prev.api_calls_count || 0;
+              const nextApi = next.api_calls_count || 0;
+              const prevEmails = prev.emails_sent_count || 0;
+              const nextEmails = next.emails_sent_count || 0;
+              const prevTokens = prev.total_tokens || 0;
+              const nextTokens = next.total_tokens || 0;
+
+              if (prevApi > 0 && nextApi < prevApi) {
+                pushNotice(`API limit refreshed — ${apiLimit} call${apiLimit === 1 ? "" : "s"} available this minute.`);
+              }
+              if (emailLimit > 0 && prevEmails > 0 && nextEmails < prevEmails) {
+                pushNotice(`Email quota refreshed — ${emailLimit} email${emailLimit === 1 ? "" : "s"} available today.`);
+              }
+              if (prevTokens > 0 && nextTokens < prevTokens) {
+                pushNotice(`Monthly token quota refreshed — ${tokenLimitLabel} tokens available.`);
+              }
+
+              return next;
+            });
+          }
         }
       } catch (e) {
         // silent
       }
-    }, 15000);
+    }, 3000);
     return () => clearInterval(interval);
-  }, [getToken]);
+  }, [apiLimit, emailLimit, getToken, pushNotice, tokenLimitLabel]);
 
   const [email, setEmail] = useState("");
   const [sendingEmail, setSendingEmail] = useState(false);
@@ -863,6 +922,23 @@ function IdeaGenerator({
         title={limitModal.title} 
         message={limitModal.message} 
       />
+
+      {usageNotices.length ? (
+        <div
+          className="fixed bottom-4 right-4 z-50 flex w-full max-w-xs flex-col gap-2 pointer-events-none"
+          role="status"
+          aria-live="polite"
+        >
+          {usageNotices.map((notice) => (
+            <div
+              key={notice.id}
+              className="rounded-xl border border-white/10 bg-slate-950/95 px-4 py-3 text-xs text-white/85 shadow-xl backdrop-blur"
+            >
+              {notice.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {isLoading ? (
         <FullPageLoader
@@ -1230,19 +1306,19 @@ function IdeaGenerator({
               <button
                 type="button"
                 onClick={recommendCombination}
-                disabled={recoLoading || isApiLimited}
+                disabled={recoLoading || isApiLimited || isTokenLimited}
                 className={cx(
                   "w-full rounded-xl border px-3 py-2.5 text-sm font-semibold",
                   "border-black/10 dark:border-white/10",
                   "bg-white/50 dark:bg-white/5",
-                  (recoLoading || isApiLimited) && "opacity-70 cursor-not-allowed",
-                  (!recoLoading && !isApiLimited) && "hover:bg-white/70 dark:hover:bg-white/10"
+                  (recoLoading || isApiLimited || isTokenLimited) && "opacity-70 cursor-not-allowed",
+                  (!recoLoading && !isApiLimited && !isTokenLimited) && "hover:bg-white/70 dark:hover:bg-white/10"
                 )}
               >
                 <span className="inline-flex items-center justify-center gap-2">
                   {recoLoading ? <Spinner className="h-4 w-4" /> : null}
                   <span>
-                    {recoLoading ? "Recommending..." : isApiLimited ? "Rate Limit Reached" : "Recommend Combination"}
+                    {recoLoading ? "Recommending..." : isTokenLimited ? "Token Limit Reached" : isApiLimited ? "Rate Limit Reached" : "Recommend Combination"}
                   </span>
                   {!isPremium ? (
                     <span className="ml-2 text-[10px] font-semibold text-gray-600 dark:text-gray-400">Premium</span>
@@ -1376,16 +1452,16 @@ function IdeaGenerator({
             <button
               type="button"
               onClick={generateIdeas}
-              disabled={isLoading || isApiLimited}
+              disabled={isLoading || isApiLimited || isTokenLimited}
               className={cx(
                 "w-full rounded-xl px-3 py-3 text-sm font-semibold text-white",
-                (isLoading || isApiLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
               )}
             >
               <span className="inline-flex items-center justify-center gap-2">
                 {isLoading ? <Spinner className="h-4 w-4" /> : null}
                 <span>
-                  {isLoading ? "Generating..." : isApiLimited ? "Rate Limit Reached" : "Generate Ideas"}
+                  {isLoading ? "Generating..." : isTokenLimited ? "Token Limit Reached" : isApiLimited ? "Rate Limit Reached" : "Generate Ideas"}
                 </span>
               </span>
             </button>
@@ -1472,45 +1548,38 @@ function IdeaGenerator({
 
       {/* Main content */}
       <section>
-        <GlassCard className="mb-6 p-5">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-4">Current Usage</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <GlassCard className="mb-4 p-2 sm:p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Current Usage</h2>
+            <div className="flex flex-wrap items-center gap-3 text-[11px]">
               
-              <div className="flex flex-col">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Tokens</h3>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Total usage</p>
-                <div className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-gray-700 dark:text-gray-300">Tokens</span>
+                <span className={cx("font-semibold", tokenTone)}>
                   {(tokenUsage.total_tokens || 0).toLocaleString()}
-                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
-                    {" / " + (isPremium ? "2M" : "100k")}
-                  </span>
-                </div>
+                </span>
+                <span className="text-gray-500 dark:text-gray-400">/ {tokenLimitLabel}</span>
               </div>
 
-              <div className="flex flex-col">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">API Calls</h3>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Last minute</p>
-                <div className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-gray-700 dark:text-gray-300">API</span>
+                <span className={cx("font-semibold", apiTone)}>
                   {(tokenUsage.api_calls_count || 0)}
-                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
-                    {" / " + (isPremium ? "5" : "1")}
-                  </span>
-                </div>
+                </span>
+                <span className="text-gray-500 dark:text-gray-400">/ {isPremium ? "5" : "1"}</span>
               </div>
 
-              <div className="flex flex-col">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Emails</h3>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Today</p>
-                <div className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-gray-700 dark:text-gray-300">Email</span>
+                <span className={cx("font-semibold", emailTone)}>
                   {(tokenUsage.emails_sent_count || 0)}
-                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
-                    {" / " + (isPremium ? "10" : "0")}
-                  </span>
-                </div>
+                </span>
+                <span className="text-gray-500 dark:text-gray-400">/ {isPremium ? "10" : "0"}</span>
               </div>
 
             </div>
-          </GlassCard>
+          </div>
+        </GlassCard>
 
         <GlassCard className="min-h-[680px] p-6 lg:p-8">
           <div className="flex items-start justify-between gap-4">

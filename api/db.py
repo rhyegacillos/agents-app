@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 
 DB_PATH = "data/usage.db"
 
+TOKEN_LIMIT_FREE = int(os.getenv("TOKEN_LIMIT_FREE", "50000"))
+TOKEN_LIMIT_PREMIUM = int(os.getenv("TOKEN_LIMIT_PREMIUM", "100000"))
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -67,11 +70,36 @@ def get_user(conn, user_id):
     c.execute("SELECT * FROM user_usage WHERE user_id = ?", (user_id,))
     return c.fetchone()
 
+def get_token_limit(plan):
+    return TOKEN_LIMIT_PREMIUM if "premium" in plan else TOKEN_LIMIT_FREE
+
+def _reset_tokens_if_new_month(conn, user_id, last_month):
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    if last_month != current_month:
+        conn.execute('''
+            UPDATE user_usage 
+            SET total_tokens = 0, tokens_last_reset_date = ?
+            WHERE user_id = ?
+        ''', (current_month, user_id))
+        conn.commit()
+        return True, current_month
+    return False, current_month
+
 def check_and_increment_api_call(user_id, plan):
     conn = get_db()
     try:
         user = get_or_create_user(conn, user_id, plan)
         
+        last_month = user["tokens_last_reset_date"] if "tokens_last_reset_date" in user.keys() else ""
+        total_tokens = user["total_tokens"] or 0
+        did_reset, _ = _reset_tokens_if_new_month(conn, user_id, last_month)
+        if did_reset:
+            total_tokens = 0
+
+        token_limit = get_token_limit(plan)
+        if total_tokens >= token_limit:
+            return False, f"Monthly token limit exceeded. Limit: {token_limit} tokens."
+
         limit = 5 if "premium" in plan else 1
         now = time.time()
         window_start = user["api_window_start"]
@@ -173,6 +201,12 @@ def get_user_stats(user_id):
         if not row:
             return {"total_tokens": 0, "api_calls_count": 0, "emails_sent_count": 0}
             
+        last_month = row["tokens_last_reset_date"] if "tokens_last_reset_date" in row.keys() else ""
+        total_tokens = row["total_tokens"] or 0
+        did_reset, _ = _reset_tokens_if_new_month(conn, user_id, last_month)
+        if did_reset:
+            total_tokens = 0
+
         # Lazy update for view: check if API window expired
         now = time.time()
         window_start = row["api_window_start"]
@@ -189,7 +223,7 @@ def get_user_stats(user_id):
             api_count = 0
             
         return {
-            "total_tokens": row["total_tokens"], 
+            "total_tokens": total_tokens, 
             "api_calls_count": api_count, 
             "emails_sent_count": row["emails_sent_count"]
         }

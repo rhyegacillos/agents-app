@@ -534,8 +534,13 @@ async def subscription(creds=Depends(clerk_guard)):
     user_id = decoded.get("sub")
     plan = decoded.get("pla") or "u:free_user"
     
+    # print(f"subscription poll: {user_id}") # Optional: debug log
+
     # Sync plan/stats
-    db.get_or_create_user(db.get_db(), user_id, plan)
+    conn = db.get_db()
+    db.get_or_create_user(conn, user_id, plan)
+    conn.close()
+    
     stats = db.get_user_stats(user_id)
     
     return {
