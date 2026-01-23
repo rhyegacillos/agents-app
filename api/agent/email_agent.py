@@ -56,7 +56,7 @@ RULES (NON-NEGOTIABLE):
 - You MUST call send_email exactly once.
 - You MUST call log_action exactly once.
 - Salutation MUST be: "Hi There,"
-- Signature MUST be: "Ideagen"
+- Signature MUST be: "Ideagen" and must be bold format
 - You MUST include this disclaimer verbatim:
   "This is an auto-generated email. Please do not reply."
 - Output HTML only inside the send_email tool.

@@ -45,17 +45,24 @@ async def generate_with_fallback(
         logger.info(f"llm.try provider={provider} model={model} try_index={idx} request_id={request_id}")
 
         try:
-            text = await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 generate(client, model, system_instruction, user_content),
                 timeout=timeout_s,
             )
+            
+            # handle tuple (text, usage) or string (legacy/error)
+            if isinstance(result, tuple) and len(result) == 2:
+                text, usage = result
+            else:
+                text, usage = result, {}
+
             latency_ms = int((time.perf_counter() - t0) * 1000)
             logger.info(
                 f"llm.success provider={provider} model={model} try_index={idx} "
                 f"fallback_used={idx>1} request_id={request_id}"
             )
 
-            return text, {"provider": provider, "model_used": model, "fallback_used": idx > 1, "try_index": idx}
+            return text, {"provider": provider, "model_used": model, "fallback_used": idx > 1, "try_index": idx, "usage": usage}
 
         except Exception as e:
             latency_ms = int((time.perf_counter() - t0) * 1000)

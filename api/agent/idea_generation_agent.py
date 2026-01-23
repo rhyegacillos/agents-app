@@ -111,7 +111,11 @@ async def generate_idea_agentic(
                 f"idea_agent.success request_id={request_id} provider={provider} model={primary_model} "
                 f"attempt={attempt} total_ms={total_ms}"
             )
-            return {"text": last_text, "meta": {"attempts": attempt, "fallback_used": fb_meta.get("fallback_used", False)}}
+            return {
+                "text": last_text, 
+                "meta": {"attempts": attempt, "fallback_used": fb_meta.get("fallback_used", False)},
+                "usage": fb_meta.get("usage", {})
+            }
 
         logger.warning(
             f"idea_agent.validation_failed request_id={request_id} provider={provider} model={primary_model} "

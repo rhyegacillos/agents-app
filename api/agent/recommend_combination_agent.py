@@ -171,6 +171,7 @@ Rules for reason_html:
 """.strip()
 
     last_errors: List[str] = []
+    usage: Dict[str, Any] = {}
 
     for attempt in range(1, max_attempts + 1):
         attempt_t0 = time.perf_counter()
@@ -193,7 +194,11 @@ Rules for reason_html:
         )
 
         try:
-            raw = await generate(client, model, system_prompt, base_user_prompt + correction)
+            result = await generate(client, model, system_prompt, base_user_prompt + correction)
+            if isinstance(result, tuple):
+                raw, usage = result
+            else:
+                raw, usage = result, {}
         except Exception as e:
             latency_ms = int((time.perf_counter() - attempt_t0) * 1000)
             logger.exception(
@@ -254,6 +259,7 @@ Rules for reason_html:
                 "recommended_persona": recommended_persona,
                 "reason_html": reason_html,
                 "meta": {"attempts": attempt, "fallback_used": False},
+                "usage": usage,
             }
 
         # Log validation failure (don’t log full raw to avoid noise/secrets)
@@ -295,4 +301,5 @@ Rules for reason_html:
         "recommended_persona": fallback_persona,
         "reason_html": _fallback_reason_html(),
         "meta": {"attempts": max_attempts, "fallback_used": True, "errors": last_errors},
+        "usage": usage,
     }

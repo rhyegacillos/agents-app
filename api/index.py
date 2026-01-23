@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 import re
 from token import OP
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCredentials
@@ -49,10 +49,11 @@ clerk_guard = ClerkHTTPBearer(clerk_config)
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 deepseek_client = AsyncOpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os.getenv("DEEPSEEK_API_URL"))
 grok_client = AsyncOpenAI(api_key=os.getenv("GROK_API_KEY"), base_url=os.getenv("GROK_API_URL"))
+google_client = AsyncOpenAI(api_key=os.getenv("GEMINI_API_KEY"), base_url=os.getenv("GEMINI_API_URL"))
 resend.api_key = os.getenv("RESEND_API_KEY")
 GROK_MODEL = "grok-4-1-fast-reasoning"
 GEMINI_MODEL = "gemini-2.5-pro"
-OPENAI_MODEL = "gpt-5-nano"
+OPENAI_MODEL = "gpt-5-mini"
 DEEPSEEK_MODEL = "deepseek-chat"
 GROK_MODEL_FALLBACK = "grok-4-fast-non-reasoning"
 GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
@@ -96,7 +97,9 @@ class IdeaRequest(BaseModel):
     industry: str
     constraints: List[str] = []
     tone: str
-    models: List[str]
+    models: Optional[List[str]] = None
+    temperature: Optional[float] = 0.7
+    top_p: Optional[float] = 0.9
 
 
 class EmailRequest(ReportData):
@@ -115,6 +118,7 @@ class RecommendCombinationResponse(BaseModel):
     recommended_constraints: List[str]
     recommended_persona: str
     reason_html: str
+    usage: Optional[Dict[str, int]] = None
 
 
 def build_pdf_filename(industry: str) -> str:
@@ -374,36 +378,91 @@ def html_to_pdf_bytes(html_content: str) -> bytes:
     return pdf_bytes
 
 # --- AI Generation Helpers ---
-async def generate_openai_compatible(client, model, system_instruction, user_content):
-    r = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_content},
-        ],
-    )
-    return r.choices[0].message.content or ""
-
-
-async def generate_gemini(model, system_instruction, user_content):
+async def generate_openai_compatible(client, model, system_instruction, user_content, temperature=0.7, top_p=0.9):
     try:
+        r = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=temperature,
+            top_p=top_p,
+        )
+        usage = {}
+        if r.usage:
+            usage = {
+                "prompt_tokens": r.usage.prompt_tokens,
+                "completion_tokens": r.usage.completion_tokens,
+                "total_tokens": r.usage.total_tokens
+            }
+        return r.choices[0].message.content or "", usage
+    except Exception as e:
+        msg = str(e).lower()
+        # Handle "Unsupported value" or invalid param errors by retrying with defaults
+        if "unsupported value" in msg or "parameter" in msg or "temperature" in msg:
+            print(f"Model {model} does not support custom params. Retrying with defaults. Error: {e}")
+            r = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_content},
+                ]
+            )
+            usage = {}
+            if r.usage:
+                usage = {
+                    "prompt_tokens": r.usage.prompt_tokens,
+                    "completion_tokens": r.usage.completion_tokens,
+                    "total_tokens": r.usage.total_tokens
+                }
+            return r.choices[0].message.content or "", usage
+        raise e
+
+
+async def generate_gemini(model, system_instruction, user_content, temperature=0.7, top_p=0.9):
+    try:
+        config = genai.types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=top_p
+        )
         r = await gemini_client.aio.models.generate_content(
             model=model,
-            contents=f"{system_instruction}\n\n{user_content}"
+            contents=f"{system_instruction}\n\n{user_content}",
+            config=config
         )
-        return r.text
+        usage = {}
+        if r.usage_metadata:
+            usage = {
+                "prompt_tokens": r.usage_metadata.prompt_token_count,
+                "completion_tokens": r.usage_metadata.candidates_token_count,
+                "total_tokens": r.usage_metadata.total_token_count
+            }
+        return r.text, usage
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
             try:
-                fallback_model = GEMINI_FALLBACK_MODEL
+                fallback_model = GEMINI_MODEL_FALLBACK
+                config = genai.types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=top_p
+                )
                 r = await gemini_client.aio.models.generate_content(
                     model=fallback_model,
-                    contents=f"{system_instruction}\n\n{user_content}"
+                    contents=f"{system_instruction}\n\n{user_content}",
+                    config=config
                 )
-                return r.text
+                usage = {}
+                if r.usage_metadata:
+                    usage = {
+                        "prompt_tokens": r.usage_metadata.prompt_token_count,
+                        "completion_tokens": r.usage_metadata.candidates_token_count,
+                        "total_tokens": r.usage_metadata.total_token_count
+                    }
+                return r.text, usage
             except Exception as e2:
-                return f"Error - Limit Reach: {e2}"
-        return f"Error: {e}"
+                return f"Error - Limit Reach: {e2}", {}
+        return f"Error: {e}", {}
 
 
 def _extract_json_object(text: str) -> Optional[dict]:
@@ -433,15 +492,52 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
     return None
 
+PREMIUM_PLANS = {
+    "u:premium_subscription",
+    # keep these if you might use them later:
+    "u:premium",
+    "u:pro",
+    "u:premium_user",
+}
+
+def get_user_plan(creds):
+    decoded = getattr(creds, "decoded", {}) or {}
+    return decoded.get("pla") or "u:free_user"
+
+def is_premium(creds) -> bool:
+    plan = get_user_plan(creds)
+    return plan in PREMIUM_PLANS
+
+
+def require_premium(creds: HTTPAuthorizationCredentials):
+    if not is_premium(creds):
+        raise HTTPException(status_code=402, detail="Premium required")
+
+
 
 # --- API Endpoints ---
 # index.py (agentic /api replacement)
 # index.py - updated /api endpoint using FALLBACK_CHAINS + agentic generation + partial success
 
 
+@app.get("/api/subscription")
+async def subscription(creds=Depends(clerk_guard)):
+    decoded = getattr(creds, "decoded", {}) or {}
+    plan = decoded.get("pla") or "u:free_user"
+    return {
+        "user_id": decoded.get("sub"),
+        "plan": plan,
+        "is_premium": plan in PREMIUM_PLANS,
+        "status": decoded.get("sts"),
+    }
+
+
+
+
 @app.post("/api")
 async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
     request_id = str(uuid.uuid4())
+    print(f"user: {creds.decoded} temp: {request.temperature} top_p: {request.top_p}")
 
     constraints_text = ", ".join(request.constraints) if request.constraints else "None"
     system_instruction = system_instructions(request.tone)
@@ -461,22 +557,27 @@ async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depen
 
     async def run_one(model_id: str):
         provider, chain = FALLBACK_CHAINS.get(model_id, (infer_provider(model_id), [model_id]))
+        
+        temp = request.temperature if request.temperature is not None else 0.7
+        tp = request.top_p if request.top_p is not None else 0.9
+
+        print(f"model: {model_id} provider: {provider} chain: {chain} temp: {temp} top_p: {tp}")
 
         # Choose client + generator per provider
         if provider == "grok":
             client = grok_client
-            gen = generate_openai_compatible
+            async def gen(c, m, s, u): return await generate_openai_compatible(c, m, s, u, temperature=temp, top_p=tp)
         elif provider == "openai":
             client = openai_client
-            gen = generate_openai_compatible
+            async def gen(c, m, s, u): return await generate_openai_compatible(c, m, s, u, temperature=temp, top_p=tp)
         elif provider == "deepseek":
             client = deepseek_client
-            gen = generate_openai_compatible
+            async def gen(c, m, s, u): return await generate_openai_compatible(c, m, s, u, temperature=temp, top_p=tp)
         elif provider == "gemini":
-            client = None
+            client = google_client
 
             async def gen(_client, _model, _sys, _user):
-                return await generate_gemini(_model, _sys, _user)
+                return await generate_gemini(_model, _sys, _user, temperature=temp, top_p=tp)
         else:
             return {"text": "Error: Unknown model/provider.", "meta": {"fallback_used": True}}
 
@@ -492,22 +593,45 @@ async def idea(request: IdeaRequest, creds: HTTPAuthorizationCredentials = Depen
             request_id=request_id,
         )
 
-    models = request.models or []
-    if not models:
-        return JSONResponse(content={"error": "No valid models selected."}, status_code=400)
+    requested_labels = request.models or []
+    models_to_run = []
 
-    tasks = [run_one(m) for m in models]
+    if not requested_labels:
+        models_to_run = list(FALLBACK_CHAINS.keys())
+    else:
+        # Resolve labels (providers) to actual model IDs from FALLBACK_CHAINS
+        for label in requested_labels:
+            label_lower = label.lower()
+            for model_id, (provider, _) in FALLBACK_CHAINS.items():
+                if provider.lower() == label_lower:
+                    models_to_run.append(model_id)
+                    break
+        
+        # fallback if nothing matched (unlikely if frontend is synced, but safe)
+        if not models_to_run:
+            print(f"Warning: No valid models found for labels {requested_labels}")
+            # Optional: return error or default to all? 
+            # Let's default to all to be safe / nice
+            models_to_run = list(FALLBACK_CHAINS.keys())
+
+    tasks = [run_one(m) for m in models_to_run]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Keep same response shape: { "<selected_model_id>": "<html_output>" }
-    out = {}
-    for model_id, r in zip(models, results):
-        if isinstance(r, Exception):
-            out[model_id] = "Error: Model call failed."
-        else:
-            out[model_id] = r.get("text", "Error: Empty response.")
+    out_results = {}
+    total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    return JSONResponse(content=out)
+    for model_id, r in zip(models_to_run, results):
+        if isinstance(r, Exception):
+            out_results[model_id] = "Error: Model call failed."
+        else:
+            out_results[model_id] = r.get("text", "Error: Empty response.")
+            usage = r.get("usage", {})
+            if usage:
+                total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0) or 0
+                total_usage["completion_tokens"] += usage.get("completion_tokens", 0) or 0
+                total_usage["total_tokens"] += usage.get("total_tokens", 0) or 0
+
+    return JSONResponse(content={"results": out_results, "usage": total_usage})
 
 
 @app.post("/api/download-pdf")
@@ -536,18 +660,7 @@ async def send_email(
     # enforced wrapper (final authority)
     final_html = f"""
     <div style="font-family: Arial, sans-serif; font-size:14px; color:#111;">
-      <p>Hi There,</p>
-
       {agent_result["html_body"]}
-
-      <p style="margin-top:24px;">
-        Best regards,<br/>
-        <strong>Ideagen</strong>
-      </p>
-
-      <p style="font-size:12px;color:#666;">
-        This is an auto-generated email. Please do not reply.
-      </p>
     </div>
     """
 
@@ -578,6 +691,8 @@ async def recommend_combination(
     request: RecommendCombinationRequest,
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard)
 ):
+    require_premium(creds)
+
     request_id = str(uuid.uuid4())
 
     allowed_constraints = request.constraints or []
@@ -598,6 +713,7 @@ async def recommend_combination(
         recommended_constraints=result["recommended_constraints"],
         recommended_persona=result["recommended_persona"],
         reason_html=result["reason_html"],
+        usage=result.get("usage", {}),
     )
 
     
