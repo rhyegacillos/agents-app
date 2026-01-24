@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { Protect, UserButton, useAuth, useUser, useClerk } from "@clerk/nextjs";
 
@@ -78,6 +79,45 @@ const MODELS = [
 ];
 
 type IdeaResults = { [key: string]: string };
+type SavedResultSummary = {
+  id: number;
+  created_at: string;
+  industry?: string;
+  tone?: string;
+  constraints?: string[];
+  models?: string[];
+  model_count?: number;
+};
+type CompareResult = {
+  comparison_id?: number;
+  created_at?: string;
+  run_a_id: number;
+  run_b_id: number;
+  winner_run_id: number | null;
+  comparison: {
+    winner: "A" | "B" | "tie";
+    summary: string;
+    key_changes: string[];
+    winner_rationale: string;
+    risks?: string[];
+  };
+  cached?: boolean;
+};
+type SavedComparisonSummary = {
+  id: number;
+  created_at: string;
+  run_a_id: number;
+  run_b_id: number;
+  winner_run_id: number | null;
+};
+type SavedReportSummary = {
+  id: number;
+  created_at: string;
+  run_ids: number[];
+  summary?: string;
+  top_run_id?: number | null;
+  model?: string;
+};
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -123,11 +163,24 @@ function FullPageLoader({
   title,
   subtitle,
   chips,
+  note,
+  tip,
 }: {
   title: string;
   subtitle?: string;
   chips?: string[];
+  note?: string;
+  tip?: string;
 }) {
+  const resolvedNote =
+    note === undefined
+      ? "Reasoning models may take longer. Keep this tab open — results will appear automatically."
+      : note;
+  const resolvedTip =
+    tip === undefined
+      ? "Tip: selecting fewer models returns faster."
+      : tip;
+
   return (
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 backdrop-blur-lg p-6"
@@ -177,13 +230,15 @@ function FullPageLoader({
                     </div>
                   ) : null}
 
-                  <div className="mt-6 text-sm text-white/60">
-                    Reasoning models may take longer. Keep this tab open — results will appear automatically.
-                  </div>
+                  {resolvedNote ? (
+                    <div className="mt-6 text-sm text-white/60">
+                      {resolvedNote}
+                    </div>
+                  ) : null}
 
                   <div className="mt-6 border-t border-white/10 pt-5 flex items-center justify-between">
                     <div className="text-xs text-white/50">
-                      Tip: selecting fewer models returns faster.
+                      {resolvedTip}
                     </div>
                     <div className="text-xs font-semibold text-white/70">IdeaGen</div>
                   </div>
@@ -303,6 +358,152 @@ function LimitModal({
         </div>
       </div>
     </div>
+  );
+}
+
+function ReportModal({
+  open,
+  onClose,
+  selectionSummary,
+  output,
+  setOutput,
+  email,
+  setEmail,
+  onSubmit,
+  loading,
+  useAllRuns,
+  setUseAllRuns,
+  includeDiffMemo,
+  setIncludeDiffMemo,
+  canIncludeDiffMemo,
+  canSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  selectionSummary: string;
+  output: "pdf" | "email" | "both";
+  setOutput: (value: "pdf" | "email" | "both") => void;
+  email: string;
+  setEmail: (value: string) => void;
+  onSubmit: () => void;
+  loading: boolean;
+  useAllRuns: boolean;
+  setUseAllRuns: (value: boolean) => void;
+  includeDiffMemo: boolean;
+  setIncludeDiffMemo: (value: boolean) => void;
+  canIncludeDiffMemo: boolean;
+  canSubmit: boolean;
+}) {
+  if (!open) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-white/95 p-5 shadow-2xl backdrop-blur dark:bg-slate-950/95">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white">Rank Report</h3>
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+              Our agent orchestrates the ranking and produces a decision-ready summary.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-black/10 dark:border-white/10 px-2 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 px-3 py-2 text-xs text-gray-700 dark:text-gray-200 space-y-3">
+          <div>
+            <div className="font-semibold">Selected runs {useAllRuns ? "(all)" : ""}</div>
+            <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">{selectionSummary}</div>
+          </div>
+          <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={useAllRuns}
+              onChange={(e) => setUseAllRuns(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>Include all saved results.</span>
+          </label>
+          <label className={cx(
+            "flex items-start gap-2 text-[11px]",
+            canIncludeDiffMemo ? "text-gray-600 dark:text-gray-300" : "text-gray-400 dark:text-gray-500"
+          )}>
+            <input
+              type="checkbox"
+              checked={includeDiffMemo}
+              onChange={(e) => setIncludeDiffMemo(e.target.checked)}
+              disabled={!canIncludeDiffMemo}
+              className="mt-0.5"
+            />
+            <span>Include Diff Memo (available when exactly two runs are selected).</span>
+          </label>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          <div className="text-xs font-semibold text-gray-800 dark:text-gray-200">Delivery options</div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {(["pdf", "email", "both"] as const).map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => setOutput(opt)}
+                className={cx(
+                  "rounded-xl border px-3 py-2 text-xs font-semibold",
+                  "border-black/10 dark:border-white/10",
+                  output === opt
+                    ? "bg-blue-600 text-white"
+                    : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                )}
+              >
+                {opt === "pdf" ? "PDF download" : opt === "email" ? "Email only" : "PDF + email"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {(output === "email" || output === "both") ? (
+          <div className="mt-4">
+            <label className="block text-xs font-semibold text-gray-800 dark:text-gray-200 mb-2">
+              Email address
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@company.com"
+              className="w-full rounded-xl border px-3 py-2 text-sm outline-none bg-white/70 dark:bg-white/5 border-black/10 dark:border-white/10 focus:ring-2 focus:ring-blue-500/40 text-gray-900 dark:text-gray-100"
+            />
+          </div>
+        ) : null}
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-black/10 dark:border-white/10 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={loading || !canSubmit}
+            className={cx(
+              "rounded-xl px-4 py-2 text-xs font-semibold text-white",
+              loading || !canSubmit ? "bg-slate-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+            )}
+          >
+            {loading ? "Generating..." : "Generate report"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -485,6 +686,8 @@ function IdeaGenerator({
   initialUsage?: any;
 }) {
   const { getToken } = useAuth();
+  const { openUserProfile, openSignIn } = useClerk();
+  const { isSignedIn } = useUser();
 
   const [results, setResults] = useState<IdeaResults>({});
   const [isLoading, setIsLoading] = useState(false);
@@ -499,11 +702,38 @@ function IdeaGenerator({
   const [limitModal, setLimitModal] = useState({ open: false, title: "", message: "" });
   const [usageNotices, setUsageNotices] = useState<{ id: string; message: string }[]>([]);
   const noticeTimeouts = useRef<number[]>([]);
+  const [savedResults, setSavedResults] = useState<SavedResultSummary[]>([]);
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [savingResults, setSavingResults] = useState(false);
+  const [loadingSavedId, setLoadingSavedId] = useState<number | null>(null);
+  const [deletingSavedId, setDeletingSavedId] = useState<number | null>(null);
+  const [savedUsageBytes, setSavedUsageBytes] = useState(0);
+  const [savedLimitBytes, setSavedLimitBytes] = useState(0);
+  const [savedPanelOpen, setSavedPanelOpen] = useState(false);
+  const [savedPanelPos, setSavedPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const savedPanelRef = useRef<HTMLDivElement | null>(null);
+  const savedButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [compareSelection, setCompareSelection] = useState<number[]>([]);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [savedComparisons, setSavedComparisons] = useState<SavedComparisonSummary[]>([]);
+  const [comparisonsLoading, setComparisonsLoading] = useState(false);
+  const [savedReports, setSavedReports] = useState<SavedReportSummary[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportDownloadId, setReportDownloadId] = useState<number | null>(null);
+  const [reportSelection, setReportSelection] = useState<number[]>([]);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportOutput, setReportOutput] = useState<"pdf" | "email" | "both">("pdf");
+  const [reportEmail, setReportEmail] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
+  const [useAllRuns, setUseAllRuns] = useState(false);
+  const [includeDiffMemo, setIncludeDiffMemo] = useState(false);
 
   const apiLimit: number = isPremium ? 5 : 1;
   const emailLimit: number = isPremium ? 10 : 0;
   const tokenLimitFree = Number(process.env.NEXT_PUBLIC_TOKEN_LIMIT_FREE ?? "50000");
-  const tokenLimitPremium = Number(process.env.NEXT_PUBLIC_TOKEN_LIMIT_PREMIUM ?? "100000");
+  const tokenLimitPremium = Number(process.env.NEXT_PUBLIC_TOKEN_LIMIT_PREMIUM ?? "500000");
   const tokenLimit = isPremium ? tokenLimitPremium : tokenLimitFree;
   const formatTokenLimit = (value: number) => {
     if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
@@ -524,6 +754,17 @@ function IdeaGenerator({
   const tokenTone = usageTone(tokenUsage.total_tokens || 0, tokenLimit);
   const apiTone = usageTone(tokenUsage.api_calls_count || 0, apiLimit);
   const emailTone = usageTone(tokenUsage.emails_sent_count || 0, emailLimit);
+  const isStorageLimited = savedLimitBytes > 0 && savedUsageBytes >= savedLimitBytes;
+  const formatBytes = (value: number) => {
+    if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)}MB`;
+    if (value >= 1024) return `${Math.round(value / 1024)}KB`;
+    return `${value}B`;
+  };
+  const storageTone = usageTone(savedUsageBytes, savedLimitBytes);
+  const storagePercent = savedLimitBytes > 0
+    ? Math.min(100, Math.round((savedUsageBytes / savedLimitBytes) * 100))
+    : 0;
 
   const pushNotice = useCallback((message: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -541,10 +782,143 @@ function IdeaGenerator({
   }, []);
 
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const formatSavedDate = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString();
+  };
+  const labelForPersona = (toneId: string) => {
+    if (!toneId) return "Neutral";
+    return PERSONAS.find((p) => p.id === toneId)?.label ?? toneId;
+  };
+  const formatConstraints = (items: string[] = []) => {
+    if (!items.length) return "None";
+    const first = items.slice(0, 2);
+    const extra = items.length - first.length;
+    return extra > 0 ? `${first.join(", ")} +${extra}` : first.join(", ");
+  };
+  const formatModelList = (models: string[] = []) => {
+    if (!models.length) return "None";
+    const labels = Array.from(new Set(models.map(labelForModelId)));
+    const first = labels.slice(0, 2);
+    const extra = labels.length - first.length;
+    return extra > 0 ? `${first.join(", ")} +${extra}` : first.join(", ");
+  };
+  const getSavedById = (id: number) => savedResults.find((item) => item.id === id);
+  const formatRunLabel = (id: number) => {
+    const item = getSavedById(id);
+    if (!item) return `Run ${id}`;
+    const industry = item.industry || "Saved result";
+    return `${industry} • ${formatSavedDate(item.created_at)}`;
+  };
+  const reportSelectionSummary = useAllRuns
+    ? "All saved runs (server will include your full history)."
+    : reportSelection.length
+      ? reportSelection.map(formatRunLabel).join(" • ")
+      : "No runs selected";
+  const reportHasSelection = useAllRuns || reportSelection.length > 0;
+  const canIncludeDiffMemo = !useAllRuns && reportSelection.length === 2;
+  const formatWinnerLabel = (comparison: SavedComparisonSummary) => {
+    if (!comparison.winner_run_id) return "Tie";
+    return formatRunLabel(comparison.winner_run_id);
+  };
+
+  const fetchSavedResults = useCallback(async () => {
+    try {
+      setSavedLoading(true);
+      const jwt = await getToken();
+      if (!jwt) return;
+      const res = await fetch("/api/saved-results?limit=6", {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`saved_results_${res.status}`);
+      const data = await res.json();
+      setSavedResults(Array.isArray(data?.results) ? data.results : []);
+      setSavedUsageBytes(Number(data?.usage_bytes || 0));
+      setSavedLimitBytes(Number(data?.limit_bytes || 0));
+      const nextIds = new Set((Array.isArray(data?.results) ? data.results : []).map((r: any) => r.id));
+      setCompareSelection((prev) => prev.filter((id) => nextIds.has(id)));
+      setReportSelection((prev) => prev.filter((id) => nextIds.has(id)));
+    } catch {
+      setSavedResults([]);
+      setSavedUsageBytes(0);
+      setSavedLimitBytes(0);
+      setCompareSelection([]);
+      setReportSelection([]);
+    } finally {
+      setSavedLoading(false);
+    }
+  }, [getToken]);
+
+  const fetchSavedComparisons = useCallback(async () => {
+    try {
+      setComparisonsLoading(true);
+      const jwt = await getToken();
+      if (!jwt) return;
+      const res = await fetch("/api/compare-results?limit=6", {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`compare_results_${res.status}`);
+      const data = await res.json();
+      setSavedComparisons(Array.isArray(data?.comparisons) ? data.comparisons : []);
+    } catch {
+      setSavedComparisons([]);
+    } finally {
+      setComparisonsLoading(false);
+    }
+  }, [getToken]);
+
+  const fetchSavedReports = useCallback(async () => {
+    try {
+      setReportsLoading(true);
+      const jwt = await getToken();
+      if (!jwt) return;
+      const res = await fetch("/api/agentic-reports?limit=6", {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`agentic_reports_${res.status}`);
+      const data = await res.json();
+      setSavedReports(Array.isArray(data?.reports) ? data.reports : []);
+    } catch {
+      setSavedReports([]);
+    } finally {
+      setReportsLoading(false);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    if (isSignedIn) {
+      fetchSavedResults();
+      fetchSavedComparisons();
+      fetchSavedReports();
+      return;
+    }
+    setSavedResults([]);
+    setSavedUsageBytes(0);
+    setSavedLimitBytes(0);
+    setCompareSelection([]);
+    setReportSelection([]);
+    setCompareResult(null);
+    setSavedComparisons([]);
+    setSavedReports([]);
+    setUseAllRuns(false);
+    setIncludeDiffMemo(false);
+  }, [fetchSavedResults, fetchSavedComparisons, fetchSavedReports, isSignedIn]);
+
+  useEffect(() => {
     if (initialUsage && typeof initialUsage.total_tokens === 'number') {
       setTokenUsage(initialUsage);
     }
   }, [initialUsage]);
+
+  useEffect(() => {
+    if (!canIncludeDiffMemo && includeDiffMemo) {
+      setIncludeDiffMemo(false);
+    }
+  }, [canIncludeDiffMemo, includeDiffMemo]);
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -602,9 +976,6 @@ function IdeaGenerator({
   const FREE_MAX_CONSTRAINTS = 1;
   const FREE_MAX_MODELS = 1;
 
-  const { openUserProfile, openSignIn } = useClerk();
-  const { isSignedIn } = useUser();
-
   const handleAccountClick = () => {
     // same “account” surface users expect from the avatar menu
     if (!isSignedIn) {
@@ -624,6 +995,274 @@ function IdeaGenerator({
       api_calls_count: newUsage.api_calls_count ?? prev.api_calls_count,
       emails_sent_count: newUsage.emails_sent_count ?? prev.emails_sent_count,
     }));
+  };
+
+  const saveCurrentResults = async () => {
+    if (Object.keys(results).length === 0) return;
+    try {
+      setSavingResults(true);
+      const jwt = await getToken();
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch("/api/saved-results", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          industry,
+          constraints,
+          tone,
+          models: Object.keys(results),
+          results,
+        }),
+      });
+      if (!res.ok) {
+        let message = "Failed to save results. Please try again.";
+        try {
+          const data = await res.json();
+          if (data?.detail) message = data.detail;
+        } catch {
+          // keep fallback message
+        }
+        throw new Error(message);
+      }
+      pushNotice("Results saved. You can reload them anytime.");
+      fetchSavedResults();
+    } catch (e: any) {
+      pushNotice(e?.message || "Failed to save results. Please try again.");
+    } finally {
+      setSavingResults(false);
+    }
+  };
+
+  const loadSavedResult = async (savedId: number) => {
+    try {
+      setLoadingSavedId(savedId);
+      const jwt = await getToken();
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch(`/api/saved-results/${savedId}`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`load_failed_${res.status}`);
+      const data = await res.json();
+      const savedResultsData = data?.results || {};
+      const resultKeys = Object.keys(savedResultsData);
+      const normalizeModelIds = (ids: string[]) => {
+        const openaiId = MODELS.find((m) => m.label === "OpenAI")?.id;
+        const geminiId = MODELS.find((m) => m.label === "Gemini")?.id;
+        const deepseekId = MODELS.find((m) => m.label === "DeepSeek")?.id;
+        const grokId = MODELS.find((m) => m.label === "Grok")?.id;
+        const normalized = ids.map((id) => {
+          if (MODELS.some((m) => m.id === id)) return id;
+          const lower = String(id || "").toLowerCase();
+          if (lower.startsWith("gpt-") || lower.startsWith("o-")) return openaiId || id;
+          if (lower.startsWith("gemini-")) return geminiId || id;
+          if (lower.startsWith("deepseek-")) return deepseekId || id;
+          if (lower.startsWith("grok-")) return grokId || id;
+          return id;
+        });
+        return Array.from(new Set(normalized.filter(Boolean)));
+      };
+
+      setResults(savedResultsData);
+      setActiveTab(resultKeys[0] || "");
+      if (data?.industry) setIndustry(data.industry);
+      if (Array.isArray(data?.constraints) && data.constraints.length > 0) {
+        setConstraints(data.constraints);
+      } else {
+        setConstraints([CONSTRAINTS[0]]);
+      }
+      if (data?.tone) setTone(data.tone);
+      const nextModels = Array.isArray(data?.models) && data.models.length > 0 ? data.models : resultKeys;
+      const normalizedModels = normalizeModelIds(nextModels);
+      if (normalizedModels.length > 0) setSelectedModels(normalizedModels);
+      setSavedPanelOpen(false);
+      pushNotice("Saved results loaded.");
+    } catch {
+      pushNotice("Failed to load saved results.");
+    } finally {
+      setLoadingSavedId(null);
+    }
+  };
+
+  const deleteSavedResult = async (savedId: number) => {
+    const confirmed = window.confirm("Delete this saved result?");
+    if (!confirmed) return;
+    try {
+      setDeletingSavedId(savedId);
+      const jwt = await getToken();
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch(`/api/saved-results/${savedId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`delete_failed_${res.status}`);
+      pushNotice("Saved result deleted.");
+      setCompareSelection((prev) => prev.filter((id) => id !== savedId));
+      setReportSelection((prev) => prev.filter((id) => id !== savedId));
+      fetchSavedResults();
+    } catch {
+      pushNotice("Failed to delete saved result.");
+    } finally {
+      setDeletingSavedId(null);
+    }
+  };
+
+  const toggleCompareSelection = (savedId: number) => {
+    setCompareSelection((prev) => {
+      if (prev.includes(savedId)) {
+        return prev.filter((id) => id !== savedId);
+      }
+      if (prev.length >= 2) {
+        pushNotice("Select only two runs to compare.");
+        return prev;
+      }
+      return [...prev, savedId];
+    });
+  };
+
+  const runCompare = async () => {
+    if (compareSelection.length !== 2) return;
+    try {
+      setCompareLoading(true);
+      const jwt = await getToken();
+      if (!jwt) throw new Error("no_token");
+      const [runA, runB] = compareSelection;
+      const res = await fetch("/api/compare-results", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ run_a_id: runA, run_b_id: runB }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || "Compare failed.");
+      }
+      const data = await res.json();
+      setCompareResult(data);
+      pushNotice(data?.cached ? "Loaded saved comparison." : "Comparison generated and saved.");
+      setSavedPanelOpen(false);
+      fetchSavedComparisons();
+    } catch (e: any) {
+      pushNotice(e?.message || "Failed to compare saved results.");
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  const toggleReportSelection = (savedId: number) => {
+    setReportSelection((prev) => {
+      if (prev.includes(savedId)) {
+        return prev.filter((id) => id !== savedId);
+      }
+      if (prev.length >= 5) {
+        pushNotice("Select up to 5 runs for a report.");
+        return prev;
+      }
+      return [...prev, savedId];
+    });
+  };
+
+  const runAgenticReport = async () => {
+    if (!reportHasSelection) {
+      pushNotice("Select runs or choose all saved runs for the report.");
+      return;
+    }
+    if ((reportOutput === "email" || reportOutput === "both") && !reportEmail) {
+      pushNotice("Enter an email address for delivery.");
+      return;
+    }
+    try {
+      setReportLoading(true);
+      const jwt = await getToken();
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch("/api/agentic-report", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_ids: useAllRuns ? [] : reportSelection,
+          output: reportOutput,
+          email: reportEmail || null,
+          include_all_runs: useAllRuns,
+          include_diff_memo: includeDiffMemo && canIncludeDiffMemo,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || "Failed to generate report.");
+      }
+      const contentType = res.headers.get("content-type") || "";
+      const cached = res.headers.get("x-report-cached") === "true";
+      const diffMemoMissing = res.headers.get("x-diff-memo-missing") === "true";
+      if (contentType.includes("application/pdf")) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "IdeaGen_Rank_Report.pdf";
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        const emailSent = res.headers.get("x-report-email-sent") === "true";
+        const emailFailed = res.headers.get("x-report-email-failed") === "true";
+        if (emailSent) {
+          pushNotice(cached ? "Cached report downloaded and emailed." : "Report downloaded and emailed.");
+        } else {
+          pushNotice(cached ? "Cached report downloaded." : "Report downloaded.");
+        }
+        if (emailFailed) {
+          pushNotice("Email delivery failed. Please try again.");
+        }
+        if (diffMemoMissing) {
+          pushNotice("Diff memo not available. Run Diff Mode first.");
+        }
+      } else {
+        const data = await res.json();
+        if (data?.status === "sent") {
+          pushNotice(data?.cached ? "Cached report emailed." : "Report emailed.");
+        } else {
+          pushNotice(data?.cached ? "Cached report generated." : "Report generated.");
+        }
+        if (data?.email_failed) {
+          pushNotice("Email delivery failed. Please try again.");
+        }
+        if (data?.diff_memo_missing) {
+          pushNotice("Diff memo not available. Run Diff Mode first.");
+        }
+      }
+      fetchSavedReports();
+      setReportModalOpen(false);
+    } catch (e: any) {
+      pushNotice(e?.message || "Failed to generate report.");
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const downloadSavedReport = async (reportId: number) => {
+    try {
+      setReportDownloadId(reportId);
+      const jwt = await getToken();
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch(`/api/agentic-reports/${reportId}/pdf`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || "Failed to download report.");
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "IdeaGen_Rank_Report.pdf";
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      const runsMissing = res.headers.get("x-report-runs-missing") === "true";
+      pushNotice(runsMissing ? "Report downloaded (some runs missing)." : "Report downloaded.");
+    } catch (e: any) {
+      pushNotice(e?.message || "Failed to download report.");
+    } finally {
+      setReportDownloadId(null);
+    }
   };
 
 
@@ -662,11 +1301,19 @@ function IdeaGenerator({
     });
   };
 
+  const labelForModelId = (modelId: string) => {
+    const byId = MODELS.find((m) => m.id === modelId);
+    if (byId) return byId.label;
+    const lower = String(modelId || "").toLowerCase();
+    if (lower.startsWith("gpt-") || lower.startsWith("o-")) return "OpenAI";
+    if (lower.startsWith("gemini-")) return "Gemini";
+    if (lower.startsWith("deepseek-")) return "DeepSeek";
+    if (lower.startsWith("grok-")) return "Grok";
+    return modelId;
+  };
+
   const selectedModelLabels = useMemo(
-    () =>
-      selectedModels
-        .map((id) => MODELS.find((m) => m.id === id)?.label ?? id)
-        .filter(Boolean),
+    () => selectedModels.map(labelForModelId).filter(Boolean),
     [selectedModels]
   );
 
@@ -846,7 +1493,8 @@ function IdeaGenerator({
     }
   };
 
-  const hasResults = !isLoading && Object.keys(results).length > 0;
+  const resultsModelCount = Object.keys(results).length;
+  const hasResults = !isLoading && resultsModelCount > 0;
 
   // UI gating values (keeps premium UI; free is locked)
   const maxConstraints = isPremium ? 3 : FREE_MAX_CONSTRAINTS;
@@ -911,6 +1559,48 @@ function IdeaGenerator({
     if (personaOpen) setPersonaActive(0);
   }, [personaOpen, personaQuery]);
 
+  const updateSavedPanelPos = useCallback(() => {
+    const trigger = savedButtonRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const baseWidth = viewportWidth < 640 ? 320 : 360;
+    const panelWidth = Math.min(baseWidth, viewportWidth - 32);
+    const left = Math.min(Math.max(16, rect.right - panelWidth), viewportWidth - panelWidth - 16);
+    const top = rect.bottom + 8;
+    setSavedPanelPos({ top, left, width: panelWidth });
+  }, []);
+
+  useEffect(() => {
+    if (!savedPanelOpen) return;
+
+    updateSavedPanelPos();
+
+    function onDocDown(e: MouseEvent) {
+      const panel = savedPanelRef.current;
+      const trigger = savedButtonRef.current;
+      const target = e.target as Node;
+      if (panel && panel.contains(target)) return;
+      if (trigger && trigger.contains(target)) return;
+      setSavedPanelOpen(false);
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setSavedPanelOpen(false);
+    }
+
+    window.addEventListener("resize", updateSavedPanelPos);
+    window.addEventListener("scroll", updateSavedPanelPos, true);
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("resize", updateSavedPanelPos);
+      window.removeEventListener("scroll", updateSavedPanelPos, true);
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [savedPanelOpen, updateSavedPanelPos]);
+
 
 
   return (
@@ -921,6 +1611,23 @@ function IdeaGenerator({
         onClose={() => setLimitModal({ ...limitModal, open: false })} 
         title={limitModal.title} 
         message={limitModal.message} 
+      />
+      <ReportModal
+        open={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        selectionSummary={reportSelectionSummary}
+        output={reportOutput}
+        setOutput={setReportOutput}
+        email={reportEmail}
+        setEmail={setReportEmail}
+        onSubmit={runAgenticReport}
+        loading={reportLoading}
+        useAllRuns={useAllRuns}
+        setUseAllRuns={setUseAllRuns}
+        includeDiffMemo={includeDiffMemo}
+        setIncludeDiffMemo={setIncludeDiffMemo}
+        canIncludeDiffMemo={canIncludeDiffMemo}
+        canSubmit={reportHasSelection}
       />
 
       {usageNotices.length ? (
@@ -1548,52 +2255,442 @@ function IdeaGenerator({
 
       {/* Main content */}
       <section>
-        <GlassCard className="mb-4 p-2 sm:p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Current Usage</h2>
-            <div className="flex flex-wrap items-center gap-3 text-[11px]">
-              
-              <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-gray-700 dark:text-gray-300">Tokens</span>
-                <span className={cx("font-semibold", tokenTone)}>
-                  {(tokenUsage.total_tokens || 0).toLocaleString()}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400">/ {tokenLimitLabel}</span>
-              </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <GlassCard className="p-2 sm:p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Current Usage</h2>
+              <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-gray-700 dark:text-gray-300">Tokens</span>
+                  <span className={cx("font-semibold", tokenTone)}>
+                    {(tokenUsage.total_tokens || 0).toLocaleString()}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/ {tokenLimitLabel}</span>
+                </div>
 
-              <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-gray-700 dark:text-gray-300">API</span>
-                <span className={cx("font-semibold", apiTone)}>
-                  {(tokenUsage.api_calls_count || 0)}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400">/ {isPremium ? "5" : "1"}</span>
-              </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-gray-700 dark:text-gray-300">API</span>
+                  <span className={cx("font-semibold", apiTone)}>
+                    {(tokenUsage.api_calls_count || 0)}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/ {isPremium ? "5" : "1"}</span>
+                </div>
 
-              <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-gray-700 dark:text-gray-300">Email</span>
-                <span className={cx("font-semibold", emailTone)}>
-                  {(tokenUsage.emails_sent_count || 0)}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400">/ {isPremium ? "10" : "0"}</span>
-              </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-gray-700 dark:text-gray-300">Email</span>
+                  <span className={cx("font-semibold", emailTone)}>
+                    {(tokenUsage.emails_sent_count || 0)}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/ {isPremium ? "10" : "0"}</span>
+                </div>
 
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-gray-700 dark:text-gray-300">Storage</span>
+                  <span className={cx("font-semibold", storageTone)}>
+                    {storagePercent}%
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/ 100%</span>
+                </div>
+
+              </div>
             </div>
-          </div>
-        </GlassCard>
+          </GlassCard>
+
+          <GlassCard className="p-2 sm:p-3 relative">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Saved Results</h2>
+                <div className="text-[10px] text-gray-500 dark:text-gray-400">
+                  {savedResults.length} saved
+                </div>
+              </div>
+              <button
+                ref={savedButtonRef}
+                type="button"
+                onClick={() => {
+                  setSavedPanelOpen((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      updateSavedPanelPos();
+                      fetchSavedResults();
+                      fetchSavedComparisons();
+                      fetchSavedReports();
+                    }
+                    return next;
+                  });
+                }}
+                className={cx(
+                  "rounded-lg border px-2.5 py-1 text-[10px] font-semibold",
+                  "border-black/10 dark:border-white/10",
+                  "bg-white/60 dark:bg-white/5",
+                  savedPanelOpen ? "bg-white/90 dark:bg-white/10" : "hover:bg-white/80 dark:hover:bg-white/10"
+                )}
+              >
+                Load Results
+              </button>
+            </div>
+
+            {mounted && savedPanelOpen && savedPanelPos
+              ? createPortal(
+                  <>
+                    <div className="fixed inset-0 z-40 bg-black/40" aria-hidden="true" />
+                    <div
+                      ref={savedPanelRef}
+                      style={{
+                        top: savedPanelPos.top,
+                        left: savedPanelPos.left,
+                        width: savedPanelPos.width,
+                      }}
+                      className="fixed z-50 box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-visible"
+                    >
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5">
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm font-semibold text-gray-900 dark:text-white">Saved Results</div>
+                          <HelpTooltip content="How to use Diff Mode: open Load Results, pick two runs (A and B), then click Compare. We will analyze changes, explain the impact, and choose a winner. Comparisons are saved so you can revisit them later." />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={fetchSavedResults}
+                          disabled={savedLoading}
+                          className={cx(
+                            "rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
+                            "border-black/10 dark:border-white/10",
+                            "bg-white/60 dark:bg-white/5",
+                            savedLoading ? "opacity-60 cursor-wait" : "hover:bg-white/80 dark:hover:bg-white/10"
+                          )}
+                        >
+                          {savedLoading ? "Loading..." : "Refresh"}
+                        </button>
+                      </div>
+
+                      <div className="max-h-72 overflow-y-auto p-4 space-y-3 ig-scrollbar">
+                        {savedLoading ? (
+                          <div className="text-xs text-gray-500 dark:text-gray-400">Loading saved results…</div>
+                        ) : savedResults.length === 0 ? (
+                          <div className="text-xs text-gray-500 dark:text-gray-400">No saved results yet.</div>
+                        ) : (
+                          savedResults.map((item) => {
+                            const selectionIndex = compareSelection.indexOf(item.id);
+                            const selectedLabel = selectionIndex === 0 ? "A" : selectionIndex === 1 ? "B" : null;
+                            const reportSelected = reportSelection.includes(item.id);
+                            return (
+                            <div
+                              key={item.id}
+                              className="rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-3.5 py-3 space-y-2 shadow-sm"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-xs font-semibold text-gray-900 dark:text-white truncate">
+                                  {formatSavedDate(item.created_at)}
+                                </div>
+                                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleReportSelection(item.id)}
+                                    className={cx(
+                                      "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                                      reportSelected
+                                        ? "bg-purple-500 text-white hover:bg-purple-600"
+                                        : "border border-black/10 dark:border-white/10 text-gray-700 dark:text-gray-200",
+                                      reportSelected
+                                        ? "shadow-sm"
+                                        : "bg-white/60 dark:bg-white/5 hover:bg-white/80 dark:hover:bg-white/10"
+                                    )}
+                                  >
+                                    {reportSelected ? "Included" : "Include"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleCompareSelection(item.id)}
+                                    className={cx(
+                                      "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                                      selectedLabel ? "bg-emerald-500 text-white" : "border border-black/10 dark:border-white/10 text-gray-700 dark:text-gray-200",
+                                      selectedLabel ? "hover:bg-emerald-600" : "bg-white/60 dark:bg-white/5 hover:bg-white/80 dark:hover:bg-white/10"
+                                    )}
+                                  >
+                                    {selectedLabel ? `Selected ${selectedLabel}` : "Compare"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => loadSavedResult(item.id)}
+                                    disabled={loadingSavedId === item.id || deletingSavedId === item.id}
+                                    className={cx(
+                                      "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                                      "bg-blue-600 text-white",
+                                      loadingSavedId === item.id || deletingSavedId === item.id
+                                        ? "opacity-60 cursor-wait"
+                                        : "hover:bg-blue-700"
+                                    )}
+                                  >
+                                    {loadingSavedId === item.id ? "Loading" : "Load"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteSavedResult(item.id)}
+                                    disabled={loadingSavedId === item.id || deletingSavedId === item.id}
+                                    className={cx(
+                                      "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                                      "bg-rose-500 text-white",
+                                      loadingSavedId === item.id || deletingSavedId === item.id
+                                        ? "opacity-60 cursor-wait"
+                                        : "hover:bg-rose-600"
+                                    )}
+                                  >
+                                    {deletingSavedId === item.id ? "Deleting" : "Delete"}
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400">
+                                {item.industry || "Saved result"} · {formatModelList(item.models || [])}
+                              </div>
+                              <div className="text-xs text-gray-500 dark:text-gray-400">
+                                {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
+                              </div>
+                            </div>
+                          );
+                          })
+                        )}
+                      </div>
+
+                      <div className="border-t border-white/10 px-4 py-3 space-y-4">
+                        <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                          <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Compare two runs</div>
+                          <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                            Select two runs to compare. We will score them and pick a winner.
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] text-gray-600 dark:text-gray-300">
+                              {compareSelection.length > 0
+                                ? `A: ${formatRunLabel(compareSelection[0])}${compareSelection[1] ? ` • B: ${formatRunLabel(compareSelection[1])}` : ""}`
+                                : "No runs selected"}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={runCompare}
+                              disabled={compareSelection.length !== 2 || compareLoading || isTokenLimited}
+                              className={cx(
+                                "rounded-lg px-3 py-1 text-[11px] font-semibold text-white",
+                                compareSelection.length !== 2 || compareLoading || isTokenLimited
+                                  ? "bg-slate-400 cursor-not-allowed"
+                                  : "bg-blue-600 hover:bg-blue-700"
+                              )}
+                            >
+                              {compareLoading ? "Comparing..." : "Compare"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                          <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved comparisons</div>
+                          <div className="max-h-28 space-y-2 overflow-y-auto ig-scrollbar pr-1">
+                            {comparisonsLoading ? (
+                              <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading comparisons…</div>
+                            ) : savedComparisons.length === 0 ? (
+                              <div className="text-[11px] text-gray-500 dark:text-gray-400">No comparisons yet.</div>
+                            ) : (
+                              savedComparisons.map((item) => (
+                                <div
+                                  key={item.id}
+                                  className="flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                      {formatSavedDate(item.created_at)}
+                                    </div>
+                                    <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                      Winner: {formatWinnerLabel(item)}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCompareSelection([item.run_a_id, item.run_b_id]);
+                                      setCompareResult(null);
+                                      setSavedPanelOpen(false);
+                                      setTimeout(runCompare, 0);
+                                    }}
+                                    disabled={isTokenLimited}
+                                    className={cx(
+                                      "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                      isTokenLimited ? "bg-slate-400 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700"
+                                    )}
+                                  >
+                                    View
+                                  </button>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                          <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved rank reports</div>
+                          <div className="max-h-28 space-y-2 overflow-y-auto ig-scrollbar pr-1">
+                            {reportsLoading ? (
+                              <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading reports…</div>
+                            ) : savedReports.length === 0 ? (
+                              <div className="text-[11px] text-gray-500 dark:text-gray-400">No reports yet.</div>
+                            ) : (
+                              savedReports.map((item) => {
+                                const runSummary = Array.isArray(item.run_ids)
+                                  ? item.run_ids.map(formatRunLabel).join(" • ")
+                                  : "";
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                        {formatSavedDate(item.created_at)}
+                                      </div>
+                                      <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                        {runSummary || "Saved report"}
+                                      </div>
+                                      {item.top_run_id ? (
+                                        <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                          Top: {formatRunLabel(item.top_run_id)}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => downloadSavedReport(item.id)}
+                                      disabled={reportDownloadId === item.id}
+                                      className={cx(
+                                        "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                        reportDownloadId === item.id
+                                          ? "bg-slate-400 cursor-not-allowed"
+                                          : "bg-blue-600 hover:bg-blue-700"
+                                      )}
+                                    >
+                                      {reportDownloadId === item.id ? "Downloading..." : "Download"}
+                                    </button>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                          <div className="flex items-center gap-2 text-[11px] font-semibold text-gray-700 dark:text-gray-300">
+                            <span>Rank report</span>
+                            <HelpTooltip content="How it works: pick 1-5 runs with Include. Click Rank Report, choose PDF, email, or both, then generate. We use DeepSeek to rank the runs, explain the winner, and produce a single decision-ready report." />
+                          </div>
+                          <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                            Rank selected runs, summarize insights, and export.
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] text-gray-600 dark:text-gray-300">
+                              {reportSelection.length > 0
+                                ? `${reportSelection.length} run(s) selected`
+                                : "No runs selected"}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReportModalOpen(true);
+                                setSavedPanelOpen(false);
+                              }}
+                              className={cx(
+                                "rounded-lg px-3 py-1 text-[11px] font-semibold text-white",
+                                isTokenLimited
+                                  ? "bg-slate-400 cursor-not-allowed"
+                                  : "bg-purple-600 hover:bg-purple-700"
+                              )}
+                              disabled={isTokenLimited}
+                            >
+                              Rank Report
+                            </button>
+                          </div>
+                          {isTokenLimited ? (
+                            <div className="text-[11px] text-rose-500 dark:text-rose-400">
+                              Token limit reached. Diff Mode and rank reports are disabled until the monthly reset.
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </>,
+                  document.body
+                )
+              : null}
+          </GlassCard>
+        </div>
 
         <GlassCard className="min-h-[680px] p-6 lg:p-8">
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-base font-semibold text-gray-900 dark:text-white">Results</h2>
               <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">Switch tabs to compare model outputs.</p>
             </div>
 
             {hasResults && (
-              <div className="text-xs text-gray-600 dark:text-gray-400">
-                {selectedModels.length} model{selectedModels.length > 1 ? "s" : ""}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-600 dark:text-gray-400">
+                  {resultsModelCount} model{resultsModelCount > 1 ? "s" : ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={saveCurrentResults}
+                  disabled={savingResults || isStorageLimited}
+                  className={cx(
+                    "rounded-lg border px-3 py-1.5 text-xs font-semibold",
+                    "border-black/10 dark:border-white/10",
+                    "bg-white/70 dark:bg-white/5",
+                    (savingResults || isStorageLimited) ? "opacity-60 cursor-not-allowed" : "hover:bg-white/90 dark:hover:bg-white/10"
+                  )}
+                >
+                  {savingResults ? "Saving..." : "Save"}
+                </button>
               </div>
             )}
           </div>
+          {hasResults && isStorageLimited ? (
+            <div className="mt-2 text-[11px] text-rose-500 dark:text-rose-400">
+              Storage limit reached. Free up space by deleting saved results.
+            </div>
+          ) : null}
+          {compareResult ? (
+            <div className="mt-4 rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-semibold text-gray-900 dark:text-white">Diff Insight</div>
+                  <HelpTooltip content="Diff Mode compares two saved runs using an agentic model. It highlights key changes, explains why one is stronger, and saves the insight for later. Use Load Results → Compare to generate." />
+                </div>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">
+                    Winner: {compareResult.winner_run_id ? formatRunLabel(compareResult.winner_run_id) : "Tie"}
+                  </span>
+                  {compareResult.cached ? (
+                    <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-white/70">
+                      Saved
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
+                {compareResult.comparison.summary}
+              </p>
+              {compareResult.comparison.key_changes?.length ? (
+                <ul className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                  {compareResult.comparison.key_changes.map((item, idx) => (
+                    <li key={idx}>• {item}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+                <span className="font-semibold text-gray-800 dark:text-gray-100">Why:</span>{" "}
+                {compareResult.comparison.winner_rationale}
+              </div>
+              {compareResult.comparison.risks?.length ? (
+                <div className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                  Risk: {compareResult.comparison.risks.join(" ")}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="mt-5">
             {!isLoading && Object.keys(results).length === 0 && (
@@ -1611,7 +2708,7 @@ function IdeaGenerator({
               <div className="space-y-5">
                 <div className="flex flex-wrap gap-2">
                   {Object.keys(results).map((modelId) => {
-                    const label = MODELS.find((m) => m.id === modelId)?.label ?? modelId;
+                    const label = labelForModelId(modelId);
                     const active = activeTab === modelId;
 
                     return (
@@ -1664,6 +2761,19 @@ export default function Product() {
   useEffect(() => {
     let cancelled = false;
 
+    if (!isLoaded) return () => {
+      cancelled = true;
+    };
+
+    if (!user) {
+      setIsPremium(false);
+      setInitialUsage({});
+      setPlanLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     (async () => {
       try {
         setPlanLoading(true);
@@ -1686,7 +2796,10 @@ export default function Product() {
           setInitialUsage(data.usage || {});
         }
       } catch {
-        if (!cancelled) setIsPremium(false);
+        if (!cancelled) {
+          setIsPremium(false);
+          setInitialUsage({});
+        }
       } finally {
         if (!cancelled) setPlanLoading(false);
       }
@@ -1695,10 +2808,18 @@ export default function Product() {
     return () => {
       cancelled = true;
     };
-  }, [getToken]);
+  }, [getToken, isLoaded, user]);
 
   return (
     <main className="min-h-screen bg-[radial-gradient(1200px_circle_at_20%_-10%,rgba(59,130,246,0.25),transparent_55%),radial-gradient(900px_circle_at_90%_20%,rgba(99,102,241,0.22),transparent_55%),linear-gradient(to_bottom,#050814,#040615)]">
+      {planLoading ? (
+        <FullPageLoader
+          title="Checking your plan"
+          subtitle="Syncing your plan and usage limits…"
+          note="This usually takes a few seconds."
+          tip=""
+        />
+      ) : null}
       <div className="sticky top-0 z-40 border-b border-white/10 bg-black/20 backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
           <Link href="/" className="text-lg font-semibold text-white tracking-tight">

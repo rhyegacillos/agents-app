@@ -85,7 +85,7 @@ export default function Home() {
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
               <span className="h-2 w-2 rounded-full bg-emerald-400/80" />
-              New: multi-model comparison + premium exports
+              New: agentic diff insights + reports
             </div>
 
             <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
@@ -269,6 +269,34 @@ export default function Home() {
           </div>
 
           <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold text-white">Saved results library</div>
+            <p className="mt-2 text-sm text-white/70">
+              Save multi-model runs by date and reload them any time to continue, export, or email.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold text-white">Usage + storage tracking</div>
+            <p className="mt-2 text-sm text-white/70">
+              Live view of token, API, email, and saved-results storage limits with automatic resets.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold text-white">Agentic Diff Mode</div>
+            <p className="mt-2 text-sm text-white/70">
+              Compare two saved runs with DeepSeek-powered insights and a clear winner recommendation.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold text-white">Rank Reports (on demand)</div>
+            <p className="mt-2 text-sm text-white/70">
+              Select runs, generate a ranked executive summary, and export as PDF or email in one click.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
             <div className="text-sm font-semibold text-white">Agentic reliability</div>
             <p className="mt-2 text-sm text-white/70">
               Monitoring-friendly logging + retry behavior for slow responses, and fallbacks for provider errors.
@@ -298,6 +326,9 @@ export default function Home() {
                 <li>• 1 model at a time</li>
                 <li>• Constraint selection limited</li>
                 <li>• Persona limited</li>
+                <li>• Saved results (100MB)</li>
+                <li>• Agentic Diff Mode</li>
+                <li>• Rank Reports (PDF only)</li>
                 <li>• No recommend combination</li>
                 <li>• No PDF/email export</li>
               </ul>
@@ -332,6 +363,9 @@ export default function Home() {
                 <li>• Multi-select constraints</li>
                 <li>• Full persona set</li>
                 <li>• Recommend Combination</li>
+                <li>• Saved results (1GB)</li>
+                <li>• Agentic Diff Mode</li>
+                <li>• Rank Reports (PDF + email)</li>
                 <li>• PDF export + email delivery</li>
               </ul>
               <div className="mt-5">

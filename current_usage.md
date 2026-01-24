@@ -45,7 +45,7 @@ The database module handles all state transitions and checks.
 ### Token Tracking
 *   **Accumulation:** Adds tokens from every model run to `total_tokens`.
 *   **Monthly Reset:** Before updating, checks if `current_month != tokens_last_reset_date`. If so, resets `total_tokens` to 0 before adding the new usage.
-*   **Monthly Limit:** Enforced before generation. If `total_tokens` is at or above the plan limit, the API call is blocked until the next monthly reset. Defaults are 50k (Free) and 100k (Premium), configurable via `TOKEN_LIMIT_FREE` and `TOKEN_LIMIT_PREMIUM`.
+*   **Monthly Limit:** Enforced before generation. If `total_tokens` is at or above the plan limit, the API call is blocked until the next monthly reset. Defaults are 50k (Free) and 500k (Premium), configurable via `TOKEN_LIMIT_FREE` and `TOKEN_LIMIT_PREMIUM`.
 
 ### Plan Synchronization
 *   On every request, the user's plan from the Clerk token is compared with the DB record.

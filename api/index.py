@@ -14,13 +14,15 @@ from dotenv import load_dotenv
 import resend
 import io
 from weasyprint import HTML
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict
 from datetime import datetime
 from html import escape
 from instructions.instructions_prompt import system_instructions, user_instruction
 from agent.email_agent import run_email_agent
 from agent.recommend_combination_agent import recommend_combination_agent
+from agent.compare_results_agent import compare_results_agent, _build_decision_memo
+from agent.rank_report_agent import rank_report_agent
 from agent.idea_generation_agent import generate_idea_agentic
 
 
@@ -112,6 +114,24 @@ class IdeaRequest(BaseModel):
 
 class EmailRequest(ReportData):
     to_email: str
+
+class SaveResultsRequest(BaseModel):
+    industry: str
+    constraints: List[str] = []
+    tone: str
+    models: List[str]
+    results: Dict[str, str]
+
+class CompareResultsRequest(BaseModel):
+    run_a_id: int
+    run_b_id: int
+
+class AgenticReportRequest(BaseModel):
+    run_ids: List[int] = Field(default_factory=list)
+    output: str
+    email: Optional[str] = None
+    include_all_runs: bool = False
+    include_diff_memo: bool = False
 
 class PersonaOption(BaseModel):
     id: str
@@ -380,6 +400,202 @@ def create_report_html(data: "ReportData") -> str:
         </html>
         """
 
+
+def create_agentic_report_html(
+    runs: List[Dict[str, Any]],
+    report: Dict[str, Any],
+    diff_memo: Optional[Dict[str, Any]] = None,
+    diff_memo_missing: bool = False,
+) -> str:
+    def friendly_model_label(model_id: Any) -> str:
+        raw = str(model_id or "")
+        lower = raw.lower()
+        if lower.startswith("gpt-") or lower.startswith("o-"):
+            return "OpenAI"
+        if lower.startswith("gemini-"):
+            return "Google Gemini"
+        if lower.startswith("deepseek-"):
+            return "Deepseek"
+        if lower.startswith("grok-"):
+            return "Grok"
+        return raw
+
+    summary = escape(str(report.get("summary", "") or ""))
+    ranked_runs = report.get("ranked_runs", []) or []
+    key_insights = report.get("key_insights", []) or []
+    risks = report.get("risks", []) or []
+    next_steps = report.get("next_steps", []) or []
+
+    def run_label(run: Dict[str, Any]) -> str:
+        industry = run.get("industry") or "Saved run"
+        created_at = run.get("created_at") or ""
+        return f"{industry} ({created_at})"
+
+    ranked_html = ""
+    if ranked_runs:
+        rows = []
+        for item in ranked_runs:
+            run_id = item.get("run_id")
+            score = item.get("score", "")
+            rationale = escape(str(item.get("rationale", "") or ""))
+            run = next((r for r in runs if r.get("id") == run_id), {})
+            rows.append(
+                f"<tr><td>{escape(run_label(run))}</td><td>{score}</td><td>{rationale}</td></tr>"
+            )
+        ranked_html = (
+            "<table class='rank-table'>"
+            "<tr><th>Run</th><th>Score</th><th>Rationale</th></tr>"
+            + "".join(rows)
+            + "</table>"
+        )
+
+    def list_html(items: List[str]) -> str:
+        if not items:
+            return "<p class='muted'>None</p>"
+        return "<ul>" + "".join(f"<li>{escape(str(i))}</li>" for i in items) + "</ul>"
+
+    diff_memo_html = ""
+    if diff_memo_missing:
+        diff_memo_html = (
+            "<h2>Diff memo</h2>"
+            "<p class='muted'>Diff memo not available. Run Diff Mode first.</p>"
+        )
+    elif diff_memo:
+        decision = escape(str(diff_memo.get("decision", "") or ""))
+        memo_summary = escape(str(diff_memo.get("summary", "") or ""))
+        memo_rationale = escape(str(diff_memo.get("rationale", "") or ""))
+        memo_key_changes = list_html(diff_memo.get("key_changes", []) or [])
+        memo_risks = list_html(diff_memo.get("risks", []) or [])
+        memo_next_steps = list_html(diff_memo.get("next_steps", []) or [])
+        diff_memo_html = f"""
+        <h2>Diff memo</h2>
+        <div class="summary">
+          <strong>Decision</strong>
+          <p>{decision}</p>
+          <strong>Summary</strong>
+          <p>{memo_summary}</p>
+        </div>
+        <h3>Key changes</h3>
+        {memo_key_changes}
+        <h3>Rationale</h3>
+        <p>{memo_rationale or '<span class="muted">None</span>'}</p>
+        <h3>Risks</h3>
+        {memo_risks}
+        <h3>Next steps</h3>
+        {memo_next_steps}
+        """
+
+    run_sections = []
+    for run in runs:
+        constraints = run.get("constraints") or []
+        models = run.get("models") or list((run.get("results") or {}).keys())
+        display_models = [friendly_model_label(m) for m in models]
+        results = run.get("results") or {}
+        results_html = ""
+        for model_id, html in results.items():
+            model_label = friendly_model_label(model_id)
+            results_html += (
+                "<div class='result-card'>"
+                f"<div class='result-title'>{escape(model_label)}</div>"
+                f"<div class='result-body'>{html}</div>"
+                "</div>"
+            )
+        run_sections.append(
+            "<section class='run-block'>"
+            f"<h3>{escape(run_label(run))}</h3>"
+            "<table class='config-table'>"
+            "<tr><td class='cfg-label'>Industry</td>"
+            f"<td class='cfg-value'>{escape(str(run.get('industry') or ''))}</td></tr>"
+            "<tr><td class='cfg-label'>Persona</td>"
+            f"<td class='cfg-value'>{escape(str(run.get('tone') or ''))}</td></tr>"
+            "<tr><td class='cfg-label'>Constraints</td>"
+            f"<td class='cfg-value'>{escape(', '.join(constraints) if constraints else 'None')}</td></tr>"
+            "<tr><td class='cfg-label'>Models</td>"
+            f"<td class='cfg-value'>{escape(', '.join(display_models) if display_models else 'None')}</td></tr>"
+            "</table>"
+            f"{results_html}"
+            "</section>"
+        )
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        body {{
+          font-family: Arial, sans-serif;
+          font-size: 12px;
+          color: #111;
+        }}
+        h1 {{ font-size: 20px; margin-bottom: 6px; }}
+        h2 {{ font-size: 16px; margin: 18px 0 8px; }}
+        h3 {{ font-size: 14px; margin: 16px 0 6px; }}
+        .muted {{ color: #666; }}
+        .summary {{
+          padding: 10px;
+          background: #f4f6ff;
+          border: 1px solid #e4e8ff;
+          border-radius: 8px;
+        }}
+        .rank-table {{
+          width: 100%;
+          border-collapse: collapse;
+        }}
+        .rank-table th, .rank-table td {{
+          border: 1px solid #e5e7eb;
+          padding: 6px;
+          text-align: left;
+          vertical-align: top;
+        }}
+        .config-table {{
+          width: 100%;
+          border-collapse: collapse;
+          margin-bottom: 10px;
+        }}
+        .config-table td {{
+          border: 1px solid #e5e7eb;
+          padding: 6px;
+          vertical-align: top;
+        }}
+        .cfg-label {{ width: 140px; font-weight: 600; background: #fafafa; }}
+        .result-card {{
+          border: 1px solid #e5e7eb;
+          border-radius: 8px;
+          padding: 8px;
+          margin-bottom: 8px;
+        }}
+        .result-title {{ font-weight: 700; margin-bottom: 4px; }}
+        .result-body {{ font-size: 11px; color: #222; }}
+      </style>
+    </head>
+    <body>
+      <h1>IdeaGen Rank Report</h1>
+      <div class="summary">
+        <strong>Summary</strong>
+        <p>{summary}</p>
+      </div>
+
+      {diff_memo_html}
+
+      <h2>Ranking</h2>
+      {ranked_html or "<p class='muted'>No ranking available.</p>"}
+
+      <h2>Key insights</h2>
+      {list_html(key_insights)}
+
+      <h2>Risks</h2>
+      {list_html(risks)}
+
+      <h2>Next steps</h2>
+      {list_html(next_steps)}
+
+      <h2>Runs</h2>
+      {''.join(run_sections)}
+    </body>
+    </html>
+    """
+
 # --- PDF Conversion ---
 def html_to_pdf_bytes(html_content: str) -> bytes:
     pdf_bytes = HTML(string=html_content).write_pdf()
@@ -508,6 +724,9 @@ PREMIUM_PLANS = {
     "u:premium_user",
 }
 
+SAVED_RESULTS_LIMIT_FREE_BYTES = int(os.getenv("SAVED_RESULTS_LIMIT_FREE_BYTES", str(100 * 1024 * 1024)))
+SAVED_RESULTS_LIMIT_PREMIUM_BYTES = int(os.getenv("SAVED_RESULTS_LIMIT_PREMIUM_BYTES", str(1024 * 1024 * 1024)))
+
 def get_user_plan(creds):
     decoded = getattr(creds, "decoded", {}) or {}
     return decoded.get("pla") or "u:free_user"
@@ -550,6 +769,334 @@ async def subscription(creds=Depends(clerk_guard)):
         "status": decoded.get("sts"),
         "usage": stats
     }
+
+
+@app.post("/api/saved-results")
+async def save_results(request: SaveResultsRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
+    if not request.results:
+        raise HTTPException(status_code=400, detail="No results to save.")
+    current_bytes = db.get_saved_results_usage_bytes(user_id)
+    limit_bytes = SAVED_RESULTS_LIMIT_PREMIUM_BYTES if plan in PREMIUM_PLANS else SAVED_RESULTS_LIMIT_FREE_BYTES
+    payload_bytes = (
+        len((request.industry or "").encode("utf-8"))
+        + len((request.tone or "").encode("utf-8"))
+        + len(json.dumps(request.constraints or []).encode("utf-8"))
+        + len(json.dumps(request.models or []).encode("utf-8"))
+        + len(json.dumps(request.results or {}).encode("utf-8"))
+    )
+    if current_bytes + payload_bytes > limit_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="Saved results storage limit reached. Delete older items to save new ones.",
+        )
+    return db.save_results(
+        user_id=user_id,
+        industry=request.industry,
+        tone=request.tone,
+        constraints=request.constraints,
+        models=request.models,
+        results=request.results,
+    )
+
+
+@app.get("/api/saved-results")
+async def list_saved_results(limit: int = 6, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
+    limit_bytes = SAVED_RESULTS_LIMIT_PREMIUM_BYTES if plan in PREMIUM_PLANS else SAVED_RESULTS_LIMIT_FREE_BYTES
+    usage_bytes = db.get_saved_results_usage_bytes(user_id)
+    return {
+        "results": db.list_saved_results(user_id, limit=limit),
+        "usage_bytes": usage_bytes,
+        "limit_bytes": limit_bytes,
+    }
+
+
+@app.get("/api/saved-results/{saved_id}")
+async def get_saved_result(saved_id: int, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    result = db.get_saved_result(user_id, saved_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Saved result not found.")
+    return result
+
+
+@app.delete("/api/saved-results/{saved_id}")
+async def delete_saved_result(saved_id: int, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    deleted = db.delete_saved_result(user_id, saved_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved result not found.")
+    return {"status": "deleted"}
+
+
+@app.post("/api/compare-results")
+async def compare_results(request: CompareResultsRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
+    allowed, msg = db.check_token_limit(user_id, plan)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=msg)
+    if request.run_a_id == request.run_b_id:
+        raise HTTPException(status_code=400, detail="Choose two different saved results to compare.")
+
+    cached = db.get_saved_comparison(user_id, request.run_a_id, request.run_b_id)
+    if cached:
+        return cached
+
+    run_a = db.get_saved_result(user_id, request.run_a_id)
+    run_b = db.get_saved_result(user_id, request.run_b_id)
+    if not run_a or not run_b:
+        raise HTTPException(status_code=404, detail="Saved result not found.")
+
+    request_id = str(uuid.uuid4())
+    result = await compare_results_agent(
+        generate=generate_openai_compatible,
+        extract_json=_extract_json_object,
+        client=deepseek_client,
+        model=DEEPSEEK_MODEL,
+        run_a=run_a,
+        run_b=run_b,
+        max_attempts=2,
+        request_id=request_id,
+    )
+
+    comparison = result.get("comparison", {}) or {}
+    winner = str(comparison.get("winner", "tie")).upper()
+    winner_run_id = None
+    if winner == "A":
+        winner_run_id = request.run_a_id
+    elif winner == "B":
+        winner_run_id = request.run_b_id
+    comparison["winner"] = winner
+
+    saved = db.save_comparison(
+        user_id=user_id,
+        run_a_id=request.run_a_id,
+        run_b_id=request.run_b_id,
+        winner_run_id=winner_run_id,
+        comparison=comparison,
+        model=DEEPSEEK_MODEL,
+    )
+
+    usage = result.get("usage", {})
+    if usage and usage.get("total_tokens"):
+        db.track_token_usage(user_id, usage.get("total_tokens", 0))
+
+    return {
+        "comparison_id": saved.get("id"),
+        "created_at": saved.get("created_at"),
+        "run_a_id": request.run_a_id,
+        "run_b_id": request.run_b_id,
+        "winner_run_id": winner_run_id,
+        "comparison": comparison,
+        "cached": False,
+    }
+
+
+@app.get("/api/compare-results")
+async def list_compare_results(limit: int = 6, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    return {"comparisons": db.list_saved_comparisons(user_id, limit=limit)}
+
+
+@app.get("/api/agentic-reports")
+async def list_agentic_reports(limit: int = 6, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    return {"reports": db.list_saved_agentic_reports(user_id, limit=limit)}
+
+
+@app.get("/api/agentic-reports/{report_id}/pdf")
+async def download_agentic_report(report_id: int, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    saved = db.get_saved_agentic_report_by_id(user_id, report_id)
+    if not saved:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    snapshot_runs = saved.get("runs_snapshot") or []
+    diff_memo = saved.get("diff_memo")
+    diff_memo_missing = bool(saved.get("diff_memo_missing"))
+    if snapshot_runs:
+        ordered_runs = snapshot_runs
+        missing_runs = False
+    else:
+        raw_run_ids = saved.get("run_ids") or []
+        run_ids = []
+        for run_id in raw_run_ids:
+            try:
+                run_ids.append(int(run_id))
+            except (TypeError, ValueError):
+                continue
+        runs = db.get_saved_results_by_ids(user_id, run_ids)
+        run_map = {r.get("id"): r for r in runs if r.get("id") is not None}
+        ordered_runs = [run_map[rid] for rid in run_ids if rid in run_map]
+        missing_runs = len(ordered_runs) != len(run_ids)
+    report = saved.get("report", {}) or {}
+    html = create_agentic_report_html(
+        ordered_runs,
+        report,
+        diff_memo=diff_memo if isinstance(diff_memo, dict) else None,
+        diff_memo_missing=diff_memo_missing,
+    )
+    pdf_bytes = html_to_pdf_bytes(html)
+    headers = {"Content-Disposition": "attachment;filename=IdeaGen_Rank_Report.pdf"}
+    if missing_runs:
+        headers["X-Report-Runs-Missing"] = "true"
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
+
+
+@app.post("/api/agentic-report")
+async def agentic_report(request: AgenticReportRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    user_id = creds.decoded.get("sub")
+    plan = get_user_plan(creds)
+    request_id = str(uuid.uuid4())
+    allowed, msg = db.check_token_limit(user_id, plan)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=msg)
+    output = (request.output or "").lower()
+    if output not in {"pdf", "email", "both"}:
+        raise HTTPException(status_code=400, detail="Output must be pdf, email, or both.")
+    if output in {"email", "both"} and not request.email:
+        raise HTTPException(status_code=400, detail="Email is required for email delivery.")
+    include_all_runs = bool(request.include_all_runs)
+    include_diff_memo = bool(request.include_diff_memo)
+    run_ids = list(dict.fromkeys(request.run_ids or []))
+
+    if include_all_runs:
+        runs = db.list_saved_results_full(user_id)
+        run_ids = [r.get("id") for r in runs if r.get("id") is not None]
+        if not run_ids:
+            raise HTTPException(status_code=400, detail="No saved runs available for a report.")
+    else:
+        if not run_ids:
+            raise HTTPException(status_code=400, detail="Select at least one saved run.")
+        if len(run_ids) > 5:
+            raise HTTPException(status_code=400, detail="Select up to 5 runs per report.")
+        runs = db.get_saved_results_by_ids(user_id, run_ids)
+        if len(runs) != len(run_ids):
+            raise HTTPException(status_code=404, detail="One or more saved runs were not found.")
+
+    if include_diff_memo and len(run_ids) != 2:
+        raise HTTPException(status_code=400, detail="Diff memo requires exactly two runs.")
+
+    if include_all_runs:
+        snapshot_runs = runs
+    else:
+        run_map = {r.get("id"): r for r in runs if r.get("id") is not None}
+        snapshot_runs = [run_map[rid] for rid in run_ids if rid in run_map]
+
+    run_ids_key = ",".join(str(i) for i in sorted(run_ids))
+    cached = db.get_saved_agentic_report(user_id, run_ids_key)
+
+    diff_memo = None
+    diff_memo_missing = False
+    if include_diff_memo:
+        cached_comparison = db.get_saved_comparison(user_id, run_ids[0], run_ids[1])
+        if cached_comparison:
+            comparison = cached_comparison.get("comparison", {}) or {}
+            memo = comparison.get("decision_memo")
+            if isinstance(memo, dict) and memo:
+                diff_memo = memo
+            elif comparison:
+                diff_memo = _build_decision_memo(comparison)
+        if not diff_memo:
+            diff_memo_missing = True
+
+    if cached:
+        report = cached.get("report", {}) or {}
+        cached_flag = True
+        cached_id = cached.get("id")
+        if cached_id:
+            needs_snapshot = not (cached.get("runs_snapshot") or [])
+            needs_diff_memo = include_diff_memo and diff_memo and not cached.get("diff_memo")
+            needs_missing_flag = include_diff_memo and diff_memo_missing and not cached.get("diff_memo_missing")
+            if needs_snapshot or needs_diff_memo or needs_missing_flag:
+                db.update_agentic_report_snapshot(
+                    user_id,
+                    cached_id,
+                    runs_snapshot=snapshot_runs if needs_snapshot else None,
+                    diff_memo=diff_memo if needs_diff_memo else None,
+                    diff_memo_missing=diff_memo_missing if needs_missing_flag else None,
+                )
+    else:
+        result = await rank_report_agent(
+            generate=generate_openai_compatible,
+            extract_json=_extract_json_object,
+            client=deepseek_client,
+            model=DEEPSEEK_MODEL,
+            runs=runs,
+            max_attempts=2,
+            request_id=request_id,
+        )
+        report = result.get("report", {}) or {}
+        usage = result.get("usage", {})
+        if usage and usage.get("total_tokens"):
+            db.track_token_usage(user_id, usage.get("total_tokens", 0))
+        db.save_agentic_report(
+            user_id=user_id,
+            run_ids_key=run_ids_key,
+            run_ids=run_ids,
+            report=report,
+            model=DEEPSEEK_MODEL,
+            runs_snapshot=snapshot_runs,
+            diff_memo=diff_memo if include_diff_memo else None,
+            diff_memo_missing=diff_memo_missing if include_diff_memo else False,
+        )
+        cached_flag = False
+
+    html = create_agentic_report_html(
+        runs,
+        report,
+        diff_memo=diff_memo,
+        diff_memo_missing=diff_memo_missing,
+    )
+    pdf_bytes = html_to_pdf_bytes(html)
+
+    email_sent = False
+    email_failed = False
+    if output in {"email", "both"}:
+        try:
+            resend.Emails.send({
+                "from": "no-reply@agentairg.site",
+                "to": request.email,
+                "subject": "IdeaGen Rank Report",
+                "html": f"<div style='font-family: Arial, sans-serif; font-size:14px; color:#111;'>"
+                        f"<p>Your rank report is attached.</p></div>",
+                "attachments": [{
+                    "filename": "IdeaGen_Rank_Report.pdf",
+                    "content": list(pdf_bytes),
+                }],
+            })
+            email_sent = True
+        except Exception:
+            logger.exception(
+                "agentic_report.email_failed",
+                extra={"request_id": request_id, "user_id": user_id},
+            )
+            email_failed = True
+            if output == "email":
+                raise HTTPException(status_code=502, detail="Email delivery failed. Please try again.")
+
+    if output == "email":
+        return {
+            "status": "sent",
+            "email_sent": email_sent,
+            "email_failed": email_failed,
+            "cached": cached_flag,
+            "diff_memo_missing": diff_memo_missing,
+        }
+
+    headers = {"Content-Disposition": "attachment;filename=IdeaGen_Rank_Report.pdf"}
+    if email_sent:
+        headers["X-Report-Email-Sent"] = "true"
+    if email_failed:
+        headers["X-Report-Email-Failed"] = "true"
+    if cached_flag:
+        headers["X-Report-Cached"] = "true"
+    if diff_memo_missing:
+        headers["X-Diff-Memo-Missing"] = "true"
+    return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
 
