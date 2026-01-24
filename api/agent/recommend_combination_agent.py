@@ -103,15 +103,14 @@ async def recommend_combination_agent(
     allowed_persona_ids = [p for p in allowed_persona_ids if p]
 
     logger.info(
-        "recommend_combination.start",
-        extra={
-            "request_id": request_id,
-            "industry": industry,
-            "model": model,
-            "max_attempts": max_attempts,
-            "allowed_constraints_count": len(allowed_constraints),
-            "allowed_personas_count": len(allowed_persona_ids),
-        },
+        "recommend_combination.start request_id=%s industry=%s model=%s max_attempts=%s "
+        "allowed_constraints_count=%s allowed_personas_count=%s",
+        request_id,
+        industry,
+        model,
+        max_attempts,
+        len(allowed_constraints),
+        len(allowed_persona_ids),
     )
 
     system_prompt = """
@@ -184,13 +183,11 @@ Rules for reason_html:
             )
 
         logger.info(
-            "recommend_combination.attempt",
-            extra={
-                "request_id": request_id,
-                "attempt": attempt,
-                "model": model,
-                "has_corrections": bool(last_errors),
-            },
+            "recommend_combination.attempt request_id=%s attempt=%s model=%s has_corrections=%s",
+            request_id,
+            attempt,
+            model,
+            bool(last_errors),
         )
 
         try:
@@ -202,14 +199,12 @@ Rules for reason_html:
         except Exception as e:
             latency_ms = int((time.perf_counter() - attempt_t0) * 1000)
             logger.exception(
-                "recommend_combination.generate_error",
-                extra={
-                    "request_id": request_id,
-                    "attempt": attempt,
-                    "model": model,
-                    "latency_ms": latency_ms,
-                    "error_type": type(e).__name__,
-                },
+                "recommend_combination.generate_error request_id=%s attempt=%s model=%s latency_ms=%s error_type=%s",
+                request_id,
+                attempt,
+                model,
+                latency_ms,
+                type(e).__name__,
             )
             last_errors = [f"generate() raised {type(e).__name__}: {e}"]
             continue
@@ -241,18 +236,17 @@ Rules for reason_html:
         if not errors:
             total_ms = int((time.perf_counter() - t0) * 1000)
             logger.info(
-                "recommend_combination.success",
-                extra={
-                    "request_id": request_id,
-                    "attempt": attempt,
-                    "model": model,
-                    "latency_ms": latency_ms,
-                    "total_ms": total_ms,
-                    "recommended_constraints": recommended_constraints,
-                    "recommended_persona": recommended_persona,
-                    "reason_li_count": _count_li(reason_html),
-                    "fallback_used": False,
-                },
+                "recommend_combination.success request_id=%s attempt=%s model=%s latency_ms=%s total_ms=%s "
+                "recommended_constraints=%s recommended_persona=%s reason_li_count=%s fallback_used=%s",
+                request_id,
+                attempt,
+                model,
+                latency_ms,
+                total_ms,
+                recommended_constraints,
+                recommended_persona,
+                _count_li(reason_html),
+                False,
             )
             return {
                 "recommended_constraints": recommended_constraints,
@@ -264,17 +258,16 @@ Rules for reason_html:
 
         # Log validation failure (don’t log full raw to avoid noise/secrets)
         logger.warning(
-            "recommend_combination.validation_failed",
-            extra={
-                "request_id": request_id,
-                "attempt": attempt,
-                "model": model,
-                "latency_ms": latency_ms,
-                "validation_errors": errors,
-                "parsed_constraints": recommended_constraints,
-                "parsed_persona": recommended_persona,
-                "reason_li_count": _count_li(reason_html),
-            },
+            "recommend_combination.validation_failed request_id=%s attempt=%s model=%s latency_ms=%s "
+            "validation_errors=%s parsed_constraints=%s parsed_persona=%s reason_li_count=%s",
+            request_id,
+            attempt,
+            model,
+            latency_ms,
+            errors,
+            recommended_constraints,
+            recommended_persona,
+            _count_li(reason_html),
         )
         last_errors = errors
 
@@ -284,16 +277,15 @@ Rules for reason_html:
 
     total_ms = int((time.perf_counter() - t0) * 1000)
     logger.error(
-        "recommend_combination.fallback",
-        extra={
-            "request_id": request_id,
-            "model": model,
-            "total_ms": total_ms,
-            "fallback_used": True,
-            "errors": last_errors,
-            "fallback_constraints": fallback_constraints,
-            "fallback_persona": fallback_persona,
-        },
+        "recommend_combination.fallback request_id=%s model=%s total_ms=%s fallback_used=%s errors=%s "
+        "fallback_constraints=%s fallback_persona=%s",
+        request_id,
+        model,
+        total_ms,
+        True,
+        last_errors,
+        fallback_constraints,
+        fallback_persona,
     )
 
     return {

@@ -39,12 +39,13 @@ def init_db():
             tone TEXT,
             constraints_json TEXT,
             models_json TEXT,
-            results_json TEXT
+            results_json TEXT,
+            rank_result_json TEXT
         )
     ''')
 
     c.execute('''
-        CREATE TABLE IF NOT EXISTS saved_agentic_reports (
+        CREATE TABLE IF NOT EXISTS saved_rank_reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
             created_at TEXT,
@@ -52,8 +53,6 @@ def init_db():
             run_ids_json TEXT,
             report_json TEXT,
             runs_json TEXT,
-            diff_memo_json TEXT,
-            diff_memo_missing INTEGER DEFAULT 0,
             model TEXT
         )
     ''')
@@ -77,18 +76,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass # Column already exists
     try:
-        c.execute("ALTER TABLE saved_agentic_reports ADD COLUMN runs_json TEXT")
+        c.execute("ALTER TABLE saved_results ADD COLUMN rank_result_json TEXT")
     except sqlite3.OperationalError:
         pass
     try:
-        c.execute("ALTER TABLE saved_agentic_reports ADD COLUMN diff_memo_json TEXT")
+        c.execute("ALTER TABLE saved_rank_reports ADD COLUMN runs_json TEXT")
     except sqlite3.OperationalError:
         pass
-    try:
-        c.execute("ALTER TABLE saved_agentic_reports ADD COLUMN diff_memo_missing INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-
     conn.commit()
     conn.close()
 
@@ -303,15 +297,15 @@ def get_user_stats(user_id):
     finally:
         conn.close()
 
-def save_results(user_id, industry, tone, constraints, models, results):
+def save_results(user_id, industry, tone, constraints, models, results, rank_result=None):
     conn = get_db()
     try:
         created_at = datetime.now(timezone.utc).isoformat()
         c = conn.cursor()
         c.execute('''
             INSERT INTO saved_results (
-                user_id, created_at, industry, tone, constraints_json, models_json, results_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                user_id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id,
             created_at,
@@ -320,6 +314,7 @@ def save_results(user_id, industry, tone, constraints, models, results):
             json.dumps(constraints or []),
             json.dumps(models or []),
             json.dumps(results or {}),
+            json.dumps(rank_result) if rank_result is not None else None,
         ))
         conn.commit()
         return {"id": c.lastrowid, "created_at": created_at}
@@ -372,14 +367,14 @@ def list_saved_results_full(user_id, limit=None):
         c = conn.cursor()
         if limit is None:
             c.execute('''
-                SELECT id, created_at, industry, tone, constraints_json, models_json, results_json
+                SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
                 FROM saved_results
                 WHERE user_id = ?
                 ORDER BY created_at DESC
             ''', (user_id,))
         else:
             c.execute('''
-                SELECT id, created_at, industry, tone, constraints_json, models_json, results_json
+                SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
                 FROM saved_results
                 WHERE user_id = ?
                 ORDER BY created_at DESC
@@ -400,6 +395,10 @@ def list_saved_results_full(user_id, limit=None):
                 results = json.loads(row["results_json"]) if row["results_json"] else {}
             except json.JSONDecodeError:
                 results = {}
+            try:
+                rank_result = json.loads(row["rank_result_json"]) if row["rank_result_json"] else None
+            except json.JSONDecodeError:
+                rank_result = None
             out.append({
                 "id": row["id"],
                 "created_at": row["created_at"],
@@ -408,6 +407,7 @@ def list_saved_results_full(user_id, limit=None):
                 "constraints": constraints,
                 "models": models,
                 "results": results,
+                "rank_result": rank_result,
             })
         return out
     finally:
@@ -418,7 +418,7 @@ def get_saved_result(user_id, saved_id):
     try:
         c = conn.cursor()
         c.execute('''
-            SELECT id, created_at, industry, tone, constraints_json, models_json, results_json
+            SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
             FROM saved_results
             WHERE id = ? AND user_id = ?
         ''', (saved_id, user_id))
@@ -437,6 +437,10 @@ def get_saved_result(user_id, saved_id):
             results = json.loads(row["results_json"]) if row["results_json"] else {}
         except json.JSONDecodeError:
             results = {}
+        try:
+            rank_result = json.loads(row["rank_result_json"]) if row["rank_result_json"] else None
+        except json.JSONDecodeError:
+            rank_result = None
         return {
             "id": row["id"],
             "created_at": row["created_at"],
@@ -445,17 +449,18 @@ def get_saved_result(user_id, saved_id):
             "constraints": constraints,
             "models": models,
             "results": results,
+            "rank_result": rank_result,
         }
     finally:
         conn.close()
 
-def get_saved_agentic_report(user_id, run_ids_key):
+def get_saved_rank_report(user_id, run_ids_key):
     conn = get_db()
     try:
         c = conn.cursor()
         c.execute('''
             SELECT *
-            FROM saved_agentic_reports
+            FROM saved_rank_reports
             WHERE user_id = ? AND run_ids_key = ?
             ORDER BY created_at DESC
             LIMIT 1
@@ -487,13 +492,6 @@ def get_saved_agentic_report(user_id, run_ids_key):
                     run_ids.append(int(run.get("id")))
                 except (TypeError, ValueError, AttributeError):
                     continue
-        diff_memo = None
-        if "diff_memo_json" in row.keys() and row["diff_memo_json"]:
-            try:
-                diff_memo = json.loads(row["diff_memo_json"])
-            except json.JSONDecodeError:
-                diff_memo = None
-        diff_memo_missing = bool(row["diff_memo_missing"]) if "diff_memo_missing" in row.keys() else False
         return {
             "id": row["id"],
             "created_at": row["created_at"],
@@ -501,31 +499,27 @@ def get_saved_agentic_report(user_id, run_ids_key):
             "run_ids_key": row["run_ids_key"],
             "report": report,
             "runs_snapshot": runs_snapshot,
-            "diff_memo": diff_memo,
-            "diff_memo_missing": diff_memo_missing,
             "model": row["model"],
         }
     finally:
         conn.close()
 
-def save_agentic_report(
+def save_rank_report(
     user_id,
     run_ids_key,
     run_ids,
     report,
     model,
     runs_snapshot=None,
-    diff_memo=None,
-    diff_memo_missing=False,
 ):
     conn = get_db()
     try:
         created_at = datetime.now(timezone.utc).isoformat()
         c = conn.cursor()
         c.execute('''
-            INSERT INTO saved_agentic_reports (
-                user_id, created_at, run_ids_key, run_ids_json, report_json, runs_json, diff_memo_json, diff_memo_missing, model
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO saved_rank_reports (
+                user_id, created_at, run_ids_key, run_ids_json, report_json, runs_json, model
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id,
             created_at,
@@ -533,8 +527,6 @@ def save_agentic_report(
             json.dumps(run_ids or []),
             json.dumps(report or {}),
             json.dumps(runs_snapshot or []),
-            json.dumps(diff_memo) if diff_memo is not None else None,
-            1 if diff_memo_missing else 0,
             model,
         ))
         conn.commit()
@@ -542,13 +534,13 @@ def save_agentic_report(
     finally:
         conn.close()
 
-def get_saved_agentic_report_by_id(user_id, report_id):
+def get_saved_rank_report_by_id(user_id, report_id):
     conn = get_db()
     try:
         c = conn.cursor()
         c.execute('''
             SELECT *
-            FROM saved_agentic_reports
+            FROM saved_rank_reports
             WHERE user_id = ? AND id = ?
             LIMIT 1
         ''', (user_id, report_id))
@@ -579,13 +571,6 @@ def get_saved_agentic_report_by_id(user_id, report_id):
                     run_ids.append(int(run.get("id")))
                 except (TypeError, ValueError, AttributeError):
                     continue
-        diff_memo = None
-        if "diff_memo_json" in row.keys() and row["diff_memo_json"]:
-            try:
-                diff_memo = json.loads(row["diff_memo_json"])
-            except json.JSONDecodeError:
-                diff_memo = None
-        diff_memo_missing = bool(row["diff_memo_missing"]) if "diff_memo_missing" in row.keys() else False
         return {
             "id": row["id"],
             "created_at": row["created_at"],
@@ -593,20 +578,31 @@ def get_saved_agentic_report_by_id(user_id, report_id):
             "run_ids_key": row["run_ids_key"],
             "report": report,
             "runs_snapshot": runs_snapshot,
-            "diff_memo": diff_memo,
-            "diff_memo_missing": diff_memo_missing,
             "model": row["model"],
         }
     finally:
         conn.close()
 
-def list_saved_agentic_reports(user_id, limit=6):
+def delete_saved_rank_report(user_id, report_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            DELETE FROM saved_rank_reports
+            WHERE user_id = ? AND id = ?
+        ''', (user_id, report_id))
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+def list_saved_rank_reports(user_id, limit=6):
     conn = get_db()
     try:
         c = conn.cursor()
         c.execute('''
             SELECT id, created_at, run_ids_json, report_json, runs_json, model
-            FROM saved_agentic_reports
+            FROM saved_rank_reports
             WHERE user_id = ?
             ORDER BY created_at DESC
             LIMIT ?
@@ -665,24 +661,16 @@ def list_saved_agentic_reports(user_id, limit=6):
     finally:
         conn.close()
 
-def update_agentic_report_snapshot(
+def update_rank_report_snapshot(
     user_id,
     report_id,
     runs_snapshot=None,
-    diff_memo=None,
-    diff_memo_missing=None,
 ):
     fields = []
     params = []
     if runs_snapshot is not None:
         fields.append("runs_json = ?")
         params.append(json.dumps(runs_snapshot))
-    if diff_memo is not None:
-        fields.append("diff_memo_json = ?")
-        params.append(json.dumps(diff_memo))
-    if diff_memo_missing is not None:
-        fields.append("diff_memo_missing = ?")
-        params.append(1 if diff_memo_missing else 0)
     if not fields:
         return False
     conn = get_db()
@@ -690,7 +678,7 @@ def update_agentic_report_snapshot(
         c = conn.cursor()
         c.execute(
             f'''
-            UPDATE saved_agentic_reports
+            UPDATE saved_rank_reports
             SET {", ".join(fields)}
             WHERE user_id = ? AND id = ?
             ''',
@@ -785,6 +773,50 @@ def get_saved_comparison(user_id, run_a_id, run_b_id):
     finally:
         conn.close()
 
+def get_saved_comparison_by_id(user_id, comparison_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            SELECT *
+            FROM saved_comparisons
+            WHERE user_id = ? AND id = ?
+            LIMIT 1
+        ''', (user_id, comparison_id))
+        row = c.fetchone()
+        if not row:
+            return None
+        comparison = {}
+        if row["comparison_json"]:
+            try:
+                comparison = json.loads(row["comparison_json"])
+            except json.JSONDecodeError:
+                comparison = {}
+        return {
+            "comparison_id": row["id"],
+            "created_at": row["created_at"],
+            "run_a_id": row["run_a_id"],
+            "run_b_id": row["run_b_id"],
+            "winner_run_id": row["winner_run_id"],
+            "comparison": comparison,
+            "cached": True,
+        }
+    finally:
+        conn.close()
+
+def delete_saved_comparison(user_id, comparison_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            DELETE FROM saved_comparisons
+            WHERE user_id = ? AND id = ?
+        ''', (user_id, comparison_id))
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
 def save_comparison(user_id, run_a_id, run_b_id, winner_run_id, comparison, model):
     conn = get_db()
     try:
@@ -813,23 +845,31 @@ def list_saved_comparisons(user_id, limit=8):
     try:
         c = conn.cursor()
         c.execute('''
-            SELECT id, created_at, run_a_id, run_b_id, winner_run_id
+            SELECT id, created_at, run_a_id, run_b_id, winner_run_id, comparison_json
             FROM saved_comparisons
             WHERE user_id = ?
             ORDER BY created_at DESC
             LIMIT ?
         ''', (user_id, limit))
         rows = c.fetchall()
-        return [
-            {
+        out = []
+        for row in rows:
+            top_outputs = None
+            if row["comparison_json"]:
+                try:
+                    comparison = json.loads(row["comparison_json"])
+                    top_outputs = comparison.get("top_outputs")
+                except json.JSONDecodeError:
+                    top_outputs = None
+            out.append({
                 "id": row["id"],
                 "created_at": row["created_at"],
                 "run_a_id": row["run_a_id"],
                 "run_b_id": row["run_b_id"],
                 "winner_run_id": row["winner_run_id"],
-            }
-            for row in rows
-        ]
+                "top_outputs": top_outputs,
+            })
+        return out
     finally:
         conn.close()
 
@@ -846,6 +886,21 @@ def delete_saved_result(user_id, saved_id):
     finally:
         conn.close()
 
+
+def update_saved_result_rank(user_id, saved_id, rank_result):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            UPDATE saved_results
+            SET rank_result_json = ?
+            WHERE id = ? AND user_id = ?
+        ''', (json.dumps(rank_result or {}), saved_id, user_id))
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
 def get_saved_results_usage_bytes(user_id):
     conn = get_db()
     try:
@@ -856,7 +911,8 @@ def get_saved_results_usage_bytes(user_id):
                 LENGTH(COALESCE(tone, '')) +
                 LENGTH(COALESCE(constraints_json, '')) +
                 LENGTH(COALESCE(models_json, '')) +
-                LENGTH(COALESCE(results_json, ''))
+                LENGTH(COALESCE(results_json, '')) +
+                LENGTH(COALESCE(rank_result_json, ''))
             ), 0) AS total
             FROM saved_results
             WHERE user_id = ?

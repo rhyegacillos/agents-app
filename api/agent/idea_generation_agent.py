@@ -59,6 +59,10 @@ async def generate_idea_agentic(
     last_text: str = ""
 
     primary_model = model_chain[0] if model_chain else "unknown"
+    logger.info(
+        f"idea_generation.start request_id={request_id} provider={provider} model={primary_model} "
+        f"max_attempts={max_attempts} chain_length={len(model_chain)}"
+    )
 
     for attempt in range(1, max_attempts + 1):
         correction = ""
@@ -70,7 +74,7 @@ async def generate_idea_agentic(
             )
 
         logger.info(
-            f"idea_agent.attempt request_id={request_id} provider={provider} model={primary_model} "
+            f"idea_generation.attempt request_id={request_id} provider={provider} model={primary_model} "
             f"attempt={attempt}/{max_attempts}"
         )
 
@@ -89,8 +93,9 @@ async def generate_idea_agentic(
 
         except (TimeoutError, asyncio.TimeoutError) as e:
             logger.warning(
-                f"idea_agent.timeout_reached_retrying request_id={request_id} provider={provider} "
-                f"model={primary_model} attempt={attempt} timeout_s={timeout_s} next_attempt={attempt+1}/{max_attempts}"
+                f"idea_generation.timeout_reached_retrying request_id={request_id} provider={provider} "
+                f"model={primary_model} attempt={attempt}/{max_attempts} timeout_s={timeout_s} "
+                f"next_attempt={attempt + 1}"
             )
             await asyncio.sleep(0.5)
             last_errors = [f"timeout after {timeout_s}s"]
@@ -98,7 +103,7 @@ async def generate_idea_agentic(
 
         except Exception as e:
             logger.exception(
-                f"idea_agent.generate_error request_id={request_id} provider={provider} "
+                f"idea_generation.generate_error request_id={request_id} provider={provider} "
                 f"model={primary_model} attempt={attempt} error_type={type(e).__name__} error={e}"
             )
             last_errors = [f"{type(e).__name__}: {e}"]
@@ -108,7 +113,7 @@ async def generate_idea_agentic(
         if ok:
             total_ms = int((time.perf_counter() - t0) * 1000)
             logger.info(
-                f"idea_agent.success request_id={request_id} provider={provider} model={primary_model} "
+                f"idea_generation.success request_id={request_id} provider={provider} model={primary_model} "
                 f"attempt={attempt} total_ms={total_ms}"
             )
             return {
@@ -118,13 +123,14 @@ async def generate_idea_agentic(
             }
 
         logger.warning(
-            f"idea_agent.validation_failed request_id={request_id} provider={provider} model={primary_model} "
-            f"attempt={attempt} errors={errors}"
+            f"idea_generation.validation_failed request_id={request_id} provider={provider} "
+            f"model={primary_model} attempt={attempt} errors={errors}"
         )
         last_errors = errors
 
     total_ms = int((time.perf_counter() - t0) * 1000)
     logger.error(
-        f"idea_agent.fallback request_id={request_id} provider={provider} model={primary_model} total_ms={total_ms} errors={last_errors}"
+        f"idea_generation.fallback request_id={request_id} provider={provider} model={primary_model} "
+        f"total_ms={total_ms} errors={last_errors}"
     )
     return {"text": "Error: No valid HTML produced.", "meta": {"attempts": max_attempts, "errors": last_errors}}

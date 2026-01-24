@@ -103,37 +103,35 @@ async def compare_results_agent(
 
     t0 = time.perf_counter()
     logger.info(
-        "compare_results.start",
-        extra={
-            "request_id": request_id,
-            "model": model,
-            "run_a_id": run_a.get("id"),
-            "run_b_id": run_b.get("id"),
-            "max_attempts": max_attempts,
-        },
+        "compare_results.start request_id=%s model=%s run_a_id=%s run_b_id=%s max_attempts=%s",
+        request_id,
+        model,
+        run_a.get("id"),
+        run_b.get("id"),
+        max_attempts,
     )
 
     def to_prompt(run: Dict[str, Any]) -> Dict[str, Any]:
-        results = run.get("results") or {}
-        cleaned_results = {
-            str(k): _coerce_text(v) for k, v in results.items()
-        }
         return {
             "industry": run.get("industry") or "",
             "persona": run.get("tone") or "",
             "constraints": run.get("constraints") or [],
-            "models": run.get("models") or list(results.keys()),
-            "outputs": cleaned_results,
+            "model_label": run.get("selected_model_label") or "",
+            "title": run.get("selected_title") or "",
+            "output": _coerce_text(run.get("selected_output") or ""),
         }
 
     system_prompt = """
-You are a startup analyst comparing two idea-generation runs.
+You are a startup analyst comparing the top-ranked outputs from two runs with the same configuration.
 Return ONLY valid JSON (no markdown, no extra text).
 Be precise and decision-oriented.
+Use only the provided outputs. Do not assume missing facts.
 """.strip()
 
     base_user_prompt = (
-        "Compare Run A and Run B. Identify what changed, why it matters, and which run is stronger.\n\n"
+        "Compare Run A and Run B using only the top-ranked output from each run.\n"
+        "The configuration is the same for both runs.\n"
+        "Identify what changed, why it matters, and which run is stronger.\n\n"
         "Run A:\n"
         f"{json.dumps(to_prompt(run_a), ensure_ascii=False)}\n\n"
         "Run B:\n"
@@ -157,6 +155,7 @@ Be precise and decision-oriented.
         "Rules:\n"
         "- winner must be A, B, or tie.\n"
         "- key_changes must be specific and reference content differences.\n"
+        "- Do not assume facts not stated in the outputs.\n"
         "- Be concise and avoid generic statements.\n"
     )
 
@@ -173,13 +172,11 @@ Be precise and decision-oriented.
             )
 
         logger.info(
-            "compare_results.attempt",
-            extra={
-                "request_id": request_id,
-                "attempt": attempt,
-                "model": model,
-                "has_corrections": bool(last_errors),
-            },
+            "compare_results.attempt request_id=%s attempt=%s model=%s has_corrections=%s",
+            request_id,
+            attempt,
+            model,
+            bool(last_errors),
         )
 
         try:
@@ -191,14 +188,12 @@ Be precise and decision-oriented.
         except Exception as e:
             latency_ms = int((time.perf_counter() - attempt_t0) * 1000)
             logger.exception(
-                "compare_results.generate_error",
-                extra={
-                    "request_id": request_id,
-                    "attempt": attempt,
-                    "model": model,
-                    "latency_ms": latency_ms,
-                    "error_type": type(e).__name__,
-                },
+                "compare_results.generate_error request_id=%s attempt=%s model=%s latency_ms=%s error_type=%s",
+                request_id,
+                attempt,
+                model,
+                latency_ms,
+                type(e).__name__,
             )
             last_errors = [f"generate() raised {type(e).__name__}: {e}"]
             continue
@@ -208,30 +203,33 @@ Be precise and decision-oriented.
         if ok:
             latency_ms = int((time.perf_counter() - attempt_t0) * 1000)
             logger.info(
-                "compare_results.success",
-                extra={
-                    "request_id": request_id,
-                    "attempt": attempt,
-                    "model": model,
-                    "latency_ms": latency_ms,
-                    "winner": obj.get("winner"),
-                },
+                "compare_results.success request_id=%s attempt=%s model=%s latency_ms=%s winner=%s",
+                request_id,
+                attempt,
+                model,
+                latency_ms,
+                obj.get("winner"),
             )
             obj["winner"] = str(obj.get("winner", "")).strip().upper()
             obj["decision_memo"] = _build_decision_memo(obj)
             return {"comparison": obj, "usage": usage}
 
+        logger.warning(
+            "compare_results.validation_failed request_id=%s attempt=%s model=%s errors=%s",
+            request_id,
+            attempt,
+            model,
+            errors,
+        )
         last_errors = errors
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     logger.warning(
-        "compare_results.fallback",
-        extra={
-            "request_id": request_id,
-            "model": model,
-            "latency_ms": latency_ms,
-            "errors": last_errors,
-        },
+        "compare_results.fallback request_id=%s model=%s latency_ms=%s errors=%s",
+        request_id,
+        model,
+        latency_ms,
+        last_errors,
     )
     comparison = _fallback_comparison()
     comparison["decision_memo"] = _build_decision_memo(comparison)

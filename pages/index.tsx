@@ -61,11 +61,6 @@ export default function Home() {
 
             <SignedIn>
               <div className="flex items-center gap-3">
-                {displayName ? (
-                  <span className="hidden sm:inline max-w-[180px] truncate text-sm text-white/80">
-                    {displayName}
-                  </span>
-                ) : null}
                 <Link
                   href="/product"
                   className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
@@ -139,8 +134,8 @@ export default function Home() {
                 <div className="mt-1 text-white/60">Compare outputs</div>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                <div className="text-white font-semibold">Agentic</div>
-                <div className="mt-1 text-white/60">Retries + fallbacks</div>
+                <div className="text-white font-semibold">Report Insights</div>
+                <div className="mt-1 text-white/60">Rank Reports + Decision Summary</div>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <div className="text-white font-semibold">Exportable</div>
@@ -182,7 +177,7 @@ export default function Home() {
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                     <div className="flex items-center justify-between">
                       <div className="text-xs text-white/60">Generated idea</div>
-                      <div className="text-[11px] text-white/60">gpt‑5‑nano • gemini • deepseek</div>
+                      <div className="text-[11px] text-white/60">OpenAI • Gemini • DeepSeek • Grok</div>
                     </div>
                     <div className="mt-2 space-y-2">
                       <div className="h-3 w-5/6 rounded bg-white/10" />
@@ -193,6 +188,21 @@ export default function Home() {
                     <div className="mt-4 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-semibold text-white">
                       Generate Ideas
                       <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-white/60">Report insights</div>
+                      <div className="text-[11px] text-white/60">Rank Reports • Decision Summary</div>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <div className="flex items-center justify-between rounded-lg bg-white/5 px-2.5 py-2 text-[11px] text-white/80">
+                        <span>Top run</span>
+                        <span className="text-white/60">Score 85</span>
+                      </div>
+                      <div className="h-3 w-4/5 rounded bg-white/10" />
+                      <div className="h-3 w-2/3 rounded bg-white/10" />
                     </div>
                   </div>
                 </div>
@@ -283,16 +293,23 @@ export default function Home() {
           </div>
 
           <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Agentic Diff Mode</div>
+            <div className="text-sm font-semibold text-white">Compare Rank Results</div>
             <p className="mt-2 text-sm text-white/70">
-              Compare two saved runs with DeepSeek-powered insights and a clear winner recommendation.
+              Pick two saved runs and see what changed, which option wins, and the top outputs side-by-side.
             </p>
           </div>
 
           <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Rank Reports (on demand)</div>
+            <div className="text-sm font-semibold text-white">Decision Summary Report</div>
             <p className="mt-2 text-sm text-white/70">
-              Select runs, generate a ranked executive summary, and export as PDF or email in one click.
+              Choose several saved runs and get one clear summary of the best choice, why it wins, risks, and next steps.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm font-semibold text-white">Rank Reports</div>
+            <p className="mt-2 text-sm text-white/70">
+              Turn multiple saved runs into a ranked report you can share with stakeholders in one click.
             </p>
           </div>
 
@@ -327,8 +344,8 @@ export default function Home() {
                 <li>• Constraint selection limited</li>
                 <li>• Persona limited</li>
                 <li>• Saved results (100MB)</li>
-                <li>• Agentic Diff Mode</li>
-                <li>• Rank Reports (PDF only)</li>
+                <li>• Compare Rank Results</li>
+                <li>• Decision Summary Report (PDF only)</li>
                 <li>• No recommend combination</li>
                 <li>• No PDF/email export</li>
               </ul>
@@ -364,8 +381,8 @@ export default function Home() {
                 <li>• Full persona set</li>
                 <li>• Recommend Combination</li>
                 <li>• Saved results (1GB)</li>
-                <li>• Agentic Diff Mode</li>
-                <li>• Rank Reports (PDF + email)</li>
+                <li>• Compare Rank Results</li>
+                <li>• Decision Summary Report (PDF + email)</li>
                 <li>• PDF export + email delivery</li>
               </ul>
               <div className="mt-5">

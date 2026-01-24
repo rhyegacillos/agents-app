@@ -42,7 +42,9 @@ async def generate_with_fallback(
 
     for idx, model in enumerate(models, start=1):
         t0 = time.perf_counter()
-        logger.info(f"llm.try provider={provider} model={model} try_index={idx} request_id={request_id}")
+        logger.info(
+            f"model_fallback.try request_id={request_id} provider={provider} model={model} try_index={idx}"
+        )
 
         try:
             result = await asyncio.wait_for(
@@ -58,8 +60,8 @@ async def generate_with_fallback(
 
             latency_ms = int((time.perf_counter() - t0) * 1000)
             logger.info(
-                f"llm.success provider={provider} model={model} try_index={idx} "
-                f"fallback_used={idx>1} request_id={request_id}"
+                f"model_fallback.success request_id={request_id} provider={provider} model={model} "
+                f"try_index={idx} fallback_used={idx > 1} latency_ms={latency_ms}"
             )
 
             return text, {"provider": provider, "model_used": model, "fallback_used": idx > 1, "try_index": idx, "usage": usage}
@@ -69,12 +71,19 @@ async def generate_with_fallback(
 
             # TIMEOUT => DO NOT FALLBACK. Let caller retry same model.
             if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
-                logger.warning(f"llm.timeout provider={provider} model={model} try_index={idx} request_id={request_id} timeout_s={timeout_s}")
+                logger.warning(
+                    f"model_fallback.timeout request_id={request_id} provider={provider} model={model} "
+                    f"try_index={idx} timeout_s={timeout_s} latency_ms={latency_ms}"
+                )
 
                 raise
 
             transient = _is_transient_non_timeout(e)
-            logger.warning(f"llm.error provider={provider} model={model} try_index={idx} request_id={request_id} err={type(e).__name__}: {e}")
+            logger.warning(
+                f"model_fallback.error request_id={request_id} provider={provider} model={model} "
+                f"try_index={idx} latency_ms={latency_ms} error_type={type(e).__name__} "
+                f"error={e} transient={transient}"
+            )
 
             last_exc = e
             if not transient:

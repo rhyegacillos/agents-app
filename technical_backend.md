@@ -1,0 +1,154 @@
+# Technical Backend Documentation
+
+This document describes how the backend works, with a focus on how agents are orchestrated and how the frontend interacts with them.
+
+## Architecture Overview
+
+- FastAPI app: `api/index.py` is the main entrypoint and request router.
+- Agents: `api/agent/*.py` contain model-orchestrated logic (generation, ranking, comparison, recommendations, email).
+- Storage: SQLite DB at `data/usage.db` (see `api/db.py`). Container volume maps `/app/data`.
+- Static frontend: built Next.js output served from `/app/static` in the container.
+- PDF/Email: HTML -> PDF via WeasyPrint in `api/utils/pdf_utils.py`; email delivery via `api/agent/email_agent.py`.
+
+## LLM Clients and Fallback Chains
+
+`api/index.py` configures client instances and fallback model chains:
+
+- OpenAI: `openai_client`
+- Gemini: `google_client` (AsyncOpenAI-compatible for REST) and `gemini_client` (google genai)
+- Grok: `grok_client`
+- DeepSeek: `deepseek_client`
+
+Fallback chains are defined in `FALLBACK_CHAINS`. Each model ID maps to a provider and a list of fallback models used by `agent/model_fallback.py`.
+
+## How Agents Are Orchestrated
+
+There is no direct agent-to-agent messaging. The FastAPI layer in `api/index.py` orchestrates agent calls and passes outputs between them when needed.
+
+### 1) Idea Generation (multi-model run)
+
+Endpoint: `POST /api` (see `api/index.py`)
+
+Flow:
+1) Frontend sends `industry`, `constraints`, `tone`, and model labels.
+2) Backend resolves model labels to model IDs (based on provider/fallback chains).
+3) For each model ID, `generate_idea_agentic(...)` is called.
+   - `agent/idea_generation_agent.py` uses `generate_with_fallback(...)` from `agent/model_fallback.py` to:
+     - call a model,
+     - handle timeouts,
+     - fail over to the next model in the chain when appropriate,
+     - validate output formatting (HTML only).
+4) After outputs are collected, if there is more than one model:
+   - `rank_result_agent(...)` is invoked (DeepSeek) to rank the model outputs for this run.
+   - `finalize_rank_result(...)` injects human labels and titles.
+5) Response includes:
+   - `results` (HTML per model),
+   - `rank_result` (if available),
+   - `usage` (token counts).
+
+Frontend auto-save:
+- The frontend calls `POST /api/saved-results` after generation to persist the run (auto-save behavior lives in `pages/product.tsx`).
+
+### 2) Compare Results (Diff Mode)
+
+Endpoint: `POST /api/compare-results`
+
+Flow:
+1) Frontend sends two saved run IDs.
+2) Backend loads both runs and validates that industry/persona/constraints/model set match.
+3) If rank results are missing, `rank_result_agent(...)` is run per saved run to produce rankings.
+4) For each run, the top-ranked model output is selected.
+5) `compare_results_agent(...)` (DeepSeek) compares the two top outputs and returns:
+   - winner, summary, key changes, rationale, risks.
+6) The comparison is saved in `saved_comparisons`.
+7) Response includes a comparison snapshot and top outputs for display.
+
+Caching:
+- If a prior comparison exists, it is returned from `saved_comparisons` without re-running the agent.
+
+### 3) Decision Summary Report (Rank Report)
+
+Endpoint: `POST /api/rank-report`
+
+Flow:
+1) Frontend selects 1-5 saved runs (or “all runs”) and posts run IDs.
+2) Backend loads the saved runs.
+3) If the report is cached (same run set), return cached report; else:
+   - `rank_report_agent(...)` (DeepSeek) creates a decision-ready summary:
+     - overall summary
+     - ranked runs (0-100 scores + rationale)
+     - key insights, risks, next steps
+     - email brief
+4) Report and a snapshot of runs are stored in `saved_rank_reports`.
+5) PDF is generated via `create_rank_report_html(...)` + `html_to_pdf_bytes(...)`.
+6) Optional email uses `send_report_email(...)` (email_agent).
+
+### 4) Recommendations (Optional)
+
+Endpoint: `POST /api/recommend-combination`
+
+Flow:
+1) Frontend sends industry + available constraints/personas.
+2) `recommend_combination_agent(...)` (Grok) returns a recommended configuration.
+
+## Email Agent (Centralized)
+
+`api/agent/email_agent.py` is the single email sender for all features. It is called from:
+
+- `/api/email` (generated results)
+- `/api/compare-results/{id}/email`
+- `/api/rank-reports/{id}/email`
+- `/api/rank-report` (when output = email or both)
+
+This agent builds the final subject and body, attaches PDFs, and handles delivery failures.
+
+## Persistence Model
+
+Tables (see `api/db.py`):
+
+- `user_usage`: token usage, API and email counts.
+- `saved_results`: generated results + rank_result per run.
+- `saved_comparisons`: diff/compare outputs.
+- `saved_rank_reports`: decision summary reports with `runs_snapshot`.
+
+Snapshots:
+- Decision summary reports store a `runs_snapshot` so PDFs and views still render even if original runs are deleted.
+
+## Frontend <-> Backend Contract (High-Level)
+
+Key endpoints used by the frontend (see `pages/product.tsx`):
+
+- Generation: `POST /api`
+- Save results: `POST /api/saved-results` (auto-save)
+- Load saved results: `GET /api/saved-results` and `GET /api/saved-results/{id}`
+- Compare results: `POST /api/compare-results`
+- Load comparisons: `GET /api/compare-results`
+- Decision summary report: `POST /api/rank-report`
+- Load saved reports: `GET /api/rank-reports` and `GET /api/rank-reports/{id}`
+- PDF/Email:
+  - Generated report: `POST /api/download-pdf`, `POST /api/email`
+  - Compare report: `GET /api/compare-results/{id}/pdf`, `POST /api/compare-results/{id}/email`
+  - Decision summary report: `GET /api/rank-reports/{id}/pdf`, `POST /api/rank-reports/{id}/email`
+
+## Logging
+
+Agents use structured logging with event names:
+
+- `idea_generation.*` in `agent/idea_generation_agent.py`
+- `model_fallback.*` in `agent/model_fallback.py`
+- `rank_result.*`, `compare_results.*`, `rank_report.*`
+
+The Docker image runs uvicorn with info-level logging, and `logging.basicConfig(..., force=True)` ensures app logs flow to stdout.
+
+## Security and Limits
+
+- Auth: `fastapi_clerk_auth` with `ClerkHTTPBearer`.
+- Usage limits and counters in `user_usage`.
+- Token counts are updated when LLM usage is returned.
+
+## Where to Look in Code
+
+- API routing and orchestration: `api/index.py`
+- Agents: `api/agent/*.py`
+- Database helpers: `api/db.py`
+- PDF rendering: `api/utils/pdf_utils.py`

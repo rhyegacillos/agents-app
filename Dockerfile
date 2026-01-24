@@ -64,5 +64,8 @@ VOLUME /app/data
 # Expose port 8000 (FastAPI will serve everything)
 EXPOSE 8000
 
+# Ensure logs flush to container output
+ENV PYTHONUNBUFFERED=1
+
 # Start the FastAPI server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--access-log"]
