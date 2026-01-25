@@ -26,12 +26,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Ensure logs are flushed immediately
+ENV PYTHONUNBUFFERED=1
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the FastAPI server
-COPY api/server.py .
+# Copy the entire api directory (including agents)
+COPY api/ api/
 
 # Copy the Next.js static export from builder stage
 COPY --from=frontend-builder /app/out ./static
@@ -43,5 +46,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Expose port 8000 (FastAPI will serve everything)
 EXPOSE 8000
 
-# Start the FastAPI server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the FastAPI server using the new agentic entry point
+# Note: We run from /app, so 'api.index:app' is the correct module path
+CMD ["uvicorn", "api.index:app", "--host", "0.0.0.0", "--port", "8000"]

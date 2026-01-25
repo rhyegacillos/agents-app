@@ -138,6 +138,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
     const [emailStatus, setEmailStatus] = useState('');
     const [selectedLanguage, setSelectedLanguage] = useState('English');
     const [prescriptions, setPrescriptions] = useState<PrescriptionEntry[]>([]);
+    const [actions, setActions] = useState<any[]>([]);
     const [doctorFieldErrors, setDoctorFieldErrors] = useState({
         name: false,
         phone: false,
@@ -416,6 +417,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
         setStatusMessage('');
         setEmailStatus('');
         setPrescriptions([]);
+        setActions([]);
         setLoading(true);
 
         const jwt = await getToken();
@@ -542,6 +544,18 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                             }
                         } catch {
                             // Ignore metadata parse failures
+                        }
+                        return;
+                    }
+
+                    if (ev.event === 'actions') {
+                        try {
+                            const data = JSON.parse(ev.data);
+                            if (Array.isArray(data)) {
+                                setActions(data);
+                            }
+                        } catch {
+                            // Ignore
                         }
                         return;
                     }
@@ -733,12 +747,25 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
     }
 
     const hasSummary = output.trim().includes('data-section="summary"');
-    const renderedOutput =
-        output.trim().startsWith('<section')
-            ? output
-            : `<pre style="white-space: pre-wrap; font-family: 'Plus Jakarta Sans', sans-serif;">${escapeHtml(
-                  output
-              )}</pre>`;
+    
+    // Prepare main summary display (excluding email section)
+    let renderedOutput = output;
+    if (output.trim().startsWith('<section')) {
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(output, 'text/html');
+            const emailSection = doc.querySelector('section[data-section="patient_email"]');
+            if (emailSection) emailSection.remove();
+            renderedOutput = doc.body.innerHTML;
+        } catch {
+            // fallback if DOMParser fails (SSR or other issues), keep original
+        }
+    } else {
+        renderedOutput = `<pre style="white-space: pre-wrap; font-family: 'Plus Jakarta Sans', sans-serif;">${escapeHtml(output)}</pre>`;
+    }
+
+    // Prepare email preview
+    const emailPreviewHtml = extractDraftEmailHtml(output) || (hasSummary ? '' : extractDraftEmailText(output));
 
     return (
         <div className="mx-auto max-w-5xl px-6 pb-16">
@@ -1089,6 +1116,37 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                         className="markdown-content prose prose-slate max-w-none prose-headings:font-display prose-headings:text-slate-900 dark:prose-invert dark:prose-headings:text-slate-100"
                         dangerouslySetInnerHTML={{ __html: renderedOutput }}
                     />
+                    
+                    {actions.length > 0 && (
+                        <div className="mt-8 rounded-xl border border-blue-200 bg-blue-50/50 p-6 dark:border-blue-800/60 dark:bg-blue-900/20">
+                            <h3 className="mb-4 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                Suggested Next Actions
+                            </h3>
+                            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                {actions.map((action, idx) => (
+                                    <div
+                                        key={idx}
+                                        className="flex flex-col justify-between rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-slate-700 dark:bg-slate-900"
+                                    >
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
+                                                    {action.type}
+                                                </span>
+                                            </div>
+                                            <p className="font-semibold text-slate-900 dark:text-slate-100">
+                                                {action.label}
+                                            </p>
+                                            <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                                                {action.details}
+                                            </p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {prescriptions.length > 0 && (
                         <div className="mt-6 rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950/80">
                             <div className="flex flex-col gap-1">
@@ -1118,6 +1176,19 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                 <h2 className="text-lg font-semibold text-slate-900 mb-4 dark:text-slate-100">
                                     Send Email
                                 </h2>
+                                
+                                {emailPreviewHtml && (
+                                    <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+                                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                            Email Preview
+                                        </p>
+                                        <div 
+                                            className="prose prose-sm prose-slate max-w-none dark:prose-invert"
+                                            dangerouslySetInnerHTML={{ __html: emailPreviewHtml }} 
+                                        />
+                                    </div>
+                                )}
+
                                 <div className="space-y-4">
                                     <div className="space-y-2">
                                         <label htmlFor="patient-email" className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
