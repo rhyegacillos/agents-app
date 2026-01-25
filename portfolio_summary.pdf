@@ -1,0 +1,56 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1138 >>
+stream
+BT
+/F1 12 Tf
+72 750 Td
+(IdeaGen Portfolio Summary) Tj
+0 -14 Td () Tj
+0 -14 Td (What it is:) Tj
+0 -14 Td (- Multi-model idea generator with ranking, compare, and decision reports.) Tj
+0 -14 Td (- Focused on reliable, decision-ready outputs for stakeholders.) Tj
+0 -14 Td () Tj
+0 -14 Td (LLM engineering highlights:) Tj
+0 -14 Td (- Provider routing across OpenAI, Gemini, DeepSeek, and Grok.) Tj
+0 -14 Td (- Agentic JSON validation with retries and fallbacks.) Tj
+0 -14 Td (- Model ranking rubric: clarity, feasibility, differentiation, actionability,) Tj
+0 -14 Td (  risk awareness, stakeholder readiness.) Tj
+0 -14 Td (- Compare Results uses top-ranked outputs for decision diffs.) Tj
+0 -14 Td () Tj
+0 -14 Td (System components:) Tj
+0 -14 Td (- Next.js UI for configuration and report review.) Tj
+0 -14 Td (- FastAPI backend for orchestration and report generation.) Tj
+0 -14 Td (- SQLite persistence for runs, comparisons, and summaries.) Tj
+0 -14 Td (- PDF and email exports via WeasyPrint + Resend.) Tj
+0 -14 Td () Tj
+0 -14 Td (Deliverables:) Tj
+0 -14 Td (- Generated results, model ranking, compare reports, decision summaries.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001431 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1501
+%%EOF

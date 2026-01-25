@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020" />
+      <stop offset="100%" stop-color="#0b1228" />
+    </linearGradient>
+    <style>
+      .box { fill: #0f172a; stroke: #334155; stroke-width: 1.2; }
+      .box-accent { fill: #111827; stroke: #3b82f6; stroke-width: 1.4; }
+      .text { fill: #e5e7eb; font-family: Arial, sans-serif; font-size: 14px; }
+      .title { font-size: 15px; font-weight: 700; }
+      .label { font-size: 12px; fill: #cbd5f5; }
+      .arrow { stroke: #94a3b8; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#94a3b8" />
+    </marker>
+  </defs>
+
+  <rect width="1000" height="560" fill="url(#bg)" />
+
+  <!-- UI -->
+  <rect x="40" y="80" width="180" height="80" rx="14" ry="14" class="box" />
+  <text x="58" y="112" class="text title">UI (Next.js)</text>
+  <text x="58" y="134" class="text label">Config + Results</text>
+
+  <!-- API -->
+  <rect x="260" y="70" width="200" height="100" rx="14" ry="14" class="box-accent" />
+  <text x="278" y="102" class="text title">FastAPI Backend</text>
+  <text x="278" y="124" class="text label">Routing + Orchestration</text>
+  <text x="278" y="144" class="text label">Exports + Email</text>
+
+  <!-- Agent Layer -->
+  <rect x="500" y="60" width="210" height="150" rx="14" ry="14" class="box" />
+  <text x="520" y="92" class="text title">Agent Layer</text>
+  <text x="520" y="116" class="text label">- rank_result</text>
+  <text x="520" y="134" class="text label">- compare_results</text>
+  <text x="520" y="152" class="text label">- rank_report</text>
+  <text x="520" y="170" class="text label">- email_agent</text>
+
+  <!-- LLM Providers -->
+  <rect x="740" y="60" width="210" height="150" rx="14" ry="14" class="box" />
+  <text x="760" y="92" class="text title">LLM Providers</text>
+  <text x="760" y="116" class="text label">OpenAI</text>
+  <text x="760" y="134" class="text label">Gemini</text>
+  <text x="760" y="152" class="text label">DeepSeek</text>
+  <text x="760" y="170" class="text label">Grok</text>
+
+  <!-- Storage -->
+  <rect x="260" y="240" width="200" height="80" rx="14" ry="14" class="box" />
+  <text x="278" y="272" class="text title">SQLite Storage</text>
+  <text x="278" y="294" class="text label">Runs + Reports + Usage</text>
+
+  <!-- PDF -->
+  <rect x="500" y="260" width="210" height="70" rx="14" ry="14" class="box" />
+  <text x="520" y="292" class="text title">PDF Renderer</text>
+  <text x="520" y="312" class="text label">WeasyPrint</text>
+
+  <!-- Email -->
+  <rect x="740" y="260" width="210" height="70" rx="14" ry="14" class="box" />
+  <text x="760" y="292" class="text title">Email Delivery</text>
+  <text x="760" y="312" class="text label">Resend</text>
+
+  <!-- Arrows -->
+  <line x1="220" y1="120" x2="260" y2="120" class="arrow" />
+  <line x1="460" y1="120" x2="500" y2="120" class="arrow" />
+  <line x1="710" y1="120" x2="740" y2="120" class="arrow" />
+
+  <line x1="360" y1="170" x2="360" y2="240" class="arrow" />
+
+  <!-- LLM influence on outputs -->
+  <line x1="845" y1="210" x2="605" y2="260" class="arrow" />
+  <line x1="845" y1="210" x2="845" y2="260" class="arrow" />
+
+  <text x="40" y="520" class="text label">IdeaGen architecture: UI -> API -> Agents -> LLMs, with storage, PDF, and email outputs.</text>
+</svg>

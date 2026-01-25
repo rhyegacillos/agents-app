@@ -1,40 +1,101 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
+# IdeaGen
 
-## Getting Started
+IdeaGen is a multi-model business idea generator and report engine. It generates ideas, ranks model outputs, compares runs, and produces decision-ready reports for stakeholders.
 
-First, run the development server:
+## Why this project (LLM engineering focus)
+- Multi-provider orchestration (OpenAI, Gemini, DeepSeek, Grok).
+- Agentic validation loops for structured JSON outputs.
+- Automated ranking and diff analysis across runs.
+- Exportable PDF/email reports with consistent formatting.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Architecture (high level)
+```
+UI (Next.js) ---> FastAPI API ---> LLM Providers
+     |                |               |-- OpenAI
+     |                |               |-- Gemini
+     |                |               |-- DeepSeek
+     |                |               |-- Grok
+     |                |
+     |                +--> SQLite (saved runs, reports, usage)
+     |                +--> PDF renderer (xhtml2pdf)
+     |                +--> Resend email
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## LLM engineering highlights
+- Provider routing and fallback chains for resilience.
+- Agentic JSON validation and retries for structured outputs.
+- Separate analysis agents for ranking and comparisons.
+- Strict prompts to avoid assumptions and keep outputs factual.
 
-You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
+## Agent flows
+- Idea generation: multi-model outputs for the same config.
+- Model ranking (per run): ranks model outputs using a rubric.
+- Compare results (across runs): compares top-ranked outputs for the same config.
+- Decision Summary Report: ranks multiple runs and summarizes insights.
+- Recommend combination: suggests constraints/persona for a target industry.
+- Email agent: centralized report email sending.
 
-[API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.ts`.
+## Ranking rubric (per run)
+The model ranking agent scores outputs on:
+- Clarity
+- Feasibility
+- Differentiation
+- Actionability
+- Risk awareness
+- Stakeholder readiness
 
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
+## Guardrails
+- JSON schema validation in agent responses.
+- Retry loops with capped attempts.
+- Fallback summaries for failed validations.
+- Consistent model label mapping (user-friendly provider names).
 
-This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Evaluation approach (portfolio ready)
+- Per-run ranking uses the rubric above.
+- Compare Results uses top-ranked outputs only and highlights key changes.
+- Decision Summary Report ranks runs and summarizes risks and next steps.
+- Manual spot checks verify that outputs match the configuration and avoid hallucination.
 
-## Learn More
+## Local development
 
-To learn more about Next.js, take a look at the following resources:
+### Frontend
+```bash
+npm install
+npm run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn-pages-router) - an interactive Next.js tutorial.
+### Backend (FastAPI)
+```bash
+cd api
+uvicorn index:app --reload --port 8000
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Docker (recommended)
+```bash
+export $(cat .env | grep -v '^#' | xargs)
+docker build --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" -t ideagen-app .
+docker run -p 8000:8000 \
+  -v ideagen_data:/app/data \
+  -e CLERK_SECRET_KEY="$CLERK_SECRET_KEY" \
+  -e CLERK_JWKS_URL="$CLERK_JWKS_URL" \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e RESEND_API_KEY="$RESEND_API_KEY" \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e GROK_API_KEY="$GROK_API_KEY" \
+  -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+  -e DEEPSEEK_API_URL="$DEEPSEEK_API_URL" \
+  -e GROK_API_URL="$GROK_API_URL" \
+  -e GEMINI_API_URL="$GEMINI_API_URL" \
+  ideagen-app
+```
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/pages/building-your-application/deploying) for more details.
+## Documentation
+- API reference: `api_reference.md`
+- Data model/schema: `data_model.md`
+- Deployment runbook: `deployment_runbook.md`
+- Troubleshooting: `troubleshooting.md`
+- Security/privacy: `security_privacy.md`
+- Billing/limits: `billing_limits.md`
+- UX flow guide: `ux_flow.md`
+- Launch checklist: `checklist.md`
+- Roadmap: `roadmap.md`

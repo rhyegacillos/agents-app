@@ -8,11 +8,11 @@ Generate, customize, and compare business ideas tailored for the AI agent econom
 ## Key Features
 
 ### 1. Multi-Model AI Generation
-Users can generate business ideas using up to four distinct AI models to get diverse perspectives:
-*   **OpenAI** (labeled as *GPT-5 Nano*)
-*   **Google** (labeled as *Gemini 3 Pro Preview*)
-*   **DeepSeek** (labeled as *DeepSeek Chat*)
-*   **Grok** (labeled as *Grok 4.1 Fast Reasoning*)
+Users can generate business ideas using up to four distinct AI model providers to get diverse perspectives:
+*   **OpenAI**
+*   **Google Gemini**
+*   **DeepSeek**
+*   **Grok**
 *   *Note: Results are displayed in a tabbed interface for easy side-by-side comparison.*
 
 ### 2. Advanced Customization
@@ -36,11 +36,27 @@ The app differentiates features based on user status (controlled via Clerk authe
     *   **Unlocks all Constraints** (Budget, Business Model).
     *   **Enables Export Tools** (PDF & Email).
 
-### 4. Export & Sharing Tools (Premium)
-*   **PDF Report:** Generates a professional, formatted PDF containing the user's configuration and the full text of ideas from all selected models.
-*   **Email Integration:** Allows users to send the generated PDF report directly to any email address via the **Resend** API.
+### 4. Saved Results & Run Management
+*   **Auto-save:** Generated runs are saved automatically for easy retrieval.
+*   **Saved Results:** Users can load, compare, or delete past runs from a dedicated Saved Results panel.
 
-### 5. Technical & Security Features
+### 5. Model Ranking (Per Run)
+*   **Automatic ranking:** A separate analysis agent ranks model outputs for the same configuration using clarity, feasibility, differentiation, actionability, risk awareness, and stakeholder-readiness.
+*   **Rank highlights:** Summarizes why a model performed best and lists key decision-ready highlights.
+
+### 6. Compare Results (Across Runs)
+*   **Diff Insight:** Compares the top-ranked outputs of two runs with the same configuration.
+*   **Winner + rationale:** Highlights key changes, risks, and a winner to support quick decisions.
+
+### 7. Decision Summary Report (Across Runs)
+*   **Rank Reports:** Ranks multiple saved runs and summarizes insights, risks, and next steps.
+*   **Stakeholder-ready:** Produces a single decision-ready summary across runs.
+
+### 8. Export & Sharing Tools (Premium)
+*   **PDF Reports:** Generates professional PDFs for generated results, compare results, and decision summaries.
+*   **Email Integration:** Sends PDFs directly via the **Resend** API.
+
+### 9. Technical & Security Features
 *   **Authentication:** Secure sign-up and sign-in powered by **Clerk**.
 *   **Responsive UI:** A modern, dark-mode compatible interface built with **Next.js** and **Tailwind CSS**.
 *   **Backend Processing:** A robust **FastAPI (Python)** backend handles the orchestration of AI requests and PDF generation (`xhtml2pdf`).
