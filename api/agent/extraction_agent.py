@@ -64,6 +64,8 @@ def extract_uploaded_text_from_file(file: Base64File) -> Tuple[str, str]:
         try:
             reader = PdfReader(io.BytesIO(raw_bytes))
             text = "\n".join((page.extract_text() or "") for page in reader.pages)
+            # Collapse multiple newlines into single newlines, preserving paragraph breaks
+            text = re.sub(r'(\n\s*){2,}', '\n', text).strip()
             return ensure_text(text), filename
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to read PDF file {filename}.") from exc

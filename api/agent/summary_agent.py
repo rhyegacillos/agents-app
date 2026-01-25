@@ -5,10 +5,9 @@ from typing import AsyncGenerator, Dict, Any
 from openai import AsyncOpenAI
 from .models import Visit
 from .utils import generate_with_fallback, get_logger
-from . import extraction_agent, coordinator_agent
+from . import extraction_agent, coordinator_agent, memory_agent
 
 logger = get_logger(__name__)
-
 
 system_prompt = """
 You are provided with notes written by a doctor from a patient's visit.
@@ -277,13 +276,16 @@ def ensure_html_summary(raw: str, template: dict) -> str:
         f"<section data-section=\"patient_email\"><h3>{SECTION_HEADINGS['patient_email']}</h3>{patient_email_html}</section>"
     )
 
-
 def summary_prompt_for(visit: Visit, context: dict) -> str:
     attachment_block = ""
-    if context["attachments"]:
+    if context.get("attachments"):
         attachment_block = "\n\n" + "\n\n".join(
             f"{label}:\n{text}" for label, text in context["attachments"]
         )
+    
+    history_block = ""
+    if context.get("patient_history"):
+        history_block = f"\n\n{context['patient_history']}"
 
     template = get_template(visit)
 
@@ -291,7 +293,7 @@ def summary_prompt_for(visit: Visit, context: dict) -> str:
 Patient Name: {visit.patient_name}
 Date of Visit: {visit.date_of_visit}
 Notes:
-{context["notes_text"]}{attachment_block}
+{context["notes_text"]}{attachment_block}{history_block}
 
 Template: {template["label"]}
 {template["summary_html"]}
@@ -330,6 +332,18 @@ async def generate_summary_stream(
     template = get_template(visit)
     final_html = ensure_html_summary(raw_text, template)
     
+    # Memory Agent: Remember this visit
+    # We store the original context, not the generated summary, for a more accurate history.
+    try:
+        await memory_agent.remember_visit(
+            context['combined_text'], 
+            visit.patient_name, 
+            visit.date_of_visit, 
+            client
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save memory: {e}")
+
     # Coordinator Agent: Extract actions
     actions = await coordinator_agent.extract_actions(final_html, client)
     
@@ -366,7 +380,8 @@ async def run_summary_pipeline(
     Orchestrates the full summary generation pipeline:
     1. Extract text/data from visit files.
     2. Extract doctor info.
-    3. Generate and stream summary.
+    3. Recall patient history (RAG).
+    4. Generate and stream summary.
     """
     logger.info(f"Starting summary pipeline for patient: {visit.patient_name}")
     
@@ -374,6 +389,15 @@ async def run_summary_pipeline(
     context = await extraction_agent.build_visit_context(visit, client)
     doctor_info = await extraction_agent.extract_doctor_info(context["combined_text"], client)
 
-    # 2. Generation Phase
+    # 2. Memory Recall Phase
+    # We use the current visit notes/transcripts as the query to find relevant past history
+    history = await memory_agent.recall_patient_history(
+        patient_name=visit.patient_name,
+        query=context["combined_text"],
+        client=client
+    )
+    context["patient_history"] = history
+
+    # 3. Generation Phase
     async for chunk in generate_summary_stream(visit, context, doctor_info, client):
         yield chunk

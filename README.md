@@ -31,6 +31,55 @@ The system doesn't just summarize; it plans.
 *   **Action Extraction:** It automatically parses the "Next Steps" of your summary.
 *   **Structured Cards:** It presents actionable items (e.g., "Schedule Follow-up", "Prescribe Amoxicillin") as structured cards, ready for future one-click execution.
 
+### 5. Long-Term Patient Memory (RAG)
+The agent remembers.
+*   **Context Retrieval:** Before every summary, the **Memory Agent** searches the patient's history.
+*   **Continuity:** The generated summary automatically flags changes from previous visits (e.g., "Condition has improved since Jan 12").
+
+---
+
+## 🤖 The MediNotes Assistant: A Detailed Look
+
+The centerpiece of the user experience is the **MediNotes Assistant**, an interactive chat co-pilot that provides on-demand clinical and administrative support. It is more than a simple chatbot; it is a stateful, context-aware agent.
+
+### Core Capabilities
+
+1.  **Proactive Patient Briefing:**
+    *   **Automatic Context:** As soon as a doctor enters a patient's name in the main form (or selects one via the "Switch" button), the Assistant automatically queries the **Memory Agent**.
+    *   **Immediate Insight:** If a patient history exists, the Assistant proactively provides a one-sentence summary (e.g., *"Juan was last seen on Jan 21 for a headache..."*), giving the doctor immediate context without needing to ask.
+
+2.  **Context-Aware Q&A:**
+    *   **Dual Context:** The Assistant has access to two sources of truth: the **current, in-progress consultation** (notes, uploads) and the **long-term patient history** (past visits stored in the RAG system).
+    *   **Intelligent Disambiguation:** When asked a question like "What was the last prescription?", it knows to check the RAG memory. When asked, "Summarize what I just wrote," it focuses on the current session.
+
+3.  **On-Demand Document Generation:**
+    *   The Assistant can be prompted to perform tasks that extend beyond the main summary. For example:
+        *   *"Draft a referral letter to a cardiologist based on this visit."*
+        *   *"Create a simple list of instructions for the patient."*
+        *   *"Compare the blood pressure from this visit to the last three visits."*
+
+4.  **Application User Guide:**
+    *   The Assistant is programmed with knowledge of its own capabilities. A new user can ask:
+        *   *"How do I upload an audio file?"*
+        *   *"What does the Premium plan include?"*
+    *   This turns the chat into a dynamic, interactive help manual.
+
+### How it Works: The Agentic Loop
+
+The Assistant is powered by the `chat_agent.py` and follows a sophisticated loop for every user message:
+
+1.  **State Injection:** The frontend passes the user's message history, the current `patientName`, and the current `summary` text to the `/api/chat` endpoint.
+2.  **Memory Recall (RAG):** The `ChatAgent` takes the user's last message and the `patientName` and sends a query to the `MemoryAgent`. The `MemoryAgent` performs a semantic search on the vector store (`memory_db.json`) to find the most relevant historical documents.
+3.  **Prompt Engineering:** The `ChatAgent` dynamically constructs a rich prompt for the LLM, including:
+    *   Its core persona ("You are MediNotes Pro...").
+    *   The full conversation history.
+    *   The retrieved patient history from the Memory Agent.
+    *   The current, in-progress summary from the main form.
+4.  **LLM Generation (Streaming):** The request is sent to the designated model (e.g., Gemini 2.5), which streams the response back.
+5.  **SSE Formatting:** The backend formats the response as Server-Sent Events (SSE) to handle multi-line text and ensure a smooth, real-time typing effect on the frontend.
+
+This entire process happens in seconds, providing a seamless, conversational experience that is deeply integrated with the application's data and state.
+
 ---
 
 ## 🧠 Agentic Architecture
@@ -43,7 +92,7 @@ Unlike traditional monolithic applications, this backend is composed of speciali
 
 ### Core Agents
 
-The system is powered by four primary agents located in `api/agent/`:
+The system is powered by five primary agents located in `api/agent/`:
 
 #### 1. Extraction Agent (`extraction_agent.py`)
 *   **Role:** The "senses" of the system. It handles the ingestion of unstructured medical data.
@@ -69,7 +118,14 @@ The system is powered by four primary agents located in `api/agent/`:
     *   **Structured Output:** Converts unstructured text (e.g., "See patient in 2 weeks") into structured JSON data (e.g., `{"type": "schedule", "date": "2025-02-14"}`).
 *   **Pattern:** **Extractor**. It runs as a post-processing step to turn text into data.
 
-#### 4. Email Agent (`email_agent.py`)
+#### 4. Memory Agent (`memory_agent.py`)
+*   **Role:** The "hippocampus".
+*   **Capabilities:**
+    *   **RAG (Retrieval-Augmented Generation):** Stores every generated summary in a vector database (`vector_store.py`).
+    *   **Recall:** Retrieves relevant past summaries for the current patient to provide historical context to the LLM.
+*   **Pattern:** **State Manager**. It maintains long-term persistence across sessions.
+
+#### 5. Email Agent (`email_agent.py`)
 *   **Role:** The "dispatcher".
 *   **Capabilities:**
     *   **Intelligent Routing:** Uses an **Agent Loop** to analyze the request and decide on the necessary steps.

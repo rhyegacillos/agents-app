@@ -35,7 +35,6 @@ async def extract_actions(summary_text: str, client: AsyncOpenAI) -> List[Dict[s
                 {"role": "user", "content": f"Summary:\n{summary_text}"}
             ],
             response_format={"type": "json_object"},
-            temperature=0
         )
         content = response.choices[0].message.content or "{}"
         data = json.loads(content)

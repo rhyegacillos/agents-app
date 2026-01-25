@@ -53,3 +53,45 @@ async def generate_with_fallback(
     
     logger.error(f"All models failed. Last error: {last_exception}")
     raise last_exception or Exception("All models failed generation.")
+
+
+async def generate_stream_with_fallback(
+    client: AsyncOpenAI,
+    messages: List[Dict[str, Any]],
+    models: Optional[List[str]] = None,
+    max_retries: int = 1,
+    **kwargs
+) -> Any:
+    """
+    Attempts to start a streaming response using a fallback chain.
+    Returns an async generator of chunks.
+    """
+    chain = models or DEFAULT_MODEL_CHAIN
+    last_exception = None
+
+    for model in chain:
+        for attempt in range(max_retries + 1):
+            try:
+                logger.info(f"Attempting stream with model: {model} (attempt {attempt + 1})")
+                stream = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    stream=True,
+                    **kwargs
+                )
+                logger.info(f"Stream established successfully with model: {model}")
+                # If we get here, the stream connection is established.
+                # We yield from it. If it breaks mid-stream, we can't easily fallback retry 
+                # without re-generating text, so we assume connection open = success for now.
+                return stream
+            except Exception as e:
+                logger.warning(f"Stream init failed with model {model}: {e}")
+                last_exception = e
+                pass
+
+    logger.error(f"All streaming models failed. Last error: {last_exception}")
+    # Fallback to yielding a friendly error message as a stream
+    async def error_stream():
+        yield type('Chunk', (object,), {'choices': [type('Choice', (object,), {'delta': type('Delta', (object,), {'content': "I apologize, but the AI service is currently unavailable."})()})()]})()
+    
+    return error_stream()

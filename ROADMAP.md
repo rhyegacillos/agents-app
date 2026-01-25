@@ -26,22 +26,22 @@ The goal is to move from *processing* data to *understanding and acting* on it.
 - [x] **UX:** Display "Suggested Actions" cards below the summary (e.g., "Book Follow-up").
 
 ### 2. 🧠 Long-Term Patient Memory (RAG)
-**Status:** 🔴 Not Started
+**Status:** ✅ Completed
 **Goal:** Enable the agent to "know" the patient's history.
-- [ ] **Feature:** Retrieve past summaries during generation to highlight changes/trends.
-- [ ] **Agent:** `memory_agent.py`
-- [ ] **Tech:** Vector Database (e.g., ChromaDB/PGVector).
-- [ ] **Tools:**
-    - `store_visit_summary(patient_id, vector)`
-    - `query_patient_history(patient_id, query)`
+- [x] **Feature:** Retrieve past summaries during generation to highlight changes/trends.
+- [x] **Agent:** `memory_agent.py`
+- [x] **Tech:** Vector Database (Local JSON VectorStore).
+- [x] **Tools:**
+    - `store_visit_summary` (Completed)
+    - `query_patient_history` (Completed)
 
 ### 3. 💬 Interactive Clinical Co-pilot
-**Status:** 🔴 Not Started
+**Status:** ✅ Completed
 **Goal:** Allow doctors to converse with the data.
-- [ ] **Feature:** Chat interface to query the transcript or request edits.
-- [ ] **Endpoint:** `/api/chat`
-- [ ] **Tools:**
-    - `search_transcript(query)`
+- [x] **Feature:** Chat interface to query the transcript or request edits.
+- [x] **Endpoint:** `/api/chat`
+- [x] **Tools:**
+    - `search_transcript(query)` (Implicit via RAG)
     - `update_summary_section(section, new_content)`
     - `draft_referral_letter(to_doctor)`
 

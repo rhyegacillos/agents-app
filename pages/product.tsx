@@ -5,7 +5,314 @@ import { useAuth } from '@clerk/nextjs';
 import DatePicker from 'react-datepicker';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { Protect, PricingTable, UserButton } from '@clerk/nextjs';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import ThemeToggle from '../components/ThemeToggle';
+
+// --- Chat Interface Component ---
+
+type Message = {
+    role: 'user' | 'assistant';
+    content: string;
+};
+
+type ChatInterfaceProps = {
+    patientName: string;
+    currentSummary: string;
+};
+
+const GENERAL_CHIPS = [
+    'How does this app work?',
+    'What file formats are supported?',
+    'Explain Premium features',
+];
+
+const CLINICAL_CHIPS = [
+    'Summarize patient history',
+    'Draft a referral letter',
+    'Check for drug interactions',
+    'Explain the treatment plan',
+];
+
+function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
+    const { getToken } = useAuth();
+    const [isOpen, setIsOpen] = useState(false);
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [input, setInput] = useState('');
+    const [loading, setLoading] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const lastCheckedPatientRef = useRef<string>('');
+
+    // State for patient switching
+    const [chatPatientName, setChatPatientName] = useState('');
+    const [showPatientList, setShowPatientList] = useState(false);
+    const [patientList, setPatientList] = useState<string[]>([]);
+    const [patientListLoading, setPatientListLoading] = useState(false);
+
+    // Sync chat's patient context from the main form
+    useEffect(() => {
+        // Only sync if the chat is not actively focused on another patient
+        if (!showPatientList) {
+            setChatPatientName(patientName);
+        }
+    }, [patientName]);
+    
+    const activeChips = chatPatientName || currentSummary ? CLINICAL_CHIPS : GENERAL_CHIPS;
+
+    useEffect(() => {
+        if (messagesEndRef.current) {
+            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages]);
+
+    // This is the primary auto-briefing trigger.
+    // It runs when the chat's patient context changes.
+    useEffect(() => {
+        if (chatPatientName && chatPatientName !== lastCheckedPatientRef.current) {
+            lastCheckedPatientRef.current = chatPatientName;
+            setMessages([]); // Clear chat for new patient context
+            
+            // Use a short timeout to allow the UI to clear before sending the new message
+            setTimeout(() => {
+                handleSend(`Briefly summarize the history for ${chatPatientName}`);
+            }, 100);
+        }
+    }, [chatPatientName]);
+
+    async function fetchPatientList() {
+        if (patientListLoading) return;
+        setPatientListLoading(true);
+        try {
+            const jwt = await getToken();
+            const res = await fetch('/api/patients', {
+                headers: { Authorization: `Bearer ${jwt}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setPatientList(data);
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setPatientListLoading(false);
+        }
+    }
+
+    function handleSwitchPatientClick() {
+        setShowPatientList(!showPatientList);
+        if (!showPatientList) {
+            fetchPatientList();
+        }
+    }
+
+    function selectPatient(name: string) {
+        setChatPatientName(name);
+        setShowPatientList(false);
+    }
+
+    async function handleSend(textOverride?: string) {
+        const text = textOverride || input;
+        if (!text.trim() || loading) return;
+
+        const userMsg: Message = { role: 'user', content: text };
+        setMessages((prev) => [...prev, userMsg]);
+        setInput('');
+        setLoading(true);
+
+        const jwt = await getToken();
+        if (!jwt) {
+            setMessages((prev) => [...prev, { role: 'assistant', content: 'Authentication error.' }]);
+            setLoading(false);
+            return;
+        }
+
+        try {
+            let assistantMsg = '';
+            
+            setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+            await fetchEventSource('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${jwt}`,
+                },
+                body: JSON.stringify({
+                    messages: [...messages, userMsg],
+                    patient_name: chatPatientName, // Use chat-specific patient name
+                    current_summary: chatPatientName === patientName ? currentSummary : '', // Only send summary if patient matches form
+                }),
+                onmessage(ev) {
+                    assistantMsg += ev.data + '\n'; // Add newline as SSE collapses them
+                    setMessages((prev) => {
+                        const newMsgs = [...prev];
+                        if (newMsgs.length > 0) {
+                           newMsgs[newMsgs.length - 1] = { role: 'assistant', content: assistantMsg };
+                        }
+                        return newMsgs;
+                    });
+                },
+                onclose() {
+                    if (!assistantMsg) {
+                        setMessages((prev) => {
+                            const newMsgs = [...prev];
+                            newMsgs[newMsgs.length - 1] = { role: 'assistant', content: 'I apologize, but I received no response. Please try again.' };
+                            return newMsgs;
+                        });
+                    }
+                    setLoading(false);
+                },
+                onerror(err) {
+                    throw err;
+                }
+            });
+        } catch (err) {
+            console.error(err);
+            setMessages((prev) => {
+                const newMsgs = [...prev];
+                newMsgs[newMsgs.length - 1] = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+                return newMsgs;
+            });
+            setLoading(false);
+        }
+    }
+
+    return (
+        <>
+            {/* Floating Toggle Button */}
+            <button
+                onClick={() => setIsOpen(!isOpen)}
+                className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 transition hover:scale-105 hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-400/30 dark:bg-emerald-500 dark:hover:bg-emerald-400"
+                aria-label="Open MediNotes Assistant"
+            >
+                {isOpen ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="h-6 w-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="h-6 w-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+                    </svg>
+                )}
+            </button>
+
+            {/* Chat Panel */}
+            {isOpen && (
+                <div className="fixed bottom-24 right-6 z-50 flex h-[600px] w-96 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+                    {/* Header */}
+                    <div className="flex items-center justify-between border-b border-slate-100 bg-white/50 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/50">
+                        <div>
+                            <h3 className="font-semibold text-slate-900 dark:text-slate-100">MediNotes Assistant</h3>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                                {chatPatientName ? `Patient: ${chatPatientName}` : 'No patient selected'}
+                            </p>
+                        </div>
+                        <button onClick={handleSwitchPatientClick} className="rounded-md px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-slate-800">
+                            {showPatientList ? 'Close' : 'Switch'}
+                        </button>
+                    </div>
+
+                    {/* Patient Selector */}
+                    {showPatientList && (
+                        <div className="absolute top-14 left-0 w-full h-full bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm z-10 p-4">
+                            <h4 className="font-semibold mb-2">Select Patient</h4>
+                            {patientListLoading ? <p>Loading...</p> : (
+                                <ul className="max-h-96 overflow-y-auto rounded-md border dark:border-slate-700">
+                                    {patientList.map(name => (
+                                        <li key={name} onClick={() => selectPatient(name)} className="cursor-pointer p-2 hover:bg-emerald-50 dark:hover:bg-slate-800 border-b dark:border-slate-700">
+                                            {name}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Messages */}
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 dark:bg-slate-950/30">
+                        {messages.length === 0 && (
+                            <div className="mt-4 text-center">
+                                <p className="text-sm text-slate-500 mb-6 dark:text-slate-400">
+                                    {chatPatientName 
+                                        ? "I'm ready to assist with this consultation." 
+                                        : "I can guide you through the app features."}
+                                </p>
+                                <div className="flex flex-col gap-2">
+                                    {activeChips.map((chip) => (
+                                        <button
+                                            key={chip}
+                                            onClick={() => handleSend(chip)}
+                                            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:text-emerald-400"
+                                        >
+                                            {chip}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {messages.map((msg, idx) => (
+                            <div
+                                key={idx}
+                                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                            >
+                                <div
+                                    className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm ${
+                                        msg.role === 'user'
+                                            ? 'bg-emerald-600 text-white rounded-br-none'
+                                            : 'bg-white text-slate-700 shadow-sm border border-slate-100 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200 rounded-bl-none'
+                                    }`}
+                                >
+                                    {msg.role === 'assistant' && msg.content === '' && loading ? (
+                                        <div className="flex space-x-1 py-1">
+                                            <div className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.3s]"></div>
+                                            <div className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.15s]"></div>
+                                            <div className="h-2 w-2 rounded-full bg-slate-400 animate-bounce"></div>
+                                        </div>
+                                    ) : (
+                                        <div className="prose prose-sm max-w-none dark:prose-invert prose-p:leading-relaxed prose-ul:my-1 prose-ul:list-disc prose-li:my-0">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                {msg.content}
+                                            </ReactMarkdown>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Input */}
+                    <div className="border-t border-slate-100 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                        <form
+                            onSubmit={(e) => {
+                                e.preventDefault();
+                                handleSend();
+                            }}
+                            className="relative"
+                        >
+                            <input
+                                type="text"
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                placeholder="Type a message..."
+                                className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-4 pr-12 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
+                            />
+                            <button
+                                type="submit"
+                                disabled={!input.trim() || loading}
+                                className="absolute right-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-400"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                                    <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A1.5 1.5 0 005.135 9.25h6.115a.75.75 0 010 1.5H5.135a1.5 1.5 0 00-1.442 1.086l-1.414 4.926a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
+                                </svg>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+}
 
 const SUMMARY_TEMPLATES = [
     { id: 'generic', label: 'Generic Summary', premium: false },
@@ -1380,6 +1687,8 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                     )}
                 </section>
             )}
+            
+            <ChatInterface patientName={patientName} currentSummary={output} />
         </div>
     );
 }

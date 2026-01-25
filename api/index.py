@@ -10,8 +10,8 @@ from openai import AsyncOpenAI
 from typing import Optional
 
 # Import models and agents
-from .agent.models import Visit, SendEmailRequest, Base64File
-from .agent import summary_agent, email_agent
+from .agent.models import Visit, SendEmailRequest, Base64File, ChatRequest
+from .agent import summary_agent, email_agent, chat_agent, memory_agent
 from .agent.utils import get_logger
 
 # Initialize Logging
@@ -58,6 +58,20 @@ async def consultation_summary(
     return StreamingResponse(stream_generator, media_type="text/event-stream")
 
 
+@app.post("/api/chat")
+async def chat_endpoint(
+    request: ChatRequest,
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
+):
+    stream_generator = chat_agent.run_chat_agent(
+        history=request.messages,
+        patient_name=request.patient_name or "",
+        current_summary=request.current_summary or "",
+        client=client
+    )
+    return StreamingResponse(stream_generator, media_type="text/event-stream")
+
+
 @app.post("/api/send-email")
 async def send_email_endpoint(
     payload: SendEmailRequest,
@@ -65,6 +79,12 @@ async def send_email_endpoint(
 ):
     # Email Agent
     return await email_agent.run_email_agent(payload, client)
+
+
+@app.get("/api/patients")
+async def get_patients(creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    """Returns a list of all unique patient names in the memory store."""
+    return memory_agent.list_known_patients()
 
 
 @app.get("/health")

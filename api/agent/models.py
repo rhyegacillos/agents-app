@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 class Base64File(BaseModel):
     filename: str
@@ -34,3 +34,8 @@ class SendEmailRequest(BaseModel):
     reply_to: str
     clinic_name: str
     language: Optional[str] = "English"
+
+class ChatRequest(BaseModel):
+    messages: List[Dict[str, str]]
+    patient_name: Optional[str] = ""
+    current_summary: Optional[str] = ""
