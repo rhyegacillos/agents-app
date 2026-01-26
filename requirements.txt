@@ -1,9 +1,11 @@
 fastapi
 uvicorn
 openai
+openai-agents
 fastapi-clerk-auth
 pydantic
 pypdf
 python-docx
 resend
 numpy
+httpx

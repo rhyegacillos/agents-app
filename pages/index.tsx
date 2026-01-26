@@ -60,12 +60,17 @@ export default function Home() {
             </h2>
             <p className="mt-4 max-w-2xl text-base text-slate-600 dark:text-slate-300">
               Premium unlocks secure document and audio ingestion, English transcription, structured clinical detail
-              extraction, and one-click patient email delivery with clinic-branded formatting.
+              extraction, clinical decision support, and one-click patient email delivery with clinic-branded formatting.
+              MediNotes Assistant ties it together with proactive briefings, Q&A, and on-demand drafts.
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               {[
                 'Structured summaries',
                 'Clinical templates',
+                'Patient Memory',
+                'Action Coordinator',
+                'Clinical Decision Support',
+                'MediNotes Assistant',
                 'Doctor detail extraction',
                 'Secure document ingestion',
                 'Prescription images',
@@ -106,6 +111,50 @@ export default function Home() {
             <ul className="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
               <li className="flex items-start gap-3">
                 <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">
+                    MediNotes Assistant
+                  </p>
+                  <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
+                    <li>Proactive patient briefings, context-aware Q&A, on-demand documents, and in-app guidance.</li>
+                  </ul>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">
+                    Patient Memory (RAG)
+                  </p>
+                  <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
+                    <li>Automatically recalls past visits to provide context and track changes over time.</li>
+                  </ul>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">
+                    Action Coordinator
+                  </p>
+                  <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
+                    <li>Extracts next steps like follow-ups and prescriptions into structured, actionable items.</li>
+                  </ul>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">
+                    Clinical Decision Support
+                  </p>
+                  <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
+                    <li>Adds drug interaction checks and guideline notes to summaries.</li>
+                  </ul>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
                 Structured visit summaries, next steps, and patient-ready email drafts in consistent clinical language.
               </li>
               <li className="flex items-start gap-3">
@@ -135,28 +184,28 @@ export default function Home() {
         <section className="grid gap-6 pb-12 md:grid-cols-2 lg:grid-cols-3">
           {[
             {
-              title: 'Professional Summaries',
-              body: 'Generate structured summaries tailored to clinical records, with consistent headings and clarity.',
+              title: 'MediNotes Assistant',
+              body: 'Proactive patient briefings, context-aware Q&A, on-demand drafts, and in-app guidance.',
             },
             {
-              title: 'Action Items',
-              body: 'Deliver clear follow-ups and next steps so clinicians can act immediately after each visit.',
+              title: 'Summaries + Memory',
+              body: 'Clear summaries that include relevant patient past visits.',
             },
             {
-              title: 'Patient Email Drafts',
-              body: 'Patient-friendly drafts that can be sent instantly with clinic branding and reply-to routing.',
+              title: 'Action Coordinator',
+              body: 'Turns Next Steps into structured, actionable items clinicians can follow up on.',
             },
             {
-              title: 'Documents + Prescriptions (Premium)',
-              body: 'Upload PDFs, DOCX, TXT, MD, and prescription images to enrich the summary with source evidence.',
+              title: 'Clinical Decision Support',
+              body: 'Medication interaction checks and guideline lookups add safety context.',
             },
             {
-              title: 'Audio Transcription (Premium)',
-              body: 'Convert recorded consults into English transcripts and feed them directly into summary creation.',
+              title: 'Email Delivery',
+              body: 'Patient-ready drafts with clinic branding and optional translation.',
             },
             {
-              title: 'Email Delivery (Premium)',
-              body: 'Send HTML emails with clinic-branded headers, doctor reply-to, and language translation options.',
+              title: 'Documents + Audio',
+              body: 'Ingest PDFs, notes, prescriptions, and audio transcripts into the visit context.',
             },
           ].map((feature) => (
             <div

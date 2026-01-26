@@ -86,6 +86,11 @@ async def get_patients(creds: HTTPAuthorizationCredentials = Depends(clerk_guard
     """Returns a list of all unique patient names in the memory store."""
     return memory_agent.list_known_patients()
 
+@app.get("/api/subscription")
+async def subscription(creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    decoded = getattr(creds, "decoded", {}) or {}
+    return decoded
+
 
 @app.get("/health")
 def health_check():

@@ -26,6 +26,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Install Node.js for MCP server execution (npx).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends nodejs npm \
+  && rm -rf /var/lib/apt/lists/*
+
 # Ensure logs are flushed immediately
 ENV PYTHONUNBUFFERED=1
 

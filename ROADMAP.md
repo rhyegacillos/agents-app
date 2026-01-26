@@ -46,13 +46,12 @@ The goal is to move from *processing* data to *understanding and acting* on it.
     - `draft_referral_letter(to_doctor)`
 
 ### 4. 📚 Clinical Decision Support (Research)
-**Status:** 🔴 Not Started
+**Status:** ✅ Completed
 **Goal:** Proactive safety checks and information retrieval.
-- [ ] **Feature:** Auto-detect drug interactions or complex conditions.
-- [ ] **Agent:** `research_agent.py`
-- [ ] **Tools:**
-    - `check_drug_interaction(med_a, med_b)`
-    - `search_medical_guidelines(condition)`
+- [x] **Feature:** Auto-detect drug interactions from the summary flow.
+- [x] **Agent:** `research_agent.py`
+- [x] **Tool:** `check_drug_interactions(medications)` via MCP (Brave Search).
+- [x] **Tool:** `search_medical_guidelines(condition)`
 
 ### 5. 🕵️ Critic / Reflexion Loop
 **Status:** 🔴 Not Started
@@ -62,6 +61,55 @@ The goal is to move from *processing* data to *understanding and acting* on it.
     - Step 1: Generate Summary.
     - Step 2: Critic reviews for hallucinations/missed details.
     - Step 3: (If needed) Regenerate with corrections.
+
+---
+
+## 🧭 Phase 3: Fully Agentic System (Planned)
+
+The goal is to move from single-request workflows to **autonomous, long-running agents** that can plan, act, and self-correct across time.
+
+### 1. 🗂️ Task Engine & Schedulers
+**Status:** 🔴 Not Started
+**Goal:** Allow agents to execute multi-step workflows over time.
+- [ ] **Feature:** Task queue for "follow-up in 2 weeks" and "call patient if symptoms worsen."
+- [ ] **Tool:** `schedule_task(action, date, metadata)`
+- [ ] **Tool:** `run_task(task_id)` with retries + audit logs.
+- [ ] **UX:** Background task panel with status + history.
+
+### 2. 🧰 Tool Registry & Permissioning
+**Status:** 🔴 Not Started
+**Goal:** Centralize tool discovery with safety and approval rules.
+- [ ] **Feature:** Dynamic tool registry with allowlist/denylist per plan.
+- [ ] **Tool:** `request_approval(action)` for high-risk outputs.
+- [ ] **Policy:** "Human-in-the-loop" for prescriptions, referrals, and bookings.
+
+### 3. 🧪 Proposer / Critic / Verifier Loop
+**Status:** 🔴 Not Started
+**Goal:** Enforce consistency and reduce hallucinations.
+- [ ] **Feature:** Separate "Critic Agent" scores summary quality vs transcript.
+- [ ] **Feature:** "Verifier Agent" checks safety claims and guideline notes.
+- [ ] **Logic:** Regenerate if risk score crosses threshold.
+
+### 4. 🧾 Evidence-Linked Summaries
+**Status:** 🔴 Not Started
+**Goal:** Tie clinical safety notes to evidence.
+- [ ] **Feature:** Require citations for all guideline or drug interaction notes.
+- [ ] **Storage:** Save source snippets in memory for audit.
+- [ ] **UX:** "Evidence" toggle to show sources inline.
+
+### 5. 🧭 Persistent Care Plans
+**Status:** 🔴 Not Started
+**Goal:** Keep unresolved tasks and goals across visits.
+- [ ] **Feature:** Patient goals (e.g., BP target) tracked over time.
+- [ ] **Feature:** Open tasks carry forward until resolved.
+- [ ] **Tool:** `update_care_plan(patient_id, changes)`
+
+### 6. 🧬 Evaluation & Monitoring Harness
+**Status:** 🔴 Not Started
+**Goal:** Continuous reliability tracking.
+- [ ] **Feature:** Regression suite for summaries, actions, and tool use.
+- [ ] **Metrics:** Hallucination rate, tool success, safety note accuracy.
+- [ ] **Dashboards:** Daily/weekly reports with failure samples.
 
 ---
 

@@ -1694,6 +1694,40 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
 }
 
 export default function Product() {
+    const { getToken } = useAuth();
+    const [subscription, setSubscription] = useState<Record<string, any> | null>(null);
+    const planRaw = String(subscription?.plan || subscription?.pla || '').toLowerCase();
+    const isPremiumPlan = planRaw === 'u:premium_subscription' || planRaw.includes('premium');
+    const planLabel = planRaw ? (isPremiumPlan ? 'Premium' : 'Free') : 'Free';
+
+    useEffect(() => {
+        let mounted = true;
+        async function loadSubscription() {
+            try {
+                const jwt = await getToken();
+                if (!jwt) {
+                    return;
+                }
+                const res = await fetch('/api/subscription', {
+                    headers: { Authorization: `Bearer ${jwt}` },
+                });
+                if (!res.ok) {
+                    return;
+                }
+                const data = await res.json();
+                if (mounted) {
+                    setSubscription(data);
+                }
+            } catch {
+                // Ignore subscription errors.
+            }
+        }
+        loadSubscription();
+        return () => {
+            mounted = false;
+        };
+    }, [getToken]);
+
     return (
         <main className="relative min-h-screen overflow-hidden bg-[#f6fbfb] text-slate-900 dark:bg-[#0b1217] dark:text-slate-100">
             <div className="pointer-events-none absolute inset-0">
@@ -1727,6 +1761,17 @@ export default function Product() {
                             </div>
                         </div>
                         <div className="flex items-center gap-3 md:pt-2">
+                            {subscription && (
+                                <span
+                                    className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${
+                                        isPremiumPlan
+                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/60 dark:bg-emerald-900/30 dark:text-emerald-200'
+                                            : 'border-slate-200 bg-white/80 text-slate-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200'
+                                    }`}
+                                >
+                                    {planLabel}
+                                </span>
+                            )}
                             <UserButton showName={true} />
                         </div>
                     </div>

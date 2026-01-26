@@ -35,6 +35,7 @@ The system doesn't just summarize; it plans.
 The agent remembers.
 *   **Context Retrieval:** Before every summary, the **Memory Agent** searches the patient's history.
 *   **Continuity:** The generated summary automatically flags changes from previous visits (e.g., "Condition has improved since Jan 12").
+*   **Plain-Text Storage:** Summaries are stored as plain text to keep chat/RAG results readable.
 
 ---
 
@@ -92,7 +93,7 @@ Unlike traditional monolithic applications, this backend is composed of speciali
 
 ### Core Agents
 
-The system is powered by five primary agents located in `api/agent/`:
+The system is powered by six primary agents located in `api/agent/`:
 
 #### 1. Extraction Agent (`extraction_agent.py`)
 *   **Role:** The "senses" of the system. It handles the ingestion of unstructured medical data.
@@ -125,7 +126,17 @@ The system is powered by five primary agents located in `api/agent/`:
     *   **Recall:** Retrieves relevant past summaries for the current patient to provide historical context to the LLM.
 *   **Pattern:** **State Manager**. It maintains long-term persistence across sessions.
 
-#### 5. Email Agent (`email_agent.py`)
+#### 5. Research Agent (`research_agent.py`)
+*   **Role:** The "safety checker".
+*   **Capabilities:**
+    *   **MCP Integration:** Uses the Brave MCP server (via `npx @brave/brave-search-mcp-server --transport stdio`) for web retrieval.
+    *   **Drug Interaction Checks:** `check_drug_interactions(medications)` runs when two or more medications are detected.
+    *   **Guideline Lookup:** `search_medical_guidelines(condition)` runs when the summary flow infers a relevant condition.
+    *   **Summary Injection:** Findings are injected into the summary prompt to generate a **Clinical Safety Note** and **Guideline Note** in the Assessment/Plan.
+    *   **Concise Output:** Returns short, plain-language findings meant for clinical review, not full citations.
+*   **Pattern:** **Tool-Backed Researcher**. It delegates retrieval to MCP tools and summarizes results via the LLM.
+
+#### 6. Email Agent (`email_agent.py`)
 *   **Role:** The "dispatcher".
 *   **Capabilities:**
     *   **Intelligent Routing:** Uses an **Agent Loop** to analyze the request and decide on the necessary steps.
@@ -140,7 +151,7 @@ The system is powered by five primary agents located in `api/agent/`:
 
 To ensure production-grade reliability, the system implements:
 
-### Model Fallback Strategy (`utils.py`)
+### Model Fallback Strategy (`api/agent/utils/__init__.py`)
 We do not rely on a single AI model. The system uses a **Cascading Fallback Chain**:
 1.  **Primary:** `gpt-5-nano` (Hypothetical efficient model) - Optimized for speed and cost.
 2.  **Secondary:** `gpt-4o-mini` - Reliable standard model.
@@ -176,15 +187,21 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 Ensure you have the following keys in your `.env.local`:
 *   `OPENAI_API_KEY`: For LLM, Vision, and Audio services.
+*   `BRAVE_API_KEY`: For the Brave MCP research tool.
 *   `RESEND_API_KEY`: For sending emails.
 *   `CLERK_JWKS_URL`: For authentication.
+
+Node.js (`npx`) is required at runtime to launch the Brave MCP server.
 
 ## Folder Structure
 
 *   `api/agent/`: Contains all agent logic.
     *   `extraction_agent.py`: File/Audio/Image processing.
     *   `summary_agent.py`: Summarization logic & pipeline orchestration.
+    *   `research_agent.py`: MCP-backed research and safety checks.
+    *   `memory_agent.py`: Long-term patient memory (RAG).
+    *   `coordinator_agent.py`: Action extraction from summaries.
     *   `email_agent.py`: Agentic router for email dispatch.
-    *   `utils.py`: Shared utilities (Fallback logic, Logging).
+    *   `utils/`: Shared utilities (Fallback logic, Logging, HTML normalization, Templates).
     *   `models.py`: Shared Pydantic data models.
 *   `api/index.py`: API Gateway/Router that delegates requests to specific agents.

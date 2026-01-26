@@ -83,38 +83,14 @@ async def run_chat_agent(
         async for chunk in response_stream:
             content = chunk.choices[0].delta.content
             if content:
-                # SSE formatting for multi-line content
-                lines = content.split('\n')
-                for line in lines:
-                    if line: # Avoid sending empty data lines
-                        yield f"data: {line}\n"
-                # The SSE spec requires a double newline to signify the end of an event,
-                # but for streaming, we send one event per chunk (or line), so we will just send a single newline here per line.
-                # However, the final message needs to be terminated correctly.
-                # `fetch-event-source` is robust, but let's ensure we send a clear event boundary.
-                # A single `\n\n` after a data line is a complete event.
-                # Let's send a complete event for each chunk.
-                yield "\n" # This might be interpreted as an empty line in the content by some parsers, let's adjust.
-        
-        # A better way for streaming token-by-token:
-        # The previous logic was flawed. Let's simplify.
-        # `fetch-event-source` will concatenate `data:` lines.
-        # So we just need to handle the newlines in the content.
-        # Let's go back to a simpler but more correct approach.
-
-        # Let's try JSON encoding the content. This is the most robust way.
-        
-        async for chunk in response_stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                # Correctly handle multi-line SSE
-                lines = content.split('\n')
+                lines = content.split("\n")
                 for line in lines:
                     yield f"data: {line}\n"
-                yield "\n" # End of event
+                yield "\n"
+            chunk_count += 1
         
         logger.info(f"Chat stream finished. Received {chunk_count} chunks.")
 
     except Exception as e:
         logger.error(f"Chat generation failed: {e}")
-        yield "I apologize, but I encountered an error processing your request."
+        yield "data: I apologize, but I encountered an error processing your request.\n\n"

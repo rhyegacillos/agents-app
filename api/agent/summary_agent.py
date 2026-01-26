@@ -1,13 +1,25 @@
 import json
-from html import escape
+import re
 from typing import AsyncGenerator, Dict, Any
 
 from openai import AsyncOpenAI
 from .models import Visit
 from .utils import generate_with_fallback, get_logger
-from . import extraction_agent, coordinator_agent, memory_agent
+from .utils.templates import get_template
+from .utils.html_sections import ensure_html_summary, html_to_text
+from . import extraction_agent, coordinator_agent, memory_agent, research_agent
 
 logger = get_logger(__name__)
+
+MEDICATION_HINT_RE = re.compile(
+    r"\b(?:mg|mcg|g|ml|units|tablet|tab|capsule|cap|injection|iv|po|bid|tid|qid|qd|prn|rx|prescribed|medication|medications)\b",
+    re.IGNORECASE,
+)
+DOSAGE_RE = re.compile(r"\b\d+(?:\.\d+)?\s?(?:mg|mcg|g|ml|units)\b", re.IGNORECASE)
+CONDITION_HINT_RE = re.compile(
+    r"\b(?:diagnosis|diagnosed|dx|impression|assessment|condition|disease|syndrome|infection|hypertension|diabetes|asthma|pneumonia|cancer|fracture)\b",
+    re.IGNORECASE,
+)
 
 system_prompt = """
 You are provided with notes written by a doctor from a patient's visit.
@@ -22,259 +34,63 @@ Do not include any signature or sign-off in the draft email.
 Do not include any text outside the three sections.
 """
 
-TEMPLATES = {
-    "generic": {
-        "label": "Generic Summary",
-        "headings": ["Visit Summary", "Key Findings", "Assessment"],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Visit Summary</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Key Findings</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Assessment</h4>\n"
-            "<p>...</p>"
-        ),
+RESEARCH_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_drug_interactions",
+            "description": "Checks for potential interactions between a list of 2 or more medications.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "medications": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "A list of medication names to check.",
+                    }
+                },
+                "required": ["medications"],
+            },
+        },
     },
-    "soap": {
-        "label": "SOAP",
-        "headings": ["Subjective", "Objective", "Assessment", "Plan"],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Subjective</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Objective</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Assessment</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Plan</h4>\n"
-            "<ul><li>...</li></ul>"
-        ),
-    },
-    "discharge": {
-        "label": "Discharge Summary",
-        "headings": [
-            "Primary Diagnosis",
-            "Treatment Provided",
-            "Medications",
-            "Discharge Instructions",
-            "Follow-up & Red Flags",
-        ],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Primary Diagnosis</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Treatment Provided</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Medications</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Discharge Instructions</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Follow-up & Red Flags</h4>\n"
-            "<ul><li>...</li></ul>"
-        ),
-    },
-    "referral": {
-        "label": "Referral Letter",
-        "headings": [
-            "Reason for Referral",
-            "Key Findings",
-            "Tests/Imaging",
-            "Assessment",
-            "Requested Action",
-        ],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Reason for Referral</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Key Findings</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Tests/Imaging</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Assessment</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Requested Action</h4>\n"
-            "<ul><li>...</li></ul>"
-        ),
-    },
-    "follow_up": {
-        "label": "Follow-Up Visit",
-        "headings": [
-            "Progress Since Last Visit",
-            "Current Symptoms",
-            "Medications/Changes",
-            "Updated Plan",
-            "Next Visit",
-        ],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Progress Since Last Visit</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Current Symptoms</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Medications/Changes</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Updated Plan</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Next Visit</h4>\n"
-            "<p>...</p>"
-        ),
-    },
-    "surgery": {
-        "label": "Surgery Note",
-        "headings": ["Procedure", "Findings", "Complications", "Post-Op Plan"],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Procedure</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Findings</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Complications</h4>\n"
-            "<p>...</p>\n"
-            "<h4>Post-Op Plan</h4>\n"
-            "<ul><li>...</li></ul>"
-        ),
-    },
-    "med_review": {
-        "label": "Medication Review",
-        "headings": ["Current Medications", "Changes Made", "Issues/Side Effects", "Recommendations"],
-        "summary_html": (
-            "Use this HTML inside the Summary section:\n"
-            "<h4>Current Medications</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Changes Made</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Issues/Side Effects</h4>\n"
-            "<ul><li>...</li></ul>\n"
-            "<h4>Recommendations</h4>\n"
-            "<ul><li>...</li></ul>"
-        ),
-    },
-}
+    {
+        "type": "function",
+        "function": {
+            "name": "search_medical_guidelines",
+            "description": "Finds guideline recommendations for a clinical condition.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "condition": {
+                        "type": "string",
+                        "description": "The condition to research.",
+                    }
+                },
+                "required": ["condition"],
+            },
+        },
+    }
+]
 
-SECTION_HEADINGS = {
-    "summary": "Summary of visit for the doctor's records",
-    "next_steps": "Next steps for the doctor",
-    "patient_email": "Draft Email for Patient",
-}
-
-
-def get_template(visit: Visit) -> dict:
-    template_id = (visit.template_id or "generic").strip()
-    return TEMPLATES.get(template_id, TEMPLATES["generic"])
-
-
-def looks_like_html(text: str) -> bool:
-    return "<section" in text and 'data-section="summary"' in text
-
-
-def normalize_heading(text: str) -> str:
-    return text.strip().rstrip(":").lower()
-
-
-def split_sections(text: str) -> dict:
-    sections = {key: [] for key in SECTION_HEADINGS}
-    current = None
-    for line in (text or "").splitlines():
-        stripped = line.strip()
-        matched = None
-        if stripped:
-            for key, heading in SECTION_HEADINGS.items():
-                if normalize_heading(stripped) == normalize_heading(heading):
-                    matched = key
-                    current = key
-                    break
-        if matched:
-            continue
-        if current is None:
-            sections["summary"].append(line)
-        else:
-            sections[current].append(line)
-    return sections
-
-
-def render_paragraphs(lines: list[str]) -> str:
-    paragraphs = []
-    buffer = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            if buffer:
-                paragraphs.append(" ".join(buffer))
-                buffer = []
-            continue
-        buffer.append(stripped)
-    if buffer:
-        paragraphs.append(" ".join(buffer))
-
-    if not paragraphs:
-        return "<p></p>"
-
-    return "".join(f"<p>{escape(p)}</p>" for p in paragraphs)
-
-
-def render_list(lines: list[str]) -> str:
-    items = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        stripped = stripped.lstrip("-•*").strip()
-        stripped = stripped.lstrip("0123456789. ").strip()
-        items.append(stripped)
-    if not items:
-        return "<ul><li></li></ul>"
-    return "<ul>" + "".join(f"<li>{escape(item)}</li>" for item in items) + "</ul>"
-
-
-def render_summary_section(lines: list[str], template: dict) -> str:
-    headings = template.get("headings", [])
-    buckets = {heading: [] for heading in headings}
-    current = None
-
-    for line in lines:
-        stripped = line.strip()
-        matched = None
-        if stripped:
-            for heading in headings:
-                if normalize_heading(stripped) == normalize_heading(heading):
-                    matched = heading
-                    current = heading
-                    break
-        if matched:
-            continue
-        if current is None and headings:
-            current = headings[0]
-        if current:
-            buckets[current].append(line)
-
-    parts = []
-    for heading in headings:
-        parts.append(f"<h4>{escape(heading)}</h4>")
-        content_lines = buckets.get(heading, [])
-        has_bullets = any(line.strip().startswith(("-", "•", "*")) for line in content_lines)
-        if has_bullets:
-            parts.append(render_list(content_lines))
-        else:
-            parts.append(render_paragraphs(content_lines))
-    return "".join(parts)
-
-
-def ensure_html_summary(raw: str, template: dict) -> str:
-    cleaned = (raw or "").strip()
-    if looks_like_html(cleaned):
-        return cleaned
-
-    sections = split_sections(cleaned)
-    summary_html = render_summary_section(sections["summary"], template)
-    next_steps_html = render_list(sections["next_steps"])
-    patient_email_html = render_paragraphs(sections["patient_email"])
-
-    return (
-        f"<section data-section=\"summary\"><h3>{SECTION_HEADINGS['summary']}</h3>{summary_html}</section>"
-        f"<section data-section=\"next_steps\"><h3>{SECTION_HEADINGS['next_steps']}</h3>{next_steps_html}</section>"
-        f"<section data-section=\"patient_email\"><h3>{SECTION_HEADINGS['patient_email']}</h3>{patient_email_html}</section>"
-    )
+COORDINATOR_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_actions",
+            "description": "Extracts structured next-step actions from a clinical summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary_html": {
+                        "type": "string",
+                        "description": "The full HTML summary to analyze.",
+                    }
+                },
+                "required": ["summary_html"],
+            },
+        },
+    }
+]
 
 def summary_prompt_for(visit: Visit, context: dict) -> str:
     attachment_block = ""
@@ -287,19 +103,58 @@ def summary_prompt_for(visit: Visit, context: dict) -> str:
     if context.get("patient_history"):
         history_block = f"\n\n{context['patient_history']}"
 
+    research_block = ""
+    if context.get("research_findings"):
+        findings_value = context["research_findings"]
+        if isinstance(findings_value, str):
+            findings_list = [findings_value]
+        else:
+            findings_list = findings_value
+        findings = "\n- ".join(findings_list)
+        research_block = f"\n\nSafety Check / Research Findings:\n- {findings}"
+
+    guidelines_block = ""
+    if context.get("guideline_findings"):
+        guidelines_value = context["guideline_findings"]
+        if isinstance(guidelines_value, str):
+            guidelines_list = [guidelines_value]
+        else:
+            guidelines_list = guidelines_value
+        guidelines = "\n- ".join(guidelines_list)
+        guidelines_block = f"\n\nGuideline Findings:\n- {guidelines}"
+
     template = get_template(visit)
 
     return f"""Create the summary, next steps and draft email for:
 Patient Name: {visit.patient_name}
 Date of Visit: {visit.date_of_visit}
 Notes:
-{context["notes_text"]}{attachment_block}{history_block}
+{context["notes_text"]}{attachment_block}{history_block}{research_block}{guidelines_block}
 
 Template: {template["label"]}
 {template["summary_html"]}
 Follow the template exactly and do not add or remove headings.
+If two or more medications are mentioned, call the check_drug_interactions tool with a list of medication names.
+If a condition or diagnosis is mentioned, call search_medical_guidelines with the condition name.
+After drafting the summary, call extract_actions with the full HTML summary.
+If there are any safety findings, incorporate a 'Clinical Safety Note' into the 'Assessment' or 'Plan' section of your summary.
+If there are guideline findings, incorporate a short 'Guideline Note' into the 'Assessment' or 'Plan' section.
 For the Next steps section, use a <ul> list with clear, actionable items.
 For the patient email section, use short <p> paragraphs in patient-friendly language."""
+
+
+def _has_medication_candidates(text: str) -> bool:
+    if not text:
+        return False
+    if DOSAGE_RE.search(text):
+        return True
+    return bool(MEDICATION_HINT_RE.search(text))
+
+
+def _has_condition_candidates(text: str) -> bool:
+    if not text:
+        return False
+    return bool(CONDITION_HINT_RE.search(text))
 
 
 async def generate_summary_stream(
@@ -316,27 +171,87 @@ async def generate_summary_stream(
     ]
 
     try:
-        # Use fallback logic
-        response = await generate_with_fallback(
-            client=client,
-            messages=prompt,
-            # We can override the default chain here if needed
-            # models=["gpt-5-nano", "gpt-4o-mini"] 
-        )
-        raw_text = response.choices[0].message.content or ""
+        tool_enabled = _has_medication_candidates(context.get("combined_text", ""))
+        condition_enabled = _has_condition_candidates(context.get("combined_text", ""))
+        research_tools: list[dict] = []
+        if tool_enabled or condition_enabled:
+            research_tools = RESEARCH_TOOLS
+        tools = COORDINATOR_TOOL + research_tools
+        if tools:
+            response = await generate_with_fallback(
+                client=client,
+                messages=prompt,
+                tools=tools,
+                tool_choice="auto",
+            )
+        else:
+            response = await generate_with_fallback(
+                client=client,
+                messages=prompt,
+            )
+        message = response.choices[0].message
+        tool_calls = message.tool_calls
+        actions_from_tool = None
+        if tool_calls:
+            prompt.append(message)
+            for tool_call in tool_calls:
+                fn_name = tool_call.function.name
+                try:
+                    fn_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse tool arguments.")
+                    fn_args = {}
+
+                if fn_name == "check_drug_interactions":
+                    medications = fn_args.get("medications", [])
+                    findings = await research_agent.check_drug_interactions(medications)
+                    if findings:
+                        context["research_findings"] = findings
+                        prompt[1]["content"] = summary_prompt_for(visit, context)
+                    tool_result = json.dumps({"findings": findings})
+                elif fn_name == "search_medical_guidelines":
+                    condition = fn_args.get("condition", "")
+                    guidelines = await research_agent.search_medical_guidelines(condition)
+                    if guidelines:
+                        context["guideline_findings"] = guidelines
+                        prompt[1]["content"] = summary_prompt_for(visit, context)
+                    tool_result = json.dumps({"guidelines": guidelines})
+                elif fn_name == "extract_actions":
+                    summary_html = fn_args.get("summary_html", "")
+                    if not summary_html:
+                        tool_result = json.dumps({"actions": []})
+                    else:
+                        actions_from_tool = await coordinator_agent.extract_actions(summary_html, client)
+                        tool_result = json.dumps({"actions": actions_from_tool})
+                else:
+                    tool_result = json.dumps({"error": f"Unknown tool {fn_name}"})
+
+                prompt.append(
+                    {"role": "tool", "tool_call_id": tool_call.id, "content": tool_result}
+                )
+
+            response = await generate_with_fallback(
+                client=client,
+                messages=prompt,
+                tools=tools,
+                tool_choice="none",
+            )
+            raw_text = response.choices[0].message.content or ""
+        else:
+            raw_text = message.content or ""
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
-        # In a real app, you might yield an error event or fallback text
         raw_text = "<p>Error generating summary. Please check logs.</p>"
 
     template = get_template(visit)
     final_html = ensure_html_summary(raw_text, template)
     
     # Memory Agent: Remember this visit
-    # We store the original context, not the generated summary, for a more accurate history.
+    # Store a plain-text summary so retrieval does not leak HTML into chat.
     try:
+        summary_text = html_to_text(final_html)
         await memory_agent.remember_visit(
-            context['combined_text'], 
+            summary_text,
             visit.patient_name, 
             visit.date_of_visit, 
             client
@@ -345,7 +260,9 @@ async def generate_summary_stream(
         logger.warning(f"Failed to save memory: {e}")
 
     # Coordinator Agent: Extract actions
-    actions = await coordinator_agent.extract_actions(final_html, client)
+    actions = actions_from_tool
+    if actions is None:
+        actions = await coordinator_agent.extract_actions(final_html, client)
     
     # Metadata event
     metadata = json.dumps(
