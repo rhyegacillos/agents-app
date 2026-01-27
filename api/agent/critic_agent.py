@@ -9,8 +9,10 @@ from .utils import generate_with_fallback, get_logger
 logger = get_logger(__name__)
 
 DEFAULT_MIN_SCORE = 0.8
-DEFAULT_MAX_RETRIES = 2
-CRITIC_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+# Use a fast model for the critic, as it's a frequent, analytical task
+CRITIC_MODEL = ["gemini-2.5-flash"]
+DEFAULT_MAX_RETRIES = 1
+MIN_SCORE_REGEN = 0.85
 
 
 def critic_enabled() -> bool:
@@ -26,7 +28,7 @@ def critic_max_retries() -> int:
 
 
 def critic_models() -> List[str]:
-    return list(CRITIC_MODELS)
+    return list(CRITIC_MODEL)
 
 
 def build_critic_client(default_client: AsyncOpenAI) -> AsyncOpenAI:
@@ -140,7 +142,7 @@ async def review_summary(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            models=CRITIC_MODELS,
+            models=CRITIC_MODEL,
         )
     except Exception as exc:
         logger.warning(f"Critic review failed: {exc}")

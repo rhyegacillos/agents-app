@@ -1058,12 +1058,26 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
                                         },
                                     ]);
                                 }
+                                // Handle initial metadata which may or may not have the map
                                 if (data.evidence_map?.chunks && data.evidence_map?.citations) {
                                     setEvidenceMap(data.evidence_map);
                                     setEvidenceOpen(false);
                                 }
                             } catch {
                                 // Ignore metadata parse failures
+                            }
+                            return;
+                        }
+
+                        if (ev.event === 'evidence_update') {
+                            try {
+                                const data = JSON.parse(ev.data);
+                                if (data.chunks && data.citations) {
+                                    setEvidenceMap(data);
+                                    setEvidenceOpen(true); // Automatically open the evidence section when it loads
+                                }
+                            } catch {
+                                // Ignore evidence parse failures
                             }
                             return;
                         }

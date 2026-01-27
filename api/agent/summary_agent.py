@@ -400,11 +400,13 @@ async def generate_summary_stream(
                 messages=prompt,
                 tools=tools,
                 tool_choice="auto",
+                models=["deepseek-chat"],
             )
         else:
             response = await generate_with_fallback(
                 client=client,
                 messages=prompt,
+                models=["deepseek-chat"],
             )
         if await _abort_now("after initial generation"):
             return
@@ -412,43 +414,62 @@ async def generate_summary_stream(
         tool_calls = message.tool_calls
         if tool_calls:
             prompt.append(message)
+            
+            # Create parallel tasks for all tool calls
+            tasks = []
             for tool_call in tool_calls:
-                if await _abort_now("during tool execution"):
-                    return
                 fn_name = tool_call.function.name
                 try:
                     fn_args = json.loads(tool_call.function.arguments)
                 except json.JSONDecodeError:
-                    logger.warning("Failed to parse tool arguments.")
+                    logger.warning(f"Failed to parse arguments for tool {fn_name}.")
                     fn_args = {}
 
                 if fn_name == "check_drug_interactions":
-                    medications = fn_args.get("medications", [])
-                    findings = await research_agent.check_drug_interactions(medications)
-                    if findings:
-                        context["research_findings"] = findings
-                        prompt[1]["content"] = summary_prompt_for(visit, context)
-                    tool_result = json.dumps({"findings": findings})
+                    tasks.append(research_agent.check_drug_interactions(fn_args.get("medications", [])))
                 elif fn_name == "search_medical_guidelines":
-                    condition = fn_args.get("condition", "")
-                    guidelines = await research_agent.search_medical_guidelines(condition)
-                    if guidelines:
-                        context["guideline_findings"] = guidelines
-                        prompt[1]["content"] = summary_prompt_for(visit, context)
-                    tool_result = json.dumps({"guidelines": guidelines})
+                    tasks.append(research_agent.search_medical_guidelines(fn_args.get("condition", "")))
                 elif fn_name == "extract_actions":
-                    summary_html = fn_args.get("summary_html", "")
-                    if not summary_html:
-                        tool_result = json.dumps({"actions": []})
-                    else:
-                        actions_from_tool = await coordinator_agent.extract_actions(summary_html, client)
-                        tool_result = json.dumps({"actions": actions_from_tool})
+                    tasks.append(coordinator_agent.extract_actions(fn_args.get("summary_html", ""), client))
                 else:
-                    tool_result = json.dumps({"error": f"Unknown tool {fn_name}"})
+                    tasks.append(asyncio.sleep(0, result=json.dumps({"error": f"Unknown tool {fn_name}"})))
+
+            # Execute tasks in parallel
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results
+            has_new_findings = False
+            for i, result in enumerate(results):
+                tool_call = tool_calls[i]
+                fn_name = tool_call.function.name
+                
+                if isinstance(result, Exception):
+                    logger.error(f"Tool call {fn_name} failed with exception: {result}")
+                    tool_result = json.dumps({"error": str(result)})
+                else:
+                    if fn_name == "check_drug_interactions":
+                        if result:
+                            context["research_findings"] = result
+                            has_new_findings = True
+                        tool_result = json.dumps({"findings": result})
+                    elif fn_name == "search_medical_guidelines":
+                        if result:
+                            context["guideline_findings"] = result
+                            has_new_findings = True
+                        tool_result = json.dumps({"guidelines": result})
+                    elif fn_name == "extract_actions":
+                        actions_from_tool = result
+                        tool_result = json.dumps({"actions": actions_from_tool})
+                    else:
+                        tool_result = json.dumps(result)
 
                 prompt.append(
                     {"role": "tool", "tool_call_id": tool_call.id, "content": tool_result}
                 )
+
+            # If new research was found, update the prompt with the new context
+            if has_new_findings:
+                prompt[1]["content"] = summary_prompt_for(visit, context)
 
             if await _abort_now("before post-tool generation"):
                 return
@@ -457,6 +478,7 @@ async def generate_summary_stream(
                 messages=prompt,
                 tools=tools,
                 tool_choice="none",
+                models=["deepseek-chat"],
             )
             raw_text = response.choices[0].message.content or ""
         else:
@@ -484,13 +506,13 @@ async def generate_summary_stream(
         await guardrails_util.record_critic_issues(review.get("issues", []), client)
         
         if critic_agent.review_requires_regen(review):
-            logger.info("Critic review failed. Triggering Parallel Regeneration Tournament (N=5).")
+            logger.info("Critic review failed. Triggering Parallel Regeneration Tournament (N=3).")
             
             # 1. Prepare Prompt
             correction_prompt = correction_prompt_for(visit, context, final_html, review)
             
-            # 2. Generate 5 Candidates in Parallel
-            N_CANDIDATES = 5
+            # 2. Generate 3 Candidates in Parallel
+            N_CANDIDATES = 3
             gen_tasks = []
             for _ in range(N_CANDIDATES):
                 gen_tasks.append(
@@ -577,12 +599,58 @@ async def generate_summary_stream(
         logger.info("Critic review finished.")
 
     doctor_info = await _fill_doctor_info_from_summary(doctor_info, final_html, client)
-    evidence_map = await evidence_agent.build_evidence_map(final_html, context, client)
     
+    # --- Stream the HTML ---
+    lines = final_html.split("\n")
+    for line in lines[:-1]:
+        if await _abort_now("during stream"):
+            return
+        yield f"data: {line}\n\n"
+        yield "data:  \n"
+    if lines:
+        if await _abort_now("during stream"):
+            return
+        yield f"data: {lines[-1]}\n\n"
+
+    # --- Now that the summary is streamed, do slower tasks ---
+    
+    # Coordinator Agent: Extract actions
+    if await _abort_now("before action extraction"):
+        return
+    actions = actions_from_tool
+    if actions is None:
+        logger.info("Coordinator Agent: Manually extracting actions from final summary.")
+        actions = await coordinator_agent.extract_actions(final_html, client)
+        logger.info("Coordinator Agent: Action extraction finished.")
+    else:
+        logger.info("Coordinator Agent: Actions were already extracted via tool call.")
+        
+    # Initial metadata and actions events
+    metadata = json.dumps(
+        {
+            **doctor_info,
+            "evidence_map": {"chunks": [], "citations": []},
+            "prescription_text": context.get("prescription_text", ""),
+            "prescription_filename": context.get("prescription_filename", ""),
+            "prescription_texts": context.get("prescription_texts", []),
+            "prescription_filenames": context.get("prescription_filenames", []),
+        }
+    )
+    yield f"event: metadata\ndata: {metadata}\n\n"
+    if actions:
+        yield f"event: actions\ndata: {json.dumps(actions)}\n\n"
+
+    # Evidence mapping
+    if await _abort_now("before evidence mapping"):
+        return
+    logger.info("Starting evidence mapping.")
+    evidence_map = await evidence_agent.build_evidence_map(final_html, context, client)
+    logger.info("Evidence mapping finished.")
+    yield f"event: evidence_update\ndata: {json.dumps(evidence_map)}\n\n"
+
+    # Memory Agent
     if await _abort_now("before memory save"):
         return
-    # Memory Agent: Remember this visit
-    # Store both plain-text summary and original notes for recall.
     try:
         summary_text = html_to_text(final_html)
         await memory_agent.remember_visit(
@@ -612,42 +680,6 @@ async def generate_summary_stream(
             )
     except Exception as e:
         logger.warning(f"Failed to save memory: {e}")
-
-    if await _abort_now("before action extraction"):
-        return
-    # Coordinator Agent: Extract actions
-    actions = actions_from_tool
-    if actions is None:
-        actions = await coordinator_agent.extract_actions(final_html, client)
-    
-    # Metadata event
-    metadata = json.dumps(
-        {
-            **doctor_info,
-            "evidence_map": evidence_map,
-            "prescription_text": context.get("prescription_text", ""),
-            "prescription_filename": context.get("prescription_filename", ""),
-            "prescription_texts": context.get("prescription_texts", []),
-            "prescription_filenames": context.get("prescription_filenames", []),
-        }
-    )
-    yield f"event: metadata\ndata: {metadata}\n\n"
-
-    # Actions event
-    if actions:
-        yield f"event: actions\ndata: {json.dumps(actions)}\n\n"
-    
-    # Stream the HTML
-    lines = final_html.split("\n")
-    for line in lines[:-1]:
-        if await _abort_now("during stream"):
-            return
-        yield f"data: {line}\n\n"
-        yield "data:  \n"
-    if lines:
-        if await _abort_now("during stream"):
-            return
-        yield f"data: {lines[-1]}\n\n"
 
 
 async def run_summary_pipeline(

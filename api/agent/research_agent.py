@@ -1,5 +1,7 @@
 import os
 import json
+import time
+import hashlib
 from typing import List, Dict, Any
 from .utils import get_logger
 
@@ -16,6 +18,11 @@ except ImportError:
         MCPServerStdio = None
 
 logger = get_logger(__name__)
+
+# --- Caching Configuration ---
+RESEARCH_CACHE: Dict[str, Any] = {}
+CACHE_TTL_SECONDS = 3600  # 1 hour
+# ---------------------------
 
 MCP_SERVER_COMMAND = "npx"
 MCP_SERVER_ARGS = ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"]
@@ -74,6 +81,20 @@ def _normalize_research_item(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _run_research_request(request: str, instructions: str) -> List[Dict[str, Any]]:
+    # --- Cache Check ---
+    cache_key = hashlib.sha256((request + instructions).encode("utf-8")).hexdigest()
+    if cache_key in RESEARCH_CACHE:
+        result, timestamp = RESEARCH_CACHE[cache_key]
+        if time.time() - timestamp < CACHE_TTL_SECONDS:
+            logger.info("Research cache hit.")
+            return result
+        else:
+            logger.info("Research cache expired.")
+            del RESEARCH_CACHE[cache_key]
+    else:
+        logger.info("Research cache miss.")
+    # ------------------
+
     if not os.getenv("OPENAI_API_KEY"):
         logger.warning("Research agent skipped: OPENAI_API_KEY not set.")
         logger.warning("OPENAI_API_KEY is not set; skipping research agent.")
@@ -108,7 +129,13 @@ async def _run_research_request(request: str, instructions: str) -> List[Dict[st
         return []
 
     logger.info("Research agent completed successfully.")
-    return _parse_research_output(str(output))
+    parsed_output = _parse_research_output(str(output))
+    
+    # Cache the successful result
+    if parsed_output:
+        RESEARCH_CACHE[cache_key] = (parsed_output, time.time())
+        
+    return parsed_output
 
 
 async def check_drug_interactions(medications: List[str]) -> List[Dict[str, Any]]:

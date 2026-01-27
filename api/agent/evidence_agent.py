@@ -137,16 +137,6 @@ async def build_evidence_map(
     Builds the full evidence map by splitting the summary, chunking the sources,
     and using an LLM to link them.
     """
-    # 1. Prepare Client
-    evidence_client = client
-    if any("gemini" in m for m in EVIDENCE_MODEL):
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if gemini_key:
-            evidence_client = AsyncOpenAI(
-                api_key=gemini_key,
-                base_url=os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-            )
-
     # 2. Prepare Source Chunks
     all_chunks = [
         chunk
@@ -195,7 +185,7 @@ async def build_evidence_map(
     
     try:
         response = await generate_with_fallback(
-            client=evidence_client,
+            client=client,
             messages=[
                 {"role": "system", "content": "You are a clinical auditor linking sentences to evidence chunks."},
                 {"role": "user", "content": prompt},

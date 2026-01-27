@@ -30,6 +30,8 @@ async def generate_with_fallback(
 ) -> Any:
     """
     Generates a response using a list of models for fallback.
+    Dynamically switches to a dedicated client if a model name
+    contains "deepseek" or "gemini" and the corresponding API key is set.
     """
     chain = models or DEFAULT_MODEL_CHAIN
     last_exception = None
@@ -37,8 +39,27 @@ async def generate_with_fallback(
     for model in chain:
         for attempt in range(max_retries + 1):
             try:
+                generation_client = client  # Default to the passed-in client
+
+                if "deepseek" in model:
+                    api_key = os.getenv("DEEPSEEK_API_KEY")
+                    if api_key:
+                        logger.info(f"Using dedicated DeepSeek client for model {model}.")
+                        generation_client = AsyncOpenAI(
+                            api_key=api_key,
+                            base_url=os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
+                        )
+                elif "gemini" in model:
+                    api_key = os.getenv("GEMINI_API_KEY")
+                    if api_key:
+                        logger.info(f"Using dedicated Gemini client for model {model}.")
+                        generation_client = AsyncOpenAI(
+                            api_key=api_key,
+                            base_url=os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+                        )
+
                 logger.info(f"Attempting generation with model: {model} (attempt {attempt + 1})")
-                response = await client.chat.completions.create(
+                response = await generation_client.chat.completions.create(
                     model=model,
                     messages=messages,
                     **kwargs
@@ -47,8 +68,6 @@ async def generate_with_fallback(
             except Exception as e:
                 logger.warning(f"Error with model {model}: {e}")
                 last_exception = e
-                # If it's a rate limit or server error, we might want to retry the same model
-                # but for now we proceed to the next model in the chain if retries are exhausted
                 pass
     
     logger.error(f"All models failed. Last error: {last_exception}")
