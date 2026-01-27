@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, FormEvent, ChangeEvent, useEffect, useRef } from 'react';
-import { useAuth } from '@clerk/nextjs';
+import { useState, FormEvent, ChangeEvent, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useAuth, useClerk } from '@clerk/nextjs';
 import DatePicker from 'react-datepicker';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { Protect, PricingTable, UserButton } from '@clerk/nextjs';
@@ -19,7 +19,70 @@ type Message = {
 type ChatInterfaceProps = {
     patientName: string;
     currentSummary: string;
+    onSessionExpired: () => Promise<void>;
 };
+
+type TokenGetter = (opts?: { skipCache?: boolean }) => Promise<string | null>;
+
+class AuthError extends Error {
+    status: number;
+
+    constructor(status: number) {
+        super(`Auth error ${status}`);
+        this.status = status;
+    }
+}
+
+async function getFreshToken(getToken: TokenGetter): Promise<string | null> {
+    try {
+        return await getToken({ skipCache: true });
+    } catch {
+        return await getToken();
+    }
+}
+
+async function fetchWithAuthRetry(
+    getToken: TokenGetter,
+    input: RequestInfo,
+    init: RequestInit,
+    onAuthFailure: () => Promise<void>
+): Promise<Response | null> {
+    let token = await getToken();
+    if (!token) {
+        await onAuthFailure();
+        return null;
+    }
+
+    const doFetch = async (token: string) => {
+        const headers = new Headers(init.headers || {});
+        headers.set('Authorization', `Bearer ${token}`);
+        return fetch(input, { ...init, headers });
+    };
+
+    let res = await doFetch(token);
+    let attempts = 0;
+    while ((res.status === 401 || res.status === 403) && attempts < AUTH_RETRY_COUNT) {
+        attempts += 1;
+        const fresh = await getFreshToken(getToken);
+        if (!fresh) {
+            break;
+        }
+        token = fresh;
+        res = await doFetch(token);
+    }
+
+    if (res.status === 401 || res.status === 403) {
+        await onAuthFailure();
+    }
+
+    return res;
+}
+
+const AUTH_FAILURE_WINDOW_MS = 30000;
+const AUTH_FAILURE_THRESHOLD = 2;
+const AUTH_RETRY_COUNT = 3;
+
+const noopAuthFailure = async () => {};
 
 const GENERAL_CHIPS = [
     'How does this app work?',
@@ -34,7 +97,7 @@ const CLINICAL_CHIPS = [
     'Explain the treatment plan',
 ];
 
-function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
+function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatInterfaceProps) {
     const { getToken } = useAuth();
     const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -48,6 +111,7 @@ function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
     const [showPatientList, setShowPatientList] = useState(false);
     const [patientList, setPatientList] = useState<string[]>([]);
     const [patientListLoading, setPatientListLoading] = useState(false);
+    const chatAbortRef = useRef<AbortController | null>(null);
 
     // Sync chat's patient context from the main form
     useEffect(() => {
@@ -83,11 +147,13 @@ function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
         if (patientListLoading) return;
         setPatientListLoading(true);
         try {
-            const jwt = await getToken();
-            const res = await fetch('/api/patients', {
-                headers: { Authorization: `Bearer ${jwt}` },
-            });
-            if (res.ok) {
+            const res = await fetchWithAuthRetry(
+                getToken,
+                '/api/patients',
+                {},
+                noopAuthFailure
+            );
+            if (res?.ok) {
                 const data = await res.json();
                 setPatientList(data);
             }
@@ -119,7 +185,7 @@ function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
         setInput('');
         setLoading(true);
 
-        const jwt = await getToken();
+        const jwt = await getFreshToken(getToken);
         if (!jwt) {
             setMessages((prev) => [...prev, { role: 'assistant', content: 'Authentication error.' }]);
             setLoading(false);
@@ -131,41 +197,89 @@ function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
             
             setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
-            await fetchEventSource('/api/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${jwt}`,
-                },
-                body: JSON.stringify({
-                    messages: [...messages, userMsg],
-                    patient_name: chatPatientName, // Use chat-specific patient name
-                    current_summary: chatPatientName === patientName ? currentSummary : '', // Only send summary if patient matches form
-                }),
-                onmessage(ev) {
-                    assistantMsg += ev.data + '\n'; // Add newline as SSE collapses them
-                    setMessages((prev) => {
-                        const newMsgs = [...prev];
-                        if (newMsgs.length > 0) {
-                           newMsgs[newMsgs.length - 1] = { role: 'assistant', content: assistantMsg };
+            const runStream = async (token: string) => {
+                const controller = new AbortController();
+                chatAbortRef.current = controller;
+                await fetchEventSource('/api/chat', {
+                    method: 'POST',
+                    signal: controller.signal,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        messages: [...messages, userMsg],
+                        patient_name: chatPatientName, // Use chat-specific patient name
+                        current_summary: chatPatientName === patientName ? currentSummary : '', // Only send summary if patient matches form
+                    }),
+                    onopen: async (res) => {
+                        if (res.status === 401 || res.status === 403) {
+                            throw new AuthError(res.status);
                         }
-                        return newMsgs;
-                    });
-                },
-                onclose() {
-                    if (!assistantMsg) {
+                    },
+                    onmessage(ev) {
+                        assistantMsg += ev.data + '\n'; // Add newline as SSE collapses them
                         setMessages((prev) => {
                             const newMsgs = [...prev];
-                            newMsgs[newMsgs.length - 1] = { role: 'assistant', content: 'I apologize, but I received no response. Please try again.' };
+                            if (newMsgs.length > 0) {
+                               newMsgs[newMsgs.length - 1] = { role: 'assistant', content: assistantMsg };
+                            }
                             return newMsgs;
                         });
+                    },
+                    onclose() {
+                        chatAbortRef.current = null;
+                        if (!assistantMsg) {
+                            setMessages((prev) => {
+                                const newMsgs = [...prev];
+                                newMsgs[newMsgs.length - 1] = { role: 'assistant', content: 'I apologize, but I received no response. Please try again.' };
+                                return newMsgs;
+                            });
+                        }
+                        setLoading(false);
+                    },
+                    onerror(err) {
+                        chatAbortRef.current = null;
+                        throw err;
                     }
-                    setLoading(false);
-                },
-                onerror(err) {
-                    throw err;
+                });
+            };
+
+            let attempts = 0;
+            let token = jwt;
+            while (attempts <= AUTH_RETRY_COUNT) {
+                try {
+                    await runStream(token);
+                    break;
+                } catch (err) {
+                    if (err instanceof AuthError) {
+                        attempts += 1;
+                        if (attempts > AUTH_RETRY_COUNT) {
+                            chatAbortRef.current?.abort();
+                            await onSessionExpired();
+                            setMessages((prev) => {
+                                const newMsgs = [...prev];
+                                if (newMsgs.length > 0) {
+                                    newMsgs[newMsgs.length - 1] = {
+                                        role: 'assistant',
+                                        content: 'Session expired. Please retry.',
+                                    };
+                                }
+                                return newMsgs;
+                            });
+                            setLoading(false);
+                            break;
+                        }
+                        const fresh = await getFreshToken(getToken);
+                        if (!fresh) {
+                            continue;
+                        }
+                        token = fresh;
+                    } else {
+                        throw err;
+                    }
                 }
-            });
+            }
         } catch (err) {
             console.error(err);
             setMessages((prev) => {
@@ -208,7 +322,7 @@ function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
                             </p>
                         </div>
                         <button onClick={handleSwitchPatientClick} className="rounded-md px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-slate-800">
-                            {showPatientList ? 'Close' : 'Switch'}
+                            {showPatientList ? 'Close' : 'Patient List'}
                         </button>
                     </div>
 
@@ -269,9 +383,14 @@ function ChatInterface({ patientName, currentSummary }: ChatInterfaceProps) {
                                             <div className="h-2 w-2 rounded-full bg-slate-400 animate-bounce"></div>
                                         </div>
                                     ) : (
-                                        <div className="prose prose-sm max-w-none dark:prose-invert prose-p:leading-relaxed prose-ul:my-1 prose-ul:list-disc prose-li:my-0">
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                {msg.content}
+                                        <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-p:leading-relaxed prose-ul:my-1 prose-ul:list-disc prose-li:my-0 prose-a:text-emerald-600 dark:prose-a:text-emerald-400 hover:prose-a:underline">
+                                            <ReactMarkdown 
+                                                remarkPlugins={[remarkGfm]}
+                                                components={{
+                                                    a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />
+                                                }}
+                                            >
+                                                {msg.content.replace(/\n/g, '\n\n')}
                                             </ReactMarkdown>
                                         </div>
                                     )}
@@ -404,6 +523,7 @@ const LANGUAGE_OPTIONS = [
 
 type ConsultationFormProps = {
     isPremium?: boolean;
+    onSessionExpired: () => Promise<void>;
 };
 
 type UploadPayload = {
@@ -417,7 +537,21 @@ type PrescriptionEntry = {
     text: string;
 };
 
-function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
+type EvidenceChunk = {
+    id: string;
+    source: string;
+    label?: string;
+    text: string;
+    sources?: { title?: string; url?: string }[];
+};
+
+type EvidenceCitation = {
+    sentence: string;
+    chunk_ids: string[];
+    snippets?: Record<string, string>;
+};
+
+function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFormProps) {
     const { getToken } = useAuth();
 
     // Form state
@@ -446,6 +580,11 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
     const [selectedLanguage, setSelectedLanguage] = useState('English');
     const [prescriptions, setPrescriptions] = useState<PrescriptionEntry[]>([]);
     const [actions, setActions] = useState<any[]>([]);
+    const [evidenceMap, setEvidenceMap] = useState<{
+        chunks: EvidenceChunk[];
+        citations: EvidenceCitation[];
+    } | null>(null);
+    const [evidenceOpen, setEvidenceOpen] = useState(false);
     const [doctorFieldErrors, setDoctorFieldErrors] = useState({
         name: false,
         phone: false,
@@ -459,6 +598,60 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
     // Streaming state
     const [output, setOutput] = useState('');
     const [loading, setLoading] = useState(false);
+    const consultAbortRef = useRef<AbortController | null>(null);
+    const summaryStatusActiveRef = useRef(false);
+    const summaryStatusIndexRef = useRef(0);
+    const summaryStatusMessages = [
+        'Generating summary...',
+        'Analyzing context...',
+        'Reviewing medications...',
+        'Finalizing summary...',
+    ];
+
+    useEffect(() => {
+        if (!loading) {
+            summaryStatusActiveRef.current = false;
+            return;
+        }
+        const interval = setInterval(() => {
+            if (!summaryStatusActiveRef.current) return;
+            summaryStatusIndexRef.current =
+                (summaryStatusIndexRef.current + 1) % summaryStatusMessages.length;
+            setStatusMessage(summaryStatusMessages[summaryStatusIndexRef.current]);
+        }, 2200);
+        return () => clearInterval(interval);
+    }, [loading]);
+
+    function clearForm() {
+        setPatientName('');
+        setNotes('');
+        setTemplateId('generic');
+        setPatientEmail('');
+        setPatientEmailError(false);
+        setDoctorName('');
+        setDoctorPhone('');
+        setClinicName('');
+        setDoctorEmail('');
+        setDoctorFieldErrors({
+            name: false,
+            phone: false,
+            clinic: false,
+            email: false,
+        });
+        setSelectedLanguage('English');
+        setStatusMessage('');
+        setEmailStatus('');
+        setPrescriptions([]);
+        setActions([]);
+        setEvidenceMap(null);
+        setEvidenceOpen(false);
+        setOutput('');
+        setLoading(false);
+        setSendingEmail(false);
+        clearAttachment();
+        clearImage();
+        clearAudio();
+    }
 
     const maxFileBytes = 5 * 1024 * 1024; // 5MB limit for uploaded files
     const maxImageBytes = 10 * 1024 * 1024; // 10MB limit for prescription images
@@ -725,16 +918,18 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
         setEmailStatus('');
         setPrescriptions([]);
         setActions([]);
+        setEvidenceMap(null);
+        setEvidenceOpen(false);
         setLoading(true);
+        summaryStatusActiveRef.current = false;
 
-        const jwt = await getToken();
+        const jwt = await getFreshToken(getToken);
         if (!jwt) {
             setOutput('Authentication required');
             setLoading(false);
             return;
         }
 
-        const controller = new AbortController();
         let buffer = '';
         const hasFile = attachmentFiles.length > 0;
         const hasImage = imageFiles.length > 0;
@@ -760,129 +955,183 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
         }
 
         try {
-            await fetchEventSource('/api/consultation', {
-                signal: controller.signal,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${jwt}`,
-                },
-                body: JSON.stringify({
-                    patient_name: patientName,
-                    date_of_visit: visitDate?.toISOString().slice(0, 10),
-                    notes,
-                    template_id: templateId,
-                    uploaded_notes: null,
-                    uploaded_filename: null,
-                    uploaded_file_b64: null,
-                    uploaded_mime: null,
-                    uploaded_files: attachmentFiles.length ? attachmentFiles : null,
-                    image_filename: null,
-                    image_file_b64: null,
-                    image_mime: null,
-                    image_files: imageFiles.length ? imageFiles : null,
-                    audio_filename: null,
-                    audio_file_b64: null,
-                    audio_mime: null,
-                    audio_files: audioFiles.length ? audioFiles : null,
-                }),
-                onopen: async (res) => {
-                    if (!res.ok) {
-                        const contentType = res.headers.get('content-type') || '';
+            const runStream = async (token: string) => {
+                const controller = new AbortController();
+                consultAbortRef.current = controller;
+                await fetchEventSource('/api/consultation', {
+                    signal: controller.signal,
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        patient_name: patientName,
+                        date_of_visit: visitDate?.toISOString().slice(0, 10),
+                        notes,
+                        template_id: templateId,
+                        uploaded_notes: null,
+                        uploaded_filename: null,
+                        uploaded_file_b64: null,
+                        uploaded_mime: null,
+                        uploaded_files: attachmentFiles.length ? attachmentFiles : null,
+                        image_filename: null,
+                        image_file_b64: null,
+                        image_mime: null,
+                        image_files: imageFiles.length ? imageFiles : null,
+                        audio_filename: null,
+                        audio_file_b64: null,
+                        audio_mime: null,
+                        audio_files: audioFiles.length ? audioFiles : null,
+                    }),
+                    onopen: async (res) => {
+                        if (!res.ok) {
+                            if (res.status === 401 || res.status === 403) {
+                                throw new AuthError(res.status);
+                            }
+                            const contentType = res.headers.get('content-type') || '';
 
-                        if (contentType.includes('application/json')) {
-                            try {
-                                const data = await res.clone().json();
-                                const detail = data?.detail || JSON.stringify(data);
-                                setOutput(detail || `Request failed (${res.status}). Please try again.`);
-                            } catch {
-                                setOutput(`Request failed (${res.status}). Please try again.`);
+                            if (contentType.includes('application/json')) {
+                                try {
+                                    const data = await res.clone().json();
+                                    const detail = data?.detail || JSON.stringify(data);
+                                    setOutput(detail || `Request failed (${res.status}). Please try again.`);
+                                } catch {
+                                    setOutput(`Request failed (${res.status}). Please try again.`);
+                                }
+                            } else {
+                                try {
+                                    const text = await res.text();
+                                    setOutput(text || `Request failed (${res.status}). Please try again.`);
+                                } catch {
+                                    setOutput(`Request failed (${res.status}). Please try again.`);
+                                }
                             }
-                        } else {
+
+                            setStatusMessage('');
+                            throw new Error(`HTTP ${res.status}`);
+                        }
+                        summaryStatusIndexRef.current = 0;
+                        summaryStatusActiveRef.current = true;
+                        setStatusMessage(summaryStatusMessages[0]);
+                    },
+                    onmessage(ev) {
+                        if (ev.event === 'metadata') {
                             try {
-                                const text = await res.text();
-                                setOutput(text || `Request failed (${res.status}). Please try again.`);
+                                const data = JSON.parse(ev.data);
+                                if (data.doctor_name) {
+                                    const cleaned = cleanDoctorName(data.doctor_name);
+                                    setDoctorName((prev) => prev || cleaned);
+                                    setDoctorFieldErrors((prev) => ({ ...prev, name: false }));
+                                }
+                                if (data.doctor_phone) {
+                                    setDoctorPhone((prev) => prev || data.doctor_phone);
+                                    setDoctorFieldErrors((prev) => ({ ...prev, phone: false }));
+                                }
+                                if (data.clinic_name) {
+                                    setClinicName((prev) => prev || data.clinic_name);
+                                    setDoctorFieldErrors((prev) => ({ ...prev, clinic: false }));
+                                }
+                                if (data.doctor_email) {
+                                    setDoctorEmail((prev) => prev || data.doctor_email);
+                                    setDoctorFieldErrors((prev) => ({ ...prev, email: false }));
+                                }
+                                if (!patientEmail.trim() && data.patient_email) {
+                                    setPatientEmail(data.patient_email);
+                                    setPatientEmailError(!isValidEmail(data.patient_email));
+                                }
+                                if (Array.isArray(data.prescription_texts)) {
+                                    const entries = data.prescription_texts
+                                        .map((text: string, index: number) => ({
+                                            text,
+                                            filename: Array.isArray(data.prescription_filenames)
+                                                ? data.prescription_filenames[index] || ''
+                                                : '',
+                                        }))
+                                        .filter((entry: PrescriptionEntry) => entry.text);
+                                    setPrescriptions(entries);
+                                } else if (data.prescription_text) {
+                                    setPrescriptions([
+                                        {
+                                            text: data.prescription_text,
+                                            filename: data.prescription_filename || '',
+                                        },
+                                    ]);
+                                }
+                                if (data.evidence_map?.chunks && data.evidence_map?.citations) {
+                                    setEvidenceMap(data.evidence_map);
+                                    setEvidenceOpen(false);
+                                }
                             } catch {
-                                setOutput(`Request failed (${res.status}). Please try again.`);
+                                // Ignore metadata parse failures
                             }
+                            return;
                         }
 
+                        if (ev.event === 'actions') {
+                            try {
+                                const data = JSON.parse(ev.data);
+                                if (Array.isArray(data)) {
+                                    setActions(data);
+                                }
+                            } catch {
+                                // Ignore
+                            }
+                            return;
+                        }
+
+                        setStatusMessage((msg) => (msg ? 'Generating summary...' : ''));
+                        buffer += ev.data;
+                        setOutput(buffer);
+                    },
+                    onclose() { 
+                        consultAbortRef.current = null;
+                        summaryStatusActiveRef.current = false;
+                        setLoading(false); 
                         setStatusMessage('');
-                        throw new Error(`HTTP ${res.status}`);
-                    }
-                },
-                onmessage(ev) {
-                    if (ev.event === 'metadata') {
-                        try {
-                            const data = JSON.parse(ev.data);
-                            if (data.doctor_name) {
-                                setDoctorName((prev) => prev || data.doctor_name);
-                                setDoctorFieldErrors((prev) => ({ ...prev, name: false }));
-                            }
-                            if (data.doctor_phone) {
-                                setDoctorPhone((prev) => prev || data.doctor_phone);
-                                setDoctorFieldErrors((prev) => ({ ...prev, phone: false }));
-                            }
-                            if (data.clinic_name) {
-                                setClinicName((prev) => prev || data.clinic_name);
-                                setDoctorFieldErrors((prev) => ({ ...prev, clinic: false }));
-                            }
-                            if (data.doctor_email) {
-                                setDoctorEmail((prev) => prev || data.doctor_email);
-                                setDoctorFieldErrors((prev) => ({ ...prev, email: false }));
-                            }
-                            if (Array.isArray(data.prescription_texts)) {
-                                const entries = data.prescription_texts
-                                    .map((text: string, index: number) => ({
-                                        text,
-                                        filename: Array.isArray(data.prescription_filenames)
-                                            ? data.prescription_filenames[index] || ''
-                                            : '',
-                                    }))
-                                    .filter((entry: PrescriptionEntry) => entry.text);
-                                setPrescriptions(entries);
-                            } else if (data.prescription_text) {
-                                setPrescriptions([
-                                    {
-                                        text: data.prescription_text,
-                                        filename: data.prescription_filename || '',
-                                    },
-                                ]);
-                            }
-                        } catch {
-                            // Ignore metadata parse failures
+                    },
+                    onerror(err) {
+                        if (err instanceof AuthError) {
+                            throw err; // Re-throw to be caught by the retry loop
                         }
-                        return;
-                    }
+                        console.error('SSE error:', err);
+                        controller.abort();
+                        consultAbortRef.current = null;
+                        summaryStatusActiveRef.current = false;
+                        setLoading(false);
+                        setStatusMessage('Unable to generate summary. Please try again.');
+                        setOutput('Unable to generate summary. Please try again.');
+                    },
+                });
+            };
 
-                    if (ev.event === 'actions') {
-                        try {
-                            const data = JSON.parse(ev.data);
-                            if (Array.isArray(data)) {
-                                setActions(data);
-                            }
-                        } catch {
-                            // Ignore
+            let attempts = 0;
+            let token = jwt;
+            while (attempts <= AUTH_RETRY_COUNT) {
+                try {
+                    await runStream(token);
+                    break;
+                } catch (err) {
+                    if (err instanceof AuthError) {
+                        attempts += 1;
+                        if (attempts > AUTH_RETRY_COUNT) {
+                            consultAbortRef.current?.abort();
+                            await onSessionExpired();
+                            setLoading(false);
+                            setStatusMessage('');
+                            setOutput('Session expired. Please relogin.');
+                            break;
                         }
-                        return;
+                        const fresh = await getFreshToken(getToken);
+                        if (!fresh) {
+                            continue;
+                        }
+                        token = fresh;
+                    } else {
+                        throw err;
                     }
-
-                    setStatusMessage((msg) => (msg ? 'Generating summary...' : ''));
-                    buffer += ev.data;
-                    setOutput(buffer);
-                },
-                onclose() { 
-                    setLoading(false); 
-                    setStatusMessage('');
-                },
-                onerror(err) {
-                    console.error('SSE error:', err);
-                    controller.abort();
-                    setLoading(false);
-                    setStatusMessage('Unable to generate summary. Please try again.');
-                    setOutput('Unable to generate summary. Please try again.');
-                },
-            });
+                }
+            }
         } catch (err: any) {
             console.error('Request failed:', err);
             setOutput((prev) => prev || err?.message || 'Request failed. Please try again.');
@@ -925,13 +1174,21 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
         return lines.slice(0, signoffIndex).join('\n').trim();
     }
 
+    function cleanDoctorName(name: string) {
+        return name
+            .replace(/^\s*(?:attending|treating)?\s*(?:physician|doctor|surgeon|provider|clinician)(?:\s+name)?\s*[:\-]\s*/i, '')
+            .replace(/^\s*(?:physician|doctor|provider|surgeon|clinician)\s+name\s*[:\-]\s*/i, '')
+            .trim();
+    }
+
     function formatDoctorName(name: string) {
-        const trimmed = name.trim();
+        const trimmed = cleanDoctorName(name);
         if (!trimmed) return trimmed;
         const lower = trimmed.toLowerCase();
         if (lower.startsWith('dr ') || lower.startsWith('dr.')) return trimmed;
         return `Dr ${trimmed}`;
     }
+
 
     function escapeHtml(input: string) {
         return input
@@ -1015,23 +1272,32 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                 return;
             }
 
-            const response = await fetch('/api/send-email', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${jwt}`,
+            const response = await fetchWithAuthRetry(
+                getToken,
+                '/api/send-email',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        to: patientEmail.trim(),
+                        subject,
+                        html,
+                        reply_to: doctorEmail.trim(),
+                        clinic_name: clinicName.trim(),
+                        language: selectedLanguage,
+                    }),
                 },
-                body: JSON.stringify({
-                    to: patientEmail.trim(),
-                    subject,
-                    html,
-                    reply_to: doctorEmail.trim(),
-                    clinic_name: clinicName.trim(),
-                    language: selectedLanguage,
-                }),
-            });
+                onSessionExpired
+            );
 
-            if (!response.ok) {
+            if (!response?.ok) {
+                if (!response) {
+                    setEmailStatus('Authentication required.');
+                    setSendingEmail(false);
+                    return;
+                }
                 let detail = 'Unable to send email.';
                 try {
                     const data = await response.json();
@@ -1073,6 +1339,17 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
 
     // Prepare email preview
     const emailPreviewHtml = extractDraftEmailHtml(output) || (hasSummary ? '' : extractDraftEmailText(output));
+    const evidenceChunks = evidenceMap?.chunks || [];
+    const evidenceCitations = evidenceMap?.citations || [];
+    const evidenceById = useMemo(() => {
+        const map = new Map<string, EvidenceChunk>();
+        for (const chunk of evidenceChunks) {
+            if (chunk?.id) {
+                map.set(chunk.id, chunk);
+            }
+        }
+        return map;
+    }, [evidenceChunks]);
 
     return (
         <div className="mx-auto max-w-5xl px-6 pb-16">
@@ -1081,13 +1358,25 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                 className="animate-fade-in rounded-2xl border border-emerald-100/80 bg-white/90 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.55)] backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/85 dark:shadow-[0_18px_40px_-32px_rgba(15,23,42,0.9)]"
             >
                 <div className="border-b border-emerald-100/80 px-6 py-5">
-                    <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
-                        Clinical Intake
-                    </p>
-                    <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Consultation Documentation</h2>
-                    <p className="text-sm text-slate-500 dark:text-slate-300">
-                        Enter visit details and upload relevant documents or audio recordings.
-                    </p>
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
+                                Clinical Intake
+                            </p>
+                            <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Consultation Documentation</h2>
+                            <p className="text-sm text-slate-500 dark:text-slate-300">
+                                Enter visit details and upload relevant documents or audio recordings.
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={clearForm}
+                            disabled={loading || sendingEmail}
+                            className="rounded-xl border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-700/60 dark:bg-slate-900/70 dark:text-emerald-200 dark:hover:bg-slate-800"
+                        >
+                            Clear
+                        </button>
+                    </div>
                 </div>
                 <div className="space-y-6 px-6 py-6">
                     <div className="grid gap-6 md:grid-cols-2">
@@ -1229,7 +1518,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                     {attachmentCount > 0 && (
                                         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                                             {attachmentFiles.map((file) => (
-                                                <li key={file.filename} className="break-words">
+                                                <li key={file.filename} className="break-all whitespace-normal">
                                                     {file.filename}
                                                 </li>
                                             ))}
@@ -1301,7 +1590,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                     {imageCount > 0 && (
                                         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                                             {imageFiles.map((file) => (
-                                                <li key={file.filename} className="break-words">
+                                                <li key={file.filename} className="break-all whitespace-normal">
                                                     {file.filename}
                                                 </li>
                                             ))}
@@ -1371,7 +1660,7 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                                     {audioCount > 0 && (
                                         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                                             {audioFiles.map((file) => (
-                                                <li key={file.filename} className="break-words">
+                                                <li key={file.filename} className="break-all whitespace-normal">
                                                     {file.filename}
                                                 </li>
                                             ))}
@@ -1423,6 +1712,71 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                         className="markdown-content prose prose-slate max-w-none prose-headings:font-display prose-headings:text-slate-900 dark:prose-invert dark:prose-headings:text-slate-100"
                         dangerouslySetInnerHTML={{ __html: renderedOutput }}
                     />
+
+                    {evidenceCitations.length > 0 && (
+                        <details
+                            open={evidenceOpen}
+                            onToggle={(event) => setEvidenceOpen(event.currentTarget.open)}
+                            className="mt-6 rounded-xl border border-emerald-100 bg-emerald-50/60 p-5 dark:border-slate-700 dark:bg-slate-900/70"
+                        >
+                            <summary className="cursor-pointer list-none text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <span className="text-[11px] uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
+                                            Evidence Links
+                                        </span>
+                                        <span className="ml-2 text-base text-slate-900 dark:text-slate-100">
+                                            Supporting sources
+                                        </span>
+                                    </div>
+                                    <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                                        {evidenceOpen ? '[-] Hide' : '[+] Show'}
+                                    </span>
+                                </div>
+                            </summary>
+                            <div className="mt-4 space-y-4 text-sm text-slate-700 dark:text-slate-200">
+                                {evidenceCitations.map((citation, index) => {
+                                    const sources = citation.chunk_ids
+                                        .map((id) => evidenceById.get(id))
+                                        .filter(Boolean) as EvidenceChunk[];
+                                    
+                                    return (
+                                        <div key={`${index}-${citation.sentence.slice(0, 24)}`} className="rounded-lg border border-emerald-100/80 bg-white/80 p-4 dark:border-slate-700/70 dark:bg-slate-950/70">
+                                            <p className="font-medium text-slate-900 dark:text-slate-100">
+                                                "{citation.sentence}"
+                                            </p>
+                                            {sources.map((source) => (
+                                                <div key={source.id} className="mt-3 rounded-md border border-emerald-100/70 bg-emerald-50/70 p-3 text-xs text-slate-600 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-300">
+                                                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700 dark:text-emerald-300">
+                                                        Source: {source.source}
+                                                    </p>
+                                                    <blockquote className="border-l-2 border-emerald-200 pl-2 italic dark:border-emerald-700">
+                                                        {citation.snippets?.[source.id] || source.text || 'No snippet available.'}
+                                                    </blockquote>
+                                                    {Array.isArray(source.sources) && source.sources.length > 0 && (
+                                                        <ul className="mt-2 list-disc space-y-1 pl-5">
+                                                            {source.sources.map((link, linkIndex) => (
+                                                                <li key={`${source.id}-${linkIndex}`}>
+                                                                    <a
+                                                                        href={link.url}
+                                                                        target="_blank"
+                                                                        rel="noreferrer"
+                                                                        className="text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-300"
+                                                                    >
+                                                                        {link.title || link.url}
+                                                                    </a>
+                                                                </li>
+                                                            ))}
+                                                        </ul>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </details>
+                    )}
                     
                     {actions.length > 0 && (
                         <div className="mt-8 rounded-xl border border-blue-200 bg-blue-50/50 p-6 dark:border-blue-800/60 dark:bg-blue-900/20">
@@ -1688,13 +2042,32 @@ function ConsultationForm({ isPremium = true }: ConsultationFormProps) {
                 </section>
             )}
             
-            <ChatInterface patientName={patientName} currentSummary={output} />
+            <ChatInterface
+                patientName={patientName}
+                currentSummary={output}
+                onSessionExpired={onSessionExpired}
+            />
         </div>
     );
 }
 
 export default function Product() {
     const { getToken } = useAuth();
+    const { signOut } = useClerk();
+    const [sessionExpiredOpen, setSessionExpiredOpen] = useState(false);
+    
+    const handleSessionExpired = useCallback(async () => {
+        // Immediately show the modal. No need for throttling here.
+        setSessionExpiredOpen(true);
+    }, []);
+
+    const handleRelogin = async () => {
+        try {
+            await signOut({ redirectUrl: '/' });
+        } catch {
+            window.location.href = '/';
+        }
+    };
     const [subscription, setSubscription] = useState<Record<string, any> | null>(null);
     const planRaw = String(subscription?.plan || subscription?.pla || '').toLowerCase();
     const isPremiumPlan = planRaw === 'u:premium_subscription' || planRaw.includes('premium');
@@ -1704,14 +2077,13 @@ export default function Product() {
         let mounted = true;
         async function loadSubscription() {
             try {
-                const jwt = await getToken();
-                if (!jwt) {
-                    return;
-                }
-                const res = await fetch('/api/subscription', {
-                    headers: { Authorization: `Bearer ${jwt}` },
-                });
-                if (!res.ok) {
+                const res = await fetchWithAuthRetry(
+                    getToken,
+                    '/api/subscription',
+                    {},
+                    noopAuthFailure
+                );
+                if (!res?.ok) {
                     return;
                 }
                 const data = await res.json();
@@ -1726,10 +2098,32 @@ export default function Product() {
         return () => {
             mounted = false;
         };
-    }, [getToken]);
+    }, [getToken, handleSessionExpired]);
 
     return (
         <main className="relative min-h-screen overflow-hidden bg-[#f6fbfb] text-slate-900 dark:bg-[#0b1217] dark:text-slate-100">
+            {sessionExpiredOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-6 backdrop-blur-sm">
+                    <div className="w-full max-w-sm rounded-2xl border border-emerald-100/80 bg-white/95 p-6 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.6)] dark:border-slate-700/80 dark:bg-slate-900/95">
+                        <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
+                            Session Expired
+                        </p>
+                        <h2 className="mt-2 font-display text-xl text-slate-900 dark:text-slate-100">
+                            Please relogin
+                        </h2>
+                        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                            Your session has expired. Sign in again to continue your consultation.
+                        </p>
+                        <button
+                            type="button"
+                            onClick={handleRelogin}
+                            className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-200/60 transition hover:bg-emerald-700"
+                        >
+                            Relogin
+                        </button>
+                    </div>
+                </div>
+            )}
             <div className="pointer-events-none absolute inset-0">
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,#d7eef0_1px,transparent_0)] bg-[size:28px_28px] opacity-60 dark:hidden" />
                 <div className="absolute inset-0 hidden bg-[radial-gradient(circle_at_1px_1px,#1f2a35_1px,transparent_0)] bg-[size:28px_28px] opacity-70 dark:block" />
@@ -1785,7 +2179,7 @@ export default function Product() {
                     plan="premium_subscription"
                     fallback={
                         <>
-                            <ConsultationForm isPremium={false} />
+                            <ConsultationForm isPremium={false} onSessionExpired={handleSessionExpired} />
                             <div className="mx-auto max-w-5xl px-6 pb-16">
                                 <div className="rounded-2xl border border-emerald-100/80 bg-white/90 p-8 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.45)] dark:border-slate-700/80 dark:bg-slate-900/85 dark:shadow-[0_18px_40px_-32px_rgba(15,23,42,0.8)]">
                                     <div className="mb-6">
@@ -1805,7 +2199,7 @@ export default function Product() {
                         </>
                     }
                 >
-                    <ConsultationForm />
+                    <ConsultationForm onSessionExpired={handleSessionExpired} />
                 </Protect>
             </div>
         </main>

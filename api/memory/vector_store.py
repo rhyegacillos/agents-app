@@ -57,10 +57,15 @@ class VectorStore:
         # Deduplication logic
         key_patient = patient_name.lower().strip()
         key_date = date
+        key_type = metadata.get("type", "")
         
         found_index = -1
         for i, existing_doc in enumerate(db):
-            if existing_doc["metadata"].get("patient_name") == key_patient and existing_doc["metadata"].get("date") == key_date:
+            if (
+                existing_doc["metadata"].get("patient_name") == key_patient
+                and existing_doc["metadata"].get("date") == key_date
+                and existing_doc["metadata"].get("type", "") == key_type
+            ):
                 found_index = i
                 break
         

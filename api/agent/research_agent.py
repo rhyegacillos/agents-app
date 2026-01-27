@@ -1,4 +1,5 @@
 import os
+import json
 from typing import List, Dict, Any
 from .utils import get_logger
 
@@ -31,7 +32,48 @@ def _build_mcp_params() -> Dict[str, Any]:
     return {"command": MCP_SERVER_COMMAND, "args": MCP_SERVER_ARGS, "env": env}
 
 
-async def _run_research_request(request: str, instructions: str) -> List[str]:
+def _parse_research_output(output: str) -> List[Dict[str, Any]]:
+    if not output:
+        return []
+    content = output.strip()
+    start_obj = content.find("{")
+    start_list = content.find("[")
+    if start_list != -1 and (start_obj == -1 or start_list < start_obj):
+        start = start_list
+        end = content.rfind("]")
+    else:
+        start = start_obj
+        end = content.rfind("}")
+
+    if start != -1 and end > start:
+        try:
+            data = json.loads(content[start : end + 1])
+            if isinstance(data, dict):
+                return [_normalize_research_item(data)]
+            if isinstance(data, list):
+                return [_normalize_research_item(item) for item in data if isinstance(item, dict)]
+        except Exception:
+            pass
+
+    return [_normalize_research_item({"summary": content, "sources": []})]
+
+
+def _normalize_research_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    summary = str(item.get("summary") or item.get("text") or "").strip()
+    sources = item.get("sources") or []
+    cleaned_sources = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "").strip()
+        if not url:
+            continue
+        title = str(source.get("title") or "").strip()
+        cleaned_sources.append({"title": title, "url": url})
+    return {"summary": summary, "sources": cleaned_sources}
+
+
+async def _run_research_request(request: str, instructions: str) -> List[Dict[str, Any]]:
     if not os.getenv("OPENAI_API_KEY"):
         logger.warning("Research agent skipped: OPENAI_API_KEY not set.")
         logger.warning("OPENAI_API_KEY is not set; skipping research agent.")
@@ -66,33 +108,43 @@ async def _run_research_request(request: str, instructions: str) -> List[str]:
         return []
 
     logger.info("Research agent completed successfully.")
-    return [str(output).strip()]
+    return _parse_research_output(str(output))
 
 
-async def check_drug_interactions(medications: List[str]) -> List[str]:
+async def check_drug_interactions(medications: List[str]) -> List[Dict[str, Any]]:
     if len(medications) < 2:
         logger.info("Research agent skipped: fewer than 2 medications.")
         return []
 
     instructions = (
-        "You can use MCP tools to search the web. "
-        "Return a short, plain-language summary of potential drug-drug interactions. "
-        "If none are found, say so clearly."
+        "You are a clinical research assistant. Your job is to find drug interaction information. "
+        "Search the web for potential interactions between the provided medications. "
+        "Return a valid JSON object with two keys: 'summary' (string) and 'sources' (list of objects).\n"
+        "RULES:\n"
+        "1. The 'summary' MUST be a concise, plain-text summary of the findings. DO NOT include URLs or markdown in the summary.\n"
+        "2. The 'sources' array MUST contain objects, each with 'title' and 'url' keys.\n"
+        "3. Every source you find MUST be a separate object in the 'sources' array.\n"
+        "4. If no interactions are found, the summary should state that, and the 'sources' array should be empty."
     )
     request = f"Check potential drug interactions between: {', '.join(medications)}."
     return await _run_research_request(request, instructions)
 
 
-async def search_medical_guidelines(condition: str) -> List[str]:
+async def search_medical_guidelines(condition: str) -> List[Dict[str, Any]]:
     condition = (condition or "").strip()
     if not condition:
         logger.info("Research agent skipped: no condition provided.")
         return []
 
     instructions = (
-        "You can use MCP tools to search the web. "
-        "Summarize relevant clinical guideline recommendations for the condition. "
-        "Keep the response concise and clinically focused."
+        "You are a clinical research assistant. Your job is to find clinical guideline recommendations. "
+        "Search the web for guidelines related to the provided condition. Prefer official publishers (e.g., AAFP, AHA, EFNS).\n"
+        "Return a valid JSON object with two keys: 'summary' (string) and 'sources' (list of objects).\n"
+        "RULES:\n"
+        "1. The 'summary' MUST be a concise, plain-text summary of the guideline recommendations. DO NOT include URLs or markdown in the summary.\n"
+        "2. The 'sources' array MUST contain objects, each with 'title' and 'url' keys.\n"
+        "3. Every source guideline you find MUST be a separate object in the 'sources' array.\n"
+        "4. If no guidelines are found, the summary should state that, and the 'sources' array should be empty."
     )
     request = f"Find clinical guideline recommendations for: {condition}."
     return await _run_research_request(request, instructions)

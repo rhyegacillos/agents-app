@@ -54,13 +54,13 @@ The goal is to move from *processing* data to *understanding and acting* on it.
 - [x] **Tool:** `search_medical_guidelines(condition)`
 
 ### 5. 🕵️ Critic / Reflexion Loop
-**Status:** 🔴 Not Started
+**Status:** ✅ Completed
 **Goal:** Self-correcting quality assurance.
-- [ ] **Feature:** "Critic Agent" reviews the summary against the raw transcript before showing it to the user.
-- [ ] **Logic:**
+- [x] **Feature:** "Critic Agent" reviews the summary against source notes, uploads, and history.
+- [x] **Logic:**
     - Step 1: Generate Summary.
-    - Step 2: Critic reviews for hallucinations/missed details.
-    - Step 3: (If needed) Regenerate with corrections.
+    - Step 2: Critic reviews for hallucinations, missing facts, and contradictions.
+    - Step 3: Regenerate with corrections until criteria pass.
 
 ---
 
@@ -91,11 +91,11 @@ The goal is to move from single-request workflows to **autonomous, long-running 
 - [ ] **Logic:** Regenerate if risk score crosses threshold.
 
 ### 4. 🧾 Evidence-Linked Summaries
-**Status:** 🔴 Not Started
-**Goal:** Tie clinical safety notes to evidence.
-- [ ] **Feature:** Require citations for all guideline or drug interaction notes.
-- [ ] **Storage:** Save source snippets in memory for audit.
-- [ ] **UX:** "Evidence" toggle to show sources inline.
+**Status:** ✅ Completed
+**Goal:** Tie clinical summaries to evidence.
+- [x] **Feature:** Generate evidence-linked citations for summary statements.
+- [x] **Storage:** Save source snippets and links in memory for audit (`visit_evidence`).
+- [x] **UX:** Evidence panel toggle with source snippets and research/guideline links.
 
 ### 5. 🧭 Persistent Care Plans
 **Status:** 🔴 Not Started

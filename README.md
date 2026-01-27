@@ -37,6 +37,18 @@ The agent remembers.
 *   **Continuity:** The generated summary automatically flags changes from previous visits (e.g., "Condition has improved since Jan 12").
 *   **Plain-Text Storage:** Summaries are stored as plain text to keep chat/RAG results readable.
 
+### 6. Quality Review (Critic Loop)
+The system self-corrects.
+*   **Critic Pass:** A dedicated Critic Agent reviews the summary against source notes, uploads, and patient history.
+*   **Issue Detection:** Flags hallucinations, missing facts, and contradictions.
+*   **Auto-Regeneration:** The summary is regenerated until it satisfies the critic criteria.
+
+### 7. Evidence-Linked Summaries
+Summaries are backed by proof.
+*   **Evidence Mapping:** Key summary statements are linked to source snippets (notes, uploads, research, guidelines).
+*   **External Links:** Research and guideline findings include clickable source URLs.
+*   **Audit Trail:** Evidence text is stored alongside the visit memory for later recall.
+
 ---
 
 ## 🤖 The MediNotes Assistant: A Detailed Look
@@ -93,7 +105,7 @@ Unlike traditional monolithic applications, this backend is composed of speciali
 
 ### Core Agents
 
-The system is powered by six primary agents located in `api/agent/`:
+The system is powered by eight primary agents located in `api/agent/`:
 
 #### 1. Extraction Agent (`extraction_agent.py`)
 *   **Role:** The "senses" of the system. It handles the ingestion of unstructured medical data.
@@ -110,6 +122,8 @@ The system is powered by six primary agents located in `api/agent/`:
     *   **Orchestration:** Orchestrates the entire pipeline: calls the Extraction Agent -> aggregates context -> prompts the LLM -> streams the result.
     *   **Contextual Summarization:** Generates medical summaries (SOAP, Discharge, Referral) based on the specific visit type.
     *   **Streaming:** Returns data to the frontend token-by-token for a responsive UX.
+    *   **Quality Control:** Runs the Critic Agent after generation and regenerates until it passes review.
+    *   **Evidence Linking:** Calls the Evidence Agent after generation and streams the evidence map to the UI.
 *   **Pattern:** **Orchestrator Pipeline**. It acts as a controller that manages the flow of data between sub-components.
 
 #### 3. Coordinator Agent (`coordinator_agent.py`)
@@ -122,7 +136,7 @@ The system is powered by six primary agents located in `api/agent/`:
 #### 4. Memory Agent (`memory_agent.py`)
 *   **Role:** The "hippocampus".
 *   **Capabilities:**
-    *   **RAG (Retrieval-Augmented Generation):** Stores every generated summary in a vector database (`vector_store.py`).
+    *   **RAG (Retrieval-Augmented Generation):** Stores summaries, original notes, and evidence links in a vector database (`vector_store.py`).
     *   **Recall:** Retrieves relevant past summaries for the current patient to provide historical context to the LLM.
 *   **Pattern:** **State Manager**. It maintains long-term persistence across sessions.
 
@@ -133,10 +147,29 @@ The system is powered by six primary agents located in `api/agent/`:
     *   **Drug Interaction Checks:** `check_drug_interactions(medications)` runs when two or more medications are detected.
     *   **Guideline Lookup:** `search_medical_guidelines(condition)` runs when the summary flow infers a relevant condition.
     *   **Summary Injection:** Findings are injected into the summary prompt to generate a **Clinical Safety Note** and **Guideline Note** in the Assessment/Plan.
-    *   **Concise Output:** Returns short, plain-language findings meant for clinical review, not full citations.
+    *   **Concise Output:** Returns short findings with source URLs for evidence linking.
 *   **Pattern:** **Tool-Backed Researcher**. It delegates retrieval to MCP tools and summarizes results via the LLM.
 
-#### 6. Email Agent (`email_agent.py`)
+#### 6. Critic Agent (`critic_agent.py`)
+*   **Role:** The "Medical Director" ensuring clinical quality and accuracy.
+*   **Capabilities:**
+    *   **Review:** Compares the generated summary against all source materials (notes, uploads, patient history, and research findings).
+    *   **Issue Extraction:** Returns a structured list of issues (hallucinations, missing facts, contradictions) along with a quality score.
+    *   **Two-Step Regeneration Process:**
+        1.  **Initial Draft & Review:** A single summary is generated and reviewed. If it passes, the process ends.
+        2.  **Parallel Tournament:** If the initial draft fails, the agent triggers a "Best-of-N" tournament (N=5). It generates five new candidates in parallel, critiques them all, and selects the highest-scoring summary, ensuring both speed and quality.
+*   **Pattern:** **Reviewer + Tournament Regenerator**. This pattern is more efficient than a simple loop, as it only escalates to a more expensive parallel generation when the first attempt fails.
+
+#### 7. Evidence Agent (`evidence_agent.py`)
+*   **Role:** The "Auditor" responsible for grounding the summary in verifiable facts.
+*   **Capabilities:**
+    *   **Sentence Analysis:** Breaks the final, plain-text summary into individual clinical sentences, filtering out headings and boilerplate.
+    *   **Evidence Mapping:** For each meaningful sentence, it searches all source text chunks (from notes, uploads, research, etc.) to find the single best piece of supporting evidence.
+    *   **Snippet Generation:** Extracts a direct quote from the source chunk to serve as a snippet.
+    *   **URL Propagation:** If the source chunk comes from the Research or Guideline agent, it correctly attaches the source URLs to the citation, making them clickable in the UI.
+*   **Pattern:** **Post-Processor & Grounding Agent**. This runs at the end of the pipeline and provides the final layer of verifiability and trust.
+
+#### 8. Email Agent (`email_agent.py`)
 *   **Role:** The "dispatcher".
 *   **Capabilities:**
     *   **Intelligent Routing:** Uses an **Agent Loop** to analyze the request and decide on the necessary steps.

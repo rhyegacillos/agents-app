@@ -1,7 +1,10 @@
 import os
 import logging
+import jwt
+import datetime
+from jwt import PyJWKClient
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +29,13 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = get_logger("api")
 
+class _AccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "/api/subscription" not in message
+
+logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
+
 app = FastAPI()
 
 # Add CORS middleware (allows frontend to call backend)
@@ -37,8 +47,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-clerk_config = ClerkConfig(jwks_url=os.getenv("CLERK_JWKS_URL"))
-clerk_guard = ClerkHTTPBearer(clerk_config)
+# Clerk authentication setup
+jwks_url = os.getenv("CLERK_JWKS_URL")
+if not jwks_url:
+    logger.error("CLERK_JWKS_URL is not set in environment variables!")
+else:
+    logger.info(f"CLERK_JWKS_URL found: {jwks_url.split('/')[0]}... (masked)")
+
+# Initialize PyJWKClient for manual verification
+jwks_client = PyJWKClient(jwks_url) if jwks_url else None
+clerk_config = ClerkConfig(jwks_url=jwks_url)
+
+class CustomClerkHTTPBearer(ClerkHTTPBearer):
+    async def __call__(self, request: Request):
+        auth = request.headers.get("Authorization")
+        if not auth or not auth.startswith("Bearer "):
+            # Fallback to default behavior (which usually raises 403)
+            # or just raise explicitly
+            raise HTTPException(status_code=403, detail="Not authenticated")
+
+        token = auth.split(" ")[1]
+        
+        try:
+            if not jwks_client:
+                raise Exception("JWKS client not initialized")
+
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
+            
+            # Manual verification with leeway and relaxed audience check
+            data = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                leeway=60,  # 60 seconds clock skew tolerance
+                options={"verify_aud": False} # Relax audience check
+            )
+            
+            # Create the credentials object expected by the endpoint
+            creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+            creds.decoded = data # Attach decoded payload manually
+            return creds
+
+        except Exception as e:
+            logger.error(f"Manual Token Verification Failed: {e}")
+            # Try to debug log the token content if possible
+            try:
+                decoded_debug = jwt.decode(token, options={"verify_signature": False})
+                exp_ts = decoded_debug.get("exp", 0)
+                iat_ts = decoded_debug.get("iat", 0)
+                now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+                logger.info(f"Debug Token: exp={exp_ts}, iat={iat_ts}, now={now_ts}, skew={iat_ts - now_ts:.2f}s")
+            except:
+                pass
+            
+            raise HTTPException(status_code=403, detail=f"Token verification failed: {str(e)}")
+
+clerk_guard = CustomClerkHTTPBearer(clerk_config)
 
 # Initialize AsyncOpenAI client
 # Note: In a production app, you might want to create this per request or as a dependency
@@ -48,12 +112,13 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 @app.post("/api/consultation")
 async def consultation_summary(
     visit: Visit,
+    request: Request,
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
 ):
     user_id = creds.decoded["sub"]  # Available for tracking/auditing
 
     # Summary Pipeline
-    stream_generator = summary_agent.run_summary_pipeline(visit, client)
+    stream_generator = summary_agent.run_summary_pipeline(visit, client, request)
 
     return StreamingResponse(stream_generator, media_type="text/event-stream")
 

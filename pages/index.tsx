@@ -70,6 +70,7 @@ export default function Home() {
                 'Patient Memory',
                 'Action Coordinator',
                 'Clinical Decision Support',
+                'Quality Review',
                 'MediNotes Assistant',
                 'Doctor detail extraction',
                 'Secure document ingestion',
@@ -150,6 +151,18 @@ export default function Home() {
                   </p>
                   <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
                     <li>Adds drug interaction checks and guideline notes to summaries.</li>
+                    <li>Evidence-linked summaries with source snippets and external links.</li>
+                  </ul>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">
+                    Quality Review
+                  </p>
+                  <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
+                    <li>An automated check compares each summary against the original notes, finds missing or incorrect details, and regenerates the summary when needed</li>
                   </ul>
                 </div>
               </li>
@@ -197,7 +210,11 @@ export default function Home() {
             },
             {
               title: 'Clinical Decision Support',
-              body: 'Medication interaction checks and guideline lookups add safety context.',
+              body: 'Medication interaction checks, guideline lookups, and evidence links that cite sources.',
+            },
+            {
+              title: 'Quality Review',
+              body: 'Automated critic checks summaries against source notes and regenerates when needed.',
             },
             {
               title: 'Email Delivery',

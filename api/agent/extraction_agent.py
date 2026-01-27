@@ -441,26 +441,47 @@ async def extract_doctor_info(source_text: str, client: AsyncOpenAI) -> dict:
 
 
 async def build_visit_context(visit: Visit, client: AsyncOpenAI) -> dict:
-    notes_text = visit.notes.strip()
+    def normalize_whitespace(text: str) -> str:
+        if not text:
+            return ""
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.rstrip() for line in normalized.split("\n")]
+        cleaned = []
+        blank = False
+        for line in lines:
+            if not line.strip():
+                if not blank:
+                    cleaned.append("")
+                    blank = True
+                continue
+            cleaned.append(line)
+            blank = False
+        return "\n".join(cleaned).strip()
+
+    notes_text = normalize_whitespace(visit.notes)
     attachments = []
     prescription_entries = []
 
     if visit.uploaded_notes:
         filename = visit.uploaded_filename or "consultation attachment"
-        attachments.append((f"Uploaded file ({filename})", visit.uploaded_notes.strip()))
+        cleaned_notes = normalize_whitespace(visit.uploaded_notes)
+        attachments.append((f"Uploaded file ({filename})", cleaned_notes))
     else:
         for uploaded_text, filename in extract_uploaded_texts(visit):
             display_name = filename or "consultation attachment"
-            attachments.append((f"Uploaded file ({display_name})", uploaded_text))
+            cleaned_text = normalize_whitespace(uploaded_text)
+            attachments.append((f"Uploaded file ({display_name})", cleaned_text))
 
     for audio_text, audio_name in await extract_audio_transcripts(visit, client):
         display_name = audio_name or "audio recording"
-        attachments.append((f"Audio transcript (English) ({display_name})", audio_text))
+        cleaned_text = normalize_whitespace(audio_text)
+        attachments.append((f"Audio transcript (English) ({display_name})", cleaned_text))
 
     for image_text, image_name in await extract_image_texts(visit, client):
         display_name = image_name or "prescription image"
-        attachments.append((f"Prescription image text ({display_name})", image_text))
-        prescription_entries.append((image_text, image_name))
+        cleaned_text = normalize_whitespace(image_text)
+        attachments.append((f"Prescription image text ({display_name})", cleaned_text))
+        prescription_entries.append((cleaned_text, image_name))
 
     combined_parts = []
     if notes_text:

@@ -50,7 +50,6 @@ async def _send_email_impl(
     reply_to: str,
     clinic_name: str
 ) -> Dict[str, Any]:
-    """Internal implementation of the sending logic."""
     api_key = os.getenv("RESEND_API_KEY")
     if not api_key:
         raise Exception("Missing RESEND_API_KEY")

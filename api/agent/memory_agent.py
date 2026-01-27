@@ -6,10 +6,11 @@ from .utils import get_logger
 logger = get_logger(__name__)
 
 async def remember_visit(
-    summary: str, 
+    summary: str,
     patient_name: str, 
     date: str, 
-    client: AsyncOpenAI
+    client: AsyncOpenAI,
+    doc_type: str = "visit_summary",
 ):
     """
     Stores a generated clinical summary into long-term memory.
@@ -19,7 +20,7 @@ async def remember_visit(
     metadata = {
         "patient_name": patient_name.lower().strip(),
         "date": date,
-        "type": "visit_summary"
+        "type": doc_type
     }
     
     # Store chunks or the whole summary? 
@@ -56,7 +57,8 @@ async def recall_patient_history(
     context = f"Past Clinical History for {patient_name}:\n"
     for doc in results:
         date = doc["metadata"].get("date", "Unknown Date")
-        context += f"- [Date: {date}]: {doc['text']}\n" # No truncation
+        doc_type = doc["metadata"].get("type", "visit_summary")
+        context += f"- [Date: {date} | {doc_type}]: {doc['text']}\n" # No truncation
         
     return context
 
