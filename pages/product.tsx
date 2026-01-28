@@ -7,22 +7,60 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { Protect, PricingTable, UserButton } from '@clerk/nextjs';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import ThemeToggle from '../components/ThemeToggle';
 
-// --- Chat Interface Component ---
+const GENERAL_CHIPS = [
+    'How does this app work?',
+    'What file formats are supported?',
+    'Explain Premium features',
+];
 
-type Message = {
-    role: 'user' | 'assistant';
-    content: string;
-};
+const CLINICAL_CHIPS = [
+    'Summarize patient history',
+    'Draft a referral letter',
+    'Check for drug interactions',
+    'Explain the treatment plan',
+];
 
-type ChatInterfaceProps = {
-    patientName: string;
-    currentSummary: string;
-    onSessionExpired: () => Promise<void>;
-};
+const SUMMARY_JOB_STORAGE_KEY = 'medinotes_summary_job_id';
+const SUMMARY_OUTPUT_STORAGE_KEY = 'medinotes_summary_output';
+const SUMMARY_ACTIONS_STORAGE_KEY = 'medinotes_summary_actions';
+const SUMMARY_EVIDENCE_STORAGE_KEY = 'medinotes_summary_evidence';
 
-type TokenGetter = (opts?: { skipCache?: boolean }) => Promise<string | null>;
+const URL_REGEX = /\b(?:https?:\/\/|www\.)[^\s<>()]+/gi;
+
+function sanitizeMarkdownLinks(text: string): string {
+    if (!text) return '';
+    // Remove stray backticks inside markdown link URLs: ](https://...`)
+    return text.replace(/\]\(([^)\s]+?)`+\)/g, ']($1)');
+}
+
+function linkifyText(text: string): string {
+    return text.replace(URL_REGEX, (match) => {
+        let url = match;
+        let trailing = '';
+        while (/[),.;!?`]+$/.test(url)) {
+            trailing = url.slice(-1) + trailing;
+            url = url.slice(0, -1);
+        }
+        const href = url.startsWith('http') ? url : `https://${url}`;
+        return `[${url}](${href})${trailing}`;
+    });
+}
+
+function stripMarkdownCodeFences(text: string): string {
+    if (!text) return '';
+    return text.replace(/```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g, '$1');
+}
+
+function normalizeChatMarkdown(text: string): string {
+    const cleaned = sanitizeMarkdownLinks(text);
+    const withoutFences = stripMarkdownCodeFences(cleaned);
+    return linkifyText(withoutFences);
+}
+
+type TokenGetter = (opts?: { skipCache?: boolean; template?: string }) => Promise<string | null>;
 
 class AuthError extends Error {
     status: number;
@@ -33,13 +71,32 @@ class AuthError extends Error {
     }
 }
 
+const CLERK_JWT_TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE || '';
+
+function tokenOptions(skipCache?: boolean) {
+    const opts: { skipCache?: boolean; template?: string } = {};
+    if (skipCache) {
+        opts.skipCache = true;
+    }
+    if (CLERK_JWT_TEMPLATE) {
+        opts.template = CLERK_JWT_TEMPLATE;
+    }
+    return opts;
+}
+
 async function getFreshToken(getToken: TokenGetter): Promise<string | null> {
     try {
-        return await getToken({ skipCache: true });
+        return await getToken(tokenOptions(true));
     } catch {
-        return await getToken();
+        return await getToken(tokenOptions());
     }
 }
+
+const AUTH_FAILURE_WINDOW_MS = 30000;
+const AUTH_FAILURE_THRESHOLD = 2;
+const AUTH_RETRY_COUNT = 3;
+
+const noopAuthFailure = async () => {};
 
 async function fetchWithAuthRetry(
     getToken: TokenGetter,
@@ -47,7 +104,7 @@ async function fetchWithAuthRetry(
     init: RequestInit,
     onAuthFailure: () => Promise<void>
 ): Promise<Response | null> {
-    let token = await getToken();
+    let token = await getToken(tokenOptions());
     if (!token) {
         await onAuthFailure();
         return null;
@@ -78,24 +135,20 @@ async function fetchWithAuthRetry(
     return res;
 }
 
-const AUTH_FAILURE_WINDOW_MS = 30000;
-const AUTH_FAILURE_THRESHOLD = 2;
-const AUTH_RETRY_COUNT = 3;
+// --- Chat Interface Component ---
 
-const noopAuthFailure = async () => {};
+type Message = {
+    role: 'user' | 'assistant';
+    content: string;
+};
 
-const GENERAL_CHIPS = [
-    'How does this app work?',
-    'What file formats are supported?',
-    'Explain Premium features',
-];
+type ChatInterfaceProps = {
+    patientName: string;
+    currentSummary: string;
+    onSessionExpired: () => Promise<void>;
+};
 
-const CLINICAL_CHIPS = [
-    'Summarize patient history',
-    'Draft a referral letter',
-    'Check for drug interactions',
-    'Explain the treatment plan',
-];
+// ... (existing code)
 
 function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatInterfaceProps) {
     const { getToken } = useAuth();
@@ -383,14 +436,37 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                                             <div className="h-2 w-2 rounded-full bg-slate-400 animate-bounce"></div>
                                         </div>
                                     ) : (
-                                        <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-p:leading-relaxed prose-ul:my-1 prose-ul:list-disc prose-li:my-0 prose-a:text-emerald-600 dark:prose-a:text-emerald-400 hover:prose-a:underline">
+                                        <div className="prose prose-sm max-w-none break-words dark:prose-invert prose-p:leading-relaxed prose-ul:my-1 prose-ul:list-disc prose-li:my-0 prose-a:text-emerald-600 dark:prose-a:text-emerald-400 hover:prose-a:underline prose-pre:whitespace-pre-wrap prose-pre:break-words prose-code:break-words">
                                             <ReactMarkdown 
-                                                remarkPlugins={[remarkGfm]}
+                                                remarkPlugins={[remarkGfm, remarkBreaks]}
                                                 components={{
-                                                    a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />
+                                                    a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                                    code: ({ children, className, ...props }) => {
+                                                        const isBlock = Boolean(className && className.trim());
+                                                        return (
+                                                        <code
+                                                            {...props}
+                                                            className={[
+                                                                'font-sans break-words',
+                                                                isBlock ? '' : 'rounded bg-emerald-50/70 px-1 py-0.5 dark:bg-slate-700/60',
+                                                                className || '',
+                                                            ].join(' ').trim()}
+                                                        >
+                                                            {children}
+                                                        </code>
+                                                        );
+                                                    },
+                                                    pre: ({ children, ...props }) => (
+                                                        <pre
+                                                            {...props}
+                                                            className="font-sans whitespace-pre-wrap break-words rounded bg-emerald-50/60 p-2 dark:bg-slate-800/70"
+                                                        >
+                                                            {children}
+                                                        </pre>
+                                                    ),
                                                 }}
                                             >
-                                                {msg.content.replace(/\n/g, '\n\n')}
+                                                {normalizeChatMarkdown(msg.content)}
                                             </ReactMarkdown>
                                         </div>
                                     )}
@@ -601,6 +677,8 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
     const consultAbortRef = useRef<AbortController | null>(null);
     const summaryStatusActiveRef = useRef(false);
     const summaryStatusIndexRef = useRef(0);
+    const summaryResumeRef = useRef(false);
+    const summaryStreamingRef = useRef(false);
     const summaryStatusMessages = [
         'Generating summary...',
         'Analyzing context...',
@@ -621,6 +699,294 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         }, 2200);
         return () => clearInterval(interval);
     }, [loading]);
+
+    useEffect(() => {
+        return () => {
+            if (typeof window === 'undefined') {
+                return;
+            }
+            localStorage.removeItem(SUMMARY_JOB_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_OUTPUT_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_ACTIONS_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_EVIDENCE_STORAGE_KEY);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return;
+        }
+        const savedOutput = localStorage.getItem(SUMMARY_OUTPUT_STORAGE_KEY);
+        if (!savedOutput) {
+            return;
+        }
+        setOutput(savedOutput);
+        const savedActions = localStorage.getItem(SUMMARY_ACTIONS_STORAGE_KEY);
+        if (savedActions) {
+            try {
+                const parsed = JSON.parse(savedActions);
+                if (Array.isArray(parsed)) {
+                    setActions(parsed);
+                }
+            } catch {
+                // Ignore parse failures
+            }
+        }
+        const savedEvidence = localStorage.getItem(SUMMARY_EVIDENCE_STORAGE_KEY);
+        if (savedEvidence) {
+            try {
+                const parsed = JSON.parse(savedEvidence);
+                if (parsed?.chunks && parsed?.citations) {
+                    setEvidenceMap(parsed);
+                    setEvidenceOpen(true);
+                }
+            } catch {
+                // Ignore parse failures
+            }
+        }
+        setLoading(false);
+        setStatusMessage('');
+        summaryResumeRef.current = true;
+    }, []);
+
+    const streamSummary = useCallback(async (token: string, jobId?: string) => {
+        let buffer = '';
+        let hadError = false;
+        let finalized = false;
+        const controller = new AbortController();
+        consultAbortRef.current = controller;
+        summaryStreamingRef.current = true;
+        const url = jobId ? `/api/consultation?job_id=${encodeURIComponent(jobId)}` : '/api/consultation';
+        const isResume = Boolean(jobId);
+        await fetchEventSource(url, {
+            signal: controller.signal,
+            method: jobId ? 'GET' : 'POST',
+            headers: {
+                ...(jobId ? {} : { 'Content-Type': 'application/json' }),
+                Authorization: `Bearer ${token}`,
+            },
+            body: jobId ? undefined : JSON.stringify({
+                patient_name: patientName,
+                date_of_visit: visitDate?.toISOString().slice(0, 10),
+                notes,
+                template_id: templateId,
+                uploaded_notes: null,
+                uploaded_filename: null,
+                uploaded_file_b64: null,
+                uploaded_mime: null,
+                uploaded_files: attachmentFiles.length ? attachmentFiles : null,
+                image_filename: null,
+                image_file_b64: null,
+                image_mime: null,
+                image_files: imageFiles.length ? imageFiles : null,
+                audio_filename: null,
+                audio_file_b64: null,
+                audio_mime: null,
+                audio_files: audioFiles.length ? audioFiles : null,
+            }),
+            onopen: async (res) => {
+                if (!res.ok) {
+                    if (res.status === 401 || res.status === 403) {
+                        throw new AuthError(res.status);
+                    }
+                    const contentType = res.headers.get('content-type') || '';
+
+                    if (contentType.includes('application/json')) {
+                        try {
+                            const data = await res.clone().json();
+                            const detail = data?.detail || JSON.stringify(data);
+                            setOutput(detail || `Request failed (${res.status}). Please try again.`);
+                        } catch {
+                            setOutput(`Request failed (${res.status}). Please try again.`);
+                        }
+                    } else {
+                        try {
+                            const text = await res.text();
+                            setOutput(text || `Request failed (${res.status}). Please try again.`);
+                        } catch {
+                            setOutput(`Request failed (${res.status}). Please try again.`);
+                        }
+                    }
+
+                    setStatusMessage('');
+                    if (isResume && res.status === 404 && typeof window !== 'undefined') {
+                        localStorage.removeItem(SUMMARY_JOB_STORAGE_KEY);
+                    }
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                summaryStatusIndexRef.current = 0;
+                summaryStatusActiveRef.current = true;
+                setStatusMessage(summaryStatusMessages[0]);
+            },
+            onmessage(ev) {
+                if (ev.event === 'job') {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.job_id && typeof window !== 'undefined') {
+                            localStorage.setItem(SUMMARY_JOB_STORAGE_KEY, data.job_id);
+                        }
+                    } catch {
+                        // Ignore job id parse failures
+                    }
+                    return;
+                }
+                if (ev.event === 'metadata') {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.doctor_name) {
+                            const cleaned = cleanDoctorName(data.doctor_name);
+                            setDoctorName((prev) => prev || cleaned);
+                            setDoctorFieldErrors((prev) => ({ ...prev, name: false }));
+                        }
+                        if (data.doctor_phone) {
+                            setDoctorPhone((prev) => prev || data.doctor_phone);
+                            setDoctorFieldErrors((prev) => ({ ...prev, phone: false }));
+                        }
+                        if (data.clinic_name) {
+                            setClinicName((prev) => prev || data.clinic_name);
+                            setDoctorFieldErrors((prev) => ({ ...prev, clinic: false }));
+                        }
+                        if (data.doctor_email) {
+                            setDoctorEmail((prev) => prev || data.doctor_email);
+                            setDoctorFieldErrors((prev) => ({ ...prev, email: false }));
+                        }
+                        if (!patientEmail.trim() && data.patient_email) {
+                            setPatientEmail(data.patient_email);
+                            setPatientEmailError(!isValidEmail(data.patient_email));
+                        }
+                        if (Array.isArray(data.prescription_texts)) {
+                            const entries = data.prescription_texts
+                                .map((text: string, index: number) => ({
+                                    text,
+                                    filename: Array.isArray(data.prescription_filenames)
+                                        ? data.prescription_filenames[index] || ''
+                                        : '',
+                                }))
+                                .filter((entry: PrescriptionEntry) => entry.text);
+                            setPrescriptions(entries);
+                        } else if (data.prescription_text) {
+                            setPrescriptions([
+                                {
+                                    text: data.prescription_text,
+                                    filename: data.prescription_filename || '',
+                                },
+                            ]);
+                        }
+                        // Handle initial metadata which may or may not have the map
+                        if (data.evidence_map?.chunks && data.evidence_map?.citations) {
+                            setEvidenceMap(data.evidence_map);
+                            setEvidenceOpen(false);
+                            if (typeof window !== 'undefined') {
+                                localStorage.setItem(SUMMARY_EVIDENCE_STORAGE_KEY, JSON.stringify(data.evidence_map));
+                            }
+                        }
+                    } catch {
+                        // Ignore metadata parse failures
+                    }
+                    return;
+                }
+
+                if (ev.event === 'evidence_update') {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.chunks && data.citations) {
+                            setEvidenceMap(data);
+                            setEvidenceOpen(true); // Automatically open the evidence section when it loads
+                            if (typeof window !== 'undefined') {
+                                localStorage.setItem(SUMMARY_EVIDENCE_STORAGE_KEY, JSON.stringify(data));
+                            }
+                        }
+                    } catch {
+                        // Ignore evidence parse failures
+                    }
+                    return;
+                }
+
+                if (ev.event === 'summary') {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.summary_html) {
+                            setOutput(data.summary_html);
+                            finalized = true;
+                            if (typeof window !== 'undefined') {
+                                localStorage.setItem(SUMMARY_OUTPUT_STORAGE_KEY, data.summary_html);
+                            }
+                        }
+                    } catch {
+                        // Ignore summary parse failures
+                    }
+                    return;
+                }
+
+                if (ev.event === 'actions') {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (Array.isArray(data)) {
+                            setActions(data);
+                            if (typeof window !== 'undefined') {
+                                localStorage.setItem(SUMMARY_ACTIONS_STORAGE_KEY, JSON.stringify(data));
+                            }
+                        }
+                    } catch {
+                        // Ignore
+                    }
+                    return;
+                }
+
+                if (ev.event === 'status') {
+                    summaryStatusActiveRef.current = false; // Stop fake rotation
+                    setStatusMessage(ev.data);
+                    return;
+                }
+
+                buffer += ev.data;
+            },
+            onclose() {
+                consultAbortRef.current = null;
+                summaryStreamingRef.current = false;
+                summaryStatusActiveRef.current = false;
+                setLoading(false);
+                setStatusMessage('');
+                if (typeof window !== 'undefined') {
+                    if (hadError) {
+                        localStorage.removeItem(SUMMARY_JOB_STORAGE_KEY);
+                    }
+                }
+                if (!hadError && !finalized && buffer) {
+                    setOutput(buffer);
+                    if (typeof window !== 'undefined') {
+                        localStorage.setItem(SUMMARY_OUTPUT_STORAGE_KEY, buffer);
+                    }
+                }
+            },
+            onerror(err) {
+                if (err instanceof AuthError) {
+                    throw err; // Re-throw to be caught by the retry loop
+                }
+                console.error('SSE error:', err);
+                hadError = true;
+                controller.abort();
+                consultAbortRef.current = null;
+                summaryStreamingRef.current = false;
+                summaryStatusActiveRef.current = false;
+                setLoading(false);
+                setStatusMessage('Unable to generate summary. Please try again.');
+                setOutput('Unable to generate summary. Please try again.');
+                if (typeof window !== 'undefined') {
+                    localStorage.removeItem(SUMMARY_JOB_STORAGE_KEY);
+                }
+            },
+        });
+    }, [
+        patientName,
+        visitDate,
+        notes,
+        templateId,
+        attachmentFiles,
+        imageFiles,
+        audioFiles,
+        patientEmail,
+    ]);
 
     function clearForm() {
         setPatientName('');
@@ -648,6 +1014,12 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         setOutput('');
         setLoading(false);
         setSendingEmail(false);
+        if (typeof window !== 'undefined') {
+            localStorage.removeItem(SUMMARY_JOB_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_OUTPUT_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_ACTIONS_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_EVIDENCE_STORAGE_KEY);
+        }
         clearAttachment();
         clearImage();
         clearAudio();
@@ -922,6 +1294,13 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         setEvidenceOpen(false);
         setLoading(true);
         summaryStatusActiveRef.current = false;
+        summaryResumeRef.current = false;
+        if (typeof window !== 'undefined') {
+            localStorage.removeItem(SUMMARY_JOB_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_OUTPUT_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_ACTIONS_STORAGE_KEY);
+            localStorage.removeItem(SUMMARY_EVIDENCE_STORAGE_KEY);
+        }
 
         const jwt = await getFreshToken(getToken);
         if (!jwt) {
@@ -955,175 +1334,11 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         }
 
         try {
-            const runStream = async (token: string) => {
-                const controller = new AbortController();
-                consultAbortRef.current = controller;
-                await fetchEventSource('/api/consultation', {
-                    signal: controller.signal,
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
-                    },
-                    body: JSON.stringify({
-                        patient_name: patientName,
-                        date_of_visit: visitDate?.toISOString().slice(0, 10),
-                        notes,
-                        template_id: templateId,
-                        uploaded_notes: null,
-                        uploaded_filename: null,
-                        uploaded_file_b64: null,
-                        uploaded_mime: null,
-                        uploaded_files: attachmentFiles.length ? attachmentFiles : null,
-                        image_filename: null,
-                        image_file_b64: null,
-                        image_mime: null,
-                        image_files: imageFiles.length ? imageFiles : null,
-                        audio_filename: null,
-                        audio_file_b64: null,
-                        audio_mime: null,
-                        audio_files: audioFiles.length ? audioFiles : null,
-                    }),
-                    onopen: async (res) => {
-                        if (!res.ok) {
-                            if (res.status === 401 || res.status === 403) {
-                                throw new AuthError(res.status);
-                            }
-                            const contentType = res.headers.get('content-type') || '';
-
-                            if (contentType.includes('application/json')) {
-                                try {
-                                    const data = await res.clone().json();
-                                    const detail = data?.detail || JSON.stringify(data);
-                                    setOutput(detail || `Request failed (${res.status}). Please try again.`);
-                                } catch {
-                                    setOutput(`Request failed (${res.status}). Please try again.`);
-                                }
-                            } else {
-                                try {
-                                    const text = await res.text();
-                                    setOutput(text || `Request failed (${res.status}). Please try again.`);
-                                } catch {
-                                    setOutput(`Request failed (${res.status}). Please try again.`);
-                                }
-                            }
-
-                            setStatusMessage('');
-                            throw new Error(`HTTP ${res.status}`);
-                        }
-                        summaryStatusIndexRef.current = 0;
-                        summaryStatusActiveRef.current = true;
-                        setStatusMessage(summaryStatusMessages[0]);
-                    },
-                    onmessage(ev) {
-                        if (ev.event === 'metadata') {
-                            try {
-                                const data = JSON.parse(ev.data);
-                                if (data.doctor_name) {
-                                    const cleaned = cleanDoctorName(data.doctor_name);
-                                    setDoctorName((prev) => prev || cleaned);
-                                    setDoctorFieldErrors((prev) => ({ ...prev, name: false }));
-                                }
-                                if (data.doctor_phone) {
-                                    setDoctorPhone((prev) => prev || data.doctor_phone);
-                                    setDoctorFieldErrors((prev) => ({ ...prev, phone: false }));
-                                }
-                                if (data.clinic_name) {
-                                    setClinicName((prev) => prev || data.clinic_name);
-                                    setDoctorFieldErrors((prev) => ({ ...prev, clinic: false }));
-                                }
-                                if (data.doctor_email) {
-                                    setDoctorEmail((prev) => prev || data.doctor_email);
-                                    setDoctorFieldErrors((prev) => ({ ...prev, email: false }));
-                                }
-                                if (!patientEmail.trim() && data.patient_email) {
-                                    setPatientEmail(data.patient_email);
-                                    setPatientEmailError(!isValidEmail(data.patient_email));
-                                }
-                                if (Array.isArray(data.prescription_texts)) {
-                                    const entries = data.prescription_texts
-                                        .map((text: string, index: number) => ({
-                                            text,
-                                            filename: Array.isArray(data.prescription_filenames)
-                                                ? data.prescription_filenames[index] || ''
-                                                : '',
-                                        }))
-                                        .filter((entry: PrescriptionEntry) => entry.text);
-                                    setPrescriptions(entries);
-                                } else if (data.prescription_text) {
-                                    setPrescriptions([
-                                        {
-                                            text: data.prescription_text,
-                                            filename: data.prescription_filename || '',
-                                        },
-                                    ]);
-                                }
-                                // Handle initial metadata which may or may not have the map
-                                if (data.evidence_map?.chunks && data.evidence_map?.citations) {
-                                    setEvidenceMap(data.evidence_map);
-                                    setEvidenceOpen(false);
-                                }
-                            } catch {
-                                // Ignore metadata parse failures
-                            }
-                            return;
-                        }
-
-                        if (ev.event === 'evidence_update') {
-                            try {
-                                const data = JSON.parse(ev.data);
-                                if (data.chunks && data.citations) {
-                                    setEvidenceMap(data);
-                                    setEvidenceOpen(true); // Automatically open the evidence section when it loads
-                                }
-                            } catch {
-                                // Ignore evidence parse failures
-                            }
-                            return;
-                        }
-
-                        if (ev.event === 'actions') {
-                            try {
-                                const data = JSON.parse(ev.data);
-                                if (Array.isArray(data)) {
-                                    setActions(data);
-                                }
-                            } catch {
-                                // Ignore
-                            }
-                            return;
-                        }
-
-                        setStatusMessage((msg) => (msg ? 'Generating summary...' : ''));
-                        buffer += ev.data;
-                        setOutput(buffer);
-                    },
-                    onclose() { 
-                        consultAbortRef.current = null;
-                        summaryStatusActiveRef.current = false;
-                        setLoading(false); 
-                        setStatusMessage('');
-                    },
-                    onerror(err) {
-                        if (err instanceof AuthError) {
-                            throw err; // Re-throw to be caught by the retry loop
-                        }
-                        console.error('SSE error:', err);
-                        controller.abort();
-                        consultAbortRef.current = null;
-                        summaryStatusActiveRef.current = false;
-                        setLoading(false);
-                        setStatusMessage('Unable to generate summary. Please try again.');
-                        setOutput('Unable to generate summary. Please try again.');
-                    },
-                });
-            };
-
             let attempts = 0;
             let token = jwt;
             while (attempts <= AUTH_RETRY_COUNT) {
                 try {
-                    await runStream(token);
+                    await streamSummary(token);
                     break;
                 } catch (err) {
                     if (err instanceof AuthError) {
@@ -1153,6 +1368,126 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
             setStatusMessage('');
         }
     }
+
+    useEffect(() => {
+        if (summaryResumeRef.current || loading) {
+            return;
+        }
+        if (typeof window === 'undefined') {
+            return;
+        }
+        const jobId = localStorage.getItem(SUMMARY_JOB_STORAGE_KEY);
+        if (!jobId) {
+            return;
+        }
+        summaryResumeRef.current = true;
+        setOutput('');
+        setStatusMessage('Reconnecting to summary...');
+        setEmailStatus('');
+        setPrescriptions([]);
+        setActions([]);
+        setEvidenceMap(null);
+        setEvidenceOpen(false);
+        setLoading(true);
+
+        const resume = async () => {
+            const jwt = await getFreshToken(getToken);
+            if (!jwt) {
+                setLoading(false);
+                setStatusMessage('Authentication required');
+                return;
+            }
+            let attempts = 0;
+            let token = jwt;
+            while (attempts <= AUTH_RETRY_COUNT) {
+                try {
+                    await streamSummary(token, jobId);
+                    break;
+                } catch (err) {
+                    if (err instanceof AuthError) {
+                        attempts += 1;
+                        if (attempts > AUTH_RETRY_COUNT) {
+                            consultAbortRef.current?.abort();
+                            await onSessionExpired();
+                            setLoading(false);
+                            setStatusMessage('');
+                            setOutput('Session expired. Please relogin.');
+                            break;
+                        }
+                        const fresh = await getFreshToken(getToken);
+                        if (!fresh) {
+                            continue;
+                        }
+                        token = fresh;
+                    } else {
+                        console.error('Resume failed:', err);
+                        setLoading(false);
+                        setStatusMessage('');
+                        break;
+                    }
+                }
+            }
+        };
+
+        void resume();
+    }, [getToken, loading, onSessionExpired, streamSummary]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return;
+        }
+        const handleFocus = () => {
+            if (!loading || summaryStreamingRef.current) {
+                return;
+            }
+            const jobId = localStorage.getItem(SUMMARY_JOB_STORAGE_KEY);
+            if (!jobId) {
+                return;
+            }
+            const reconnect = async () => {
+                const jwt = await getFreshToken(getToken);
+                if (!jwt) {
+                    return;
+                }
+                let attempts = 0;
+                let token = jwt;
+                while (attempts <= AUTH_RETRY_COUNT) {
+                    try {
+                        await streamSummary(token, jobId);
+                        break;
+                    } catch (err) {
+                        if (err instanceof AuthError) {
+                            attempts += 1;
+                            if (attempts > AUTH_RETRY_COUNT) {
+                                consultAbortRef.current?.abort();
+                                await onSessionExpired();
+                                setLoading(false);
+                                setStatusMessage('');
+                                setOutput('Session expired. Please relogin.');
+                                break;
+                            }
+                            const fresh = await getFreshToken(getToken);
+                            if (!fresh) {
+                                continue;
+                            }
+                            token = fresh;
+                        } else {
+                            console.error('Focus reconnect failed:', err);
+                            break;
+                        }
+                    }
+                }
+            };
+            void reconnect();
+        };
+
+        window.addEventListener('focus', handleFocus);
+        document.addEventListener('visibilitychange', handleFocus);
+        return () => {
+            window.removeEventListener('focus', handleFocus);
+            document.removeEventListener('visibilitychange', handleFocus);
+        };
+    }, [getToken, loading, onSessionExpired, streamSummary]);
 
     function extractDraftEmailHtml(html: string) {
         try {
@@ -1279,7 +1614,7 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         const subject = `Visit Summary for ${patientName || 'Patient'}`;
 
         try {
-            const jwt = await getToken();
+            const jwt = await getFreshToken(getToken);
             if (!jwt) {
                 setEmailStatus('Authentication required.');
                 setSendingEmail(false);
@@ -2193,7 +2528,10 @@ export default function Product() {
                     plan="premium_subscription"
                     fallback={
                         <>
-                            <ConsultationForm isPremium={false} onSessionExpired={handleSessionExpired} />
+                            <ConsultationForm 
+                                isPremium={false} 
+                                onSessionExpired={handleSessionExpired} 
+                            />
                             <div className="mx-auto max-w-5xl px-6 pb-16">
                                 <div className="rounded-2xl border border-emerald-100/80 bg-white/90 p-8 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.45)] dark:border-slate-700/80 dark:bg-slate-900/85 dark:shadow-[0_18px_40px_-32px_rgba(15,23,42,0.8)]">
                                     <div className="mb-6">

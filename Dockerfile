@@ -13,6 +13,8 @@ COPY . .
 # Build argument for Clerk public key
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_CLERK_JWT_TEMPLATE
+ENV NEXT_PUBLIC_CLERK_JWT_TEMPLATE=$NEXT_PUBLIC_CLERK_JWT_TEMPLATE
 
 # Note: Docker may warn about "secrets in ARG/ENV" - this is OK!
 # The NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is meant to be public (it starts with pk_)
@@ -50,7 +52,6 @@ HEALTHCHECK --interval=120s --timeout=3s --start-period=5s --retries=3 \
 
 # Create data directory for persistent memory
 RUN mkdir -p /app/data
-VOLUME /app/data
 
 # Expose port 8000 (FastAPI will serve everything)
 EXPOSE 8000

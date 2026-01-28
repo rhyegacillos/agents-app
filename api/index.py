@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import jwt
 import datetime
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCredentials
 from openai import AsyncOpenAI
 from typing import Optional
+from clerk_backend_api import Clerk
 
 # Import models and agents
 from .agent.models import Visit, SendEmailRequest, Base64File, ChatRequest
@@ -79,7 +81,7 @@ class CustomClerkHTTPBearer(ClerkHTTPBearer):
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                leeway=60,  # 60 seconds clock skew tolerance
+                leeway=120,
                 options={"verify_aud": False} # Relax audience check
             )
             
@@ -118,9 +120,27 @@ async def consultation_summary(
     user_id = creds.decoded["sub"]  # Available for tracking/auditing
 
     # Summary Pipeline
-    stream_generator = summary_agent.run_summary_pipeline(visit, client, request)
+    stream_generator = summary_agent.run_summary_pipeline_resumable(visit, client, request)
 
     return StreamingResponse(stream_generator, media_type="text/event-stream")
+
+
+@app.get("/api/consultation")
+async def consultation_stream(
+    job_id: str,
+    request: Request,
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
+):
+    job = summary_agent.get_summary_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Summary job not found.")
+
+    async def _stream():
+        yield f"event: job\ndata: {json.dumps({'job_id': job_id})}\n\n"
+        async for chunk in summary_agent.stream_summary_job(job_id, request=request):
+            yield chunk
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/chat")
@@ -152,8 +172,29 @@ async def get_patients(creds: HTTPAuthorizationCredentials = Depends(clerk_guard
     return memory_agent.list_known_patients()
 
 @app.get("/api/subscription")
-async def subscription(creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+async def subscription(creds= Depends(clerk_guard)):
     decoded = getattr(creds, "decoded", {}) or {}
+    user_id = decoded.get("user_id", '')
+    print(f"Decoded: {decoded}")
+
+    if not user_id:
+        decoded["plan"] = "free_trial"
+        return decoded
+
+    with Clerk(
+        bearer_auth=os.getenv('CLERK_SECRET_KEY'),
+    ) as clerk:
+
+        res = clerk.users.get_billing_subscription(user_id=user_id).json()
+        if isinstance(res, str):
+            res = json.loads(res)
+            plan = res["subscription_items"][0]["plan"]["name"]
+            print(plan)
+            decoded["plan"] = plan.lower().replace(" ", "_")
+        else:
+            decoded["plan"] = "free_trial"
+
+
     return decoded
 
 

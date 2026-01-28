@@ -139,13 +139,14 @@ async def run_email_agent(
     
     # 1. System Prompt
     system_prompt = (
-        "You are an intelligent email dispatch agent. "
-        "You have tools to translate content and send emails. "
-        "Your goal is to ensure the email is sent in the requested language. "
-        "1. Check if the requested 'language' is English. "
-        "2. If NOT English, call 'translate_email' first using the 'html' provided. "
-        "3. Once you have the final HTML (translated or original), call 'send_email_final'. "
-        "4. Return the result of the send operation."
+        "You are an intelligent email dispatch agent. Your goal is to ensure an email is sent in the correct language."
+        "You must follow these steps:"
+        "1. Examine the user's request to determine the target language."
+        "2. If the language is anything other than 'English', you MUST first call the `translate_email` tool to translate the `html` content."
+        "3. After translation (or if no translation was needed), you MUST call the `send_email_final` tool with the final HTML content."
+        "   - If you translated the content, use the translated HTML from the `translate_email` tool's output for the `html_body`."
+        "   - If you did not translate, use the original `html` from the user's request."
+        "4. Return only the result of the `send_email_final` operation."
     )
 
     # 2. User Context
@@ -162,8 +163,6 @@ async def run_email_agent(
     for step in range(MAX_STEPS):
         try:
             # Call LLM with Tools
-            # We use generate_with_fallback, but we need to ensure utils.py passes `tools` kwarg correctly.
-            # Assuming utils.py passes **kwargs to client.chat.completions.create.
             response = await generate_with_fallback(
                 client=client,
                 messages=messages,
@@ -176,16 +175,12 @@ async def run_email_agent(
             message = response.choices[0].message
             tool_calls = message.tool_calls
 
-            # If no tool called, the agent might be done or confused.
             if not tool_calls:
                 logger.warning("Agent did not call any tools. It might be finished or confused.")
-                # If we haven't sent yet, this is an issue. But for now, just return a status.
                 return {"status": "agent_stopped_without_sending", "reason": message.content}
 
-            # Add the assistant's message to history (required by OpenAI API)
             messages.append(message)
 
-            # Execute Tools
             for tool_call in tool_calls:
                 fn_name = tool_call.function.name
                 fn_args = json.loads(tool_call.function.arguments)
@@ -200,8 +195,8 @@ async def run_email_agent(
                         fn_args["target_language"],
                         client
                     )
-                    # The result is the new HTML
-                    result_content = json.dumps({"translated_html": translated_html})
+                    # The result is the raw HTML string
+                    result_content = translated_html
                 
                 elif fn_name == "send_email_final":
                     send_result = await _send_email_impl(
@@ -211,13 +206,11 @@ async def run_email_agent(
                         reply_to=fn_args["reply_to"],
                         clinic_name=fn_args["clinic_name"]
                     )
-                    # Success! We can break the loop and return.
                     return send_result
                 
                 else:
                     result_content = json.dumps({"error": f"Unknown tool {fn_name}"})
 
-                # Append tool output to history
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,

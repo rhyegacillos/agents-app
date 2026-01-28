@@ -44,12 +44,16 @@ async def recall_patient_history(
     """
     logger.info(f"Recalling history for: {patient_name} with query: '{query}'")
     
-    results = await store.search(
-        query=query,
-        client=client,
-        filter_metadata={"patient_name": patient_name.lower().strip()},
-        limit=3
-    )
+    try:
+        results = await store.search(
+            query=query,
+            client=client,
+            filter_metadata={"patient_name": patient_name.lower().strip()},
+            limit=3
+        )
+    except Exception as e:
+        logger.error(f"Failed to recall history: {e}")
+        return "Memory retrieval unavailable due to an error."
     
     if not results:
         return "No past history found."
@@ -74,7 +78,8 @@ def list_known_patients() -> List[str]:
     patient_names = set()
     for doc in all_docs:
         name = doc.get("metadata", {}).get("patient_name")
-        if name:
-            patient_names.add(name.title()) # Use title case for consistent display
+        if name and isinstance(name, str):
+            # Sanitize before adding to the set
+            patient_names.add(name.lower().strip().title())
             
     return sorted(list(patient_names))

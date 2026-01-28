@@ -2,6 +2,8 @@ import asyncio
 import json
 import re
 import hashlib
+import time
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, Callable, Awaitable, Optional
@@ -19,6 +21,22 @@ logger = get_logger(__name__)
 SUMMARY_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 SUMMARY_CACHE_MAX = 10
 MEMORY_DB_PATH = Path("data/memory_db.json")
+SUMMARY_JOBS_MAX = 10
+SUMMARY_JOBS_TTL_SECONDS = 60 * 30
+SUMMARY_JOBS_BY_ID: Dict[str, "SummaryJob"] = {}
+SUMMARY_JOBS_BY_KEY: Dict[str, "SummaryJob"] = {}
+
+class SummaryJob:
+    def __init__(self, key: str, job_id: str):
+        self.key = key
+        self.job_id = job_id
+        self.events: list[str] = []
+        self.done = False
+        self.error: str | None = None
+        self.condition = asyncio.Condition()
+        self.created_at = time.time()
+        self.last_access = self.created_at
+        self.task: asyncio.Task | None = None
 
 MEDICATION_HINT_RE = re.compile(
     r"\b(?:mg|mcg|g|ml|units|tablet|tab|capsule|cap|injection|iv|po|bid|tid|qid|qd|prn|rx|prescribed|medication|medications)\b",
@@ -199,6 +217,13 @@ def _format_findings_block(label: str, value: Any) -> str:
     formatted = "\n- ".join(lines)
     return f"\n\n{label}:\n- {formatted}"
 
+def _strip_tool_call_artifacts(text: str) -> str:
+    if not text:
+        return ""
+    # Remove DeepSeek-style tool call markup if it leaks into the draft.
+    cleaned = re.sub(r"<\|DSML\|function_calls>.*?</\|DSML\|function_calls>", "", text, flags=re.DOTALL)
+    return cleaned.strip()
+
 
 def correction_prompt_for(
     visit: Visit,
@@ -283,6 +308,114 @@ def _cache_set(key: str, value: Dict[str, Any]) -> None:
     while len(SUMMARY_CACHE) > SUMMARY_CACHE_MAX:
         SUMMARY_CACHE.popitem(last=False)
 
+def _prune_jobs() -> None:
+    now = time.time()
+    stale_keys = [
+        job_id
+        for job_id, job in SUMMARY_JOBS_BY_ID.items()
+        if job.done and (now - job.last_access) > SUMMARY_JOBS_TTL_SECONDS
+    ]
+    for job_id in stale_keys:
+        job = SUMMARY_JOBS_BY_ID.pop(job_id, None)
+        if job:
+            SUMMARY_JOBS_BY_KEY.pop(job.key, None)
+    if len(SUMMARY_JOBS_BY_ID) <= SUMMARY_JOBS_MAX:
+        return
+    # Drop oldest completed jobs if over capacity
+    completed = sorted(
+        (job for job in SUMMARY_JOBS_BY_ID.values() if job.done),
+        key=lambda job: job.last_access,
+    )
+    while len(SUMMARY_JOBS_BY_ID) > SUMMARY_JOBS_MAX and completed:
+        job = completed.pop(0)
+        SUMMARY_JOBS_BY_ID.pop(job.job_id, None)
+        SUMMARY_JOBS_BY_KEY.pop(job.key, None)
+
+def _register_job(job: SummaryJob) -> None:
+    SUMMARY_JOBS_BY_ID[job.job_id] = job
+    SUMMARY_JOBS_BY_KEY[job.key] = job
+
+def _get_job_by_id(job_id: str) -> SummaryJob | None:
+    job = SUMMARY_JOBS_BY_ID.get(job_id)
+    if job:
+        job.last_access = time.time()
+    return job
+
+def _get_job_by_key(key: str) -> SummaryJob | None:
+    job = SUMMARY_JOBS_BY_KEY.get(key)
+    if job:
+        job.last_access = time.time()
+    return job
+
+def _new_job_id() -> str:
+    return uuid.uuid4().hex
+
+async def _run_summary_job(job: SummaryJob, visit: Visit, client: AsyncOpenAI) -> None:
+    try:
+        async for event in run_summary_pipeline(visit, client, request=None):
+            async with job.condition:
+                job.events.append(event)
+                job.condition.notify_all()
+    except Exception as exc:
+        job.error = str(exc)
+        logger.error(f"Summary job failed: {exc}")
+    finally:
+        async with job.condition:
+            job.done = True
+            job.condition.notify_all()
+
+def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
+    _prune_jobs()
+    cache_key = _summary_cache_key(visit)
+    cached = _cache_get(cache_key)
+    existing = _get_job_by_key(cache_key)
+    if existing and not existing.done:
+        return existing.job_id
+    job_id = _new_job_id()
+    job = SummaryJob(cache_key, job_id)
+    if cached:
+        job.events = list(cached.get("events") or [])
+        job.done = True
+        _register_job(job)
+        return job.job_id
+    _register_job(job)
+    job.task = asyncio.create_task(_run_summary_job(job, visit, client))
+    return job.job_id
+
+async def _stream_job_events(
+    job: SummaryJob,
+    request: Optional[Any] = None,
+) -> AsyncGenerator[str, None]:
+    idx = 0
+    while True:
+        if request is not None:
+            try:
+                if await request.is_disconnected():
+                    return
+            except Exception:
+                pass
+        async with job.condition:
+            while idx >= len(job.events) and not job.done:
+                await job.condition.wait()
+            while idx < len(job.events):
+                yield job.events[idx]
+                idx += 1
+            if job.done:
+                return
+
+async def stream_summary_job(
+    job_id: str,
+    request: Optional[Any] = None,
+) -> AsyncGenerator[str, None]:
+    job = _get_job_by_id(job_id)
+    if not job:
+        return
+    async for chunk in _stream_job_events(job, request=request):
+        yield chunk
+
+def get_summary_job(job_id: str) -> SummaryJob | None:
+    return _get_job_by_id(job_id)
+
 
 def _normalize_notes_text(text: str) -> str:
     if not text:
@@ -336,6 +469,21 @@ def _format_evidence_text(evidence_map: Dict[str, Any]) -> str:
                     lines.append(f"    - {url}")
     return "\n".join(lines).strip()
 
+def _format_notes_text(context: Dict[str, Any]) -> str:
+    notes_text = _normalize_notes_text(context.get("notes_text", ""))
+    attachments = context.get("attachments") or []
+    attachment_blocks = []
+    for label, text in attachments:
+        cleaned = _normalize_notes_text(text)
+        if cleaned:
+            attachment_blocks.append(f"{label}:\n{cleaned}")
+    parts = []
+    if notes_text:
+        parts.append(f"Notes:\n{notes_text}")
+    if attachment_blocks:
+        parts.append("Attachments:\n" + "\n\n".join(attachment_blocks))
+    return "\n\n".join(parts).strip()
+
 
 
 async def _fill_doctor_info_from_summary(
@@ -375,8 +523,23 @@ async def generate_summary_stream(
             return True
         return False
 
+    # Helper to run a task while yielding keep-alive comments
+    async def run_with_keepalive(coro):
+        task = asyncio.create_task(coro)
+        while not task.done():
+            await asyncio.sleep(2) # Ping every 2 seconds
+            if not task.done():
+                yield ": keep-alive\n\n"
+        yield ": keep-alive\n\n"
+        if task.exception():
+            raise task.exception()
+        yield task.result()
+
     if await _abort_now("before prompt assembly"):
         return
+        
+    yield "event: status\ndata: Analyzing consultation data...\n\n"
+    
     user_prompt = summary_prompt_for(visit, context)
     system_prompt = _build_system_prompt()
     prompt = [
@@ -394,26 +557,31 @@ async def generate_summary_stream(
         if tool_enabled or condition_enabled:
             research_tools = RESEARCH_TOOLS
         tools = COORDINATOR_TOOL + research_tools
-        if tools:
-            response = await generate_with_fallback(
+        
+        # 1. Initial Generation with Keep-Alive
+        response = None
+        async for chunk in run_with_keepalive(
+            generate_with_fallback(
                 client=client,
                 messages=prompt,
-                tools=tools,
-                tool_choice="auto",
+                tools=tools if tools else None,
+                tool_choice="auto" if tools else None,
                 models=["deepseek-chat"],
             )
-        else:
-            response = await generate_with_fallback(
-                client=client,
-                messages=prompt,
-                models=["deepseek-chat"],
-            )
+        ):
+            if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                yield chunk
+            else:
+                response = chunk
+
         if await _abort_now("after initial generation"):
             return
         message = response.choices[0].message
         tool_calls = message.tool_calls
         if tool_calls:
             prompt.append(message)
+            
+            yield "event: status\ndata: Checking drug interactions and guidelines...\n\n"
             
             # Create parallel tasks for all tool calls
             tasks = []
@@ -434,8 +602,16 @@ async def generate_summary_stream(
                 else:
                     tasks.append(asyncio.sleep(0, result=json.dumps({"error": f"Unknown tool {fn_name}"})))
 
-            # Execute tasks in parallel
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 2. Execute tasks in parallel with Keep-Alive
+            results = None
+            async def _gather_research():
+                return await asyncio.gather(*tasks, return_exceptions=True)
+                
+            async for chunk in run_with_keepalive(_gather_research()):
+                if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                    yield chunk
+                else:
+                    results = chunk
 
             # Process results
             has_new_findings = False
@@ -473,13 +649,21 @@ async def generate_summary_stream(
 
             if await _abort_now("before post-tool generation"):
                 return
-            response = await generate_with_fallback(
-                client=client,
-                messages=prompt,
-                tools=tools,
-                tool_choice="none",
-                models=["deepseek-chat"],
-            )
+            
+            # 3. Post-tool Generation with Keep-Alive
+            async for chunk in run_with_keepalive(
+                generate_with_fallback(
+                    client=client,
+                    messages=prompt,
+                    tools=tools,
+                    tool_choice="none",
+                    models=["deepseek-chat"],
+                )
+            ):
+                if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                    yield chunk
+                else:
+                    response = chunk
             raw_text = response.choices[0].message.content or ""
         else:
             raw_text = message.content or ""
@@ -487,22 +671,36 @@ async def generate_summary_stream(
         logger.error(f"Failed to generate summary: {e}")
         raw_text = "<p>Error generating summary. Please check logs.</p>"
 
+    raw_text = _strip_tool_call_artifacts(raw_text)
     template = get_template(visit)
     final_html = ensure_html_summary(raw_text, template)
 
     if critic_agent.critic_enabled():
         if await _abort_now("before critic review"):
             return
+            
+        yield "event: status\ndata: Reviewing summary for clinical accuracy...\n\n"
+        
         logger.info("Critic review starting.")
         critic_client = critic_agent.build_critic_client(client)
-        review = await critic_agent.review_summary(
-            summary_html=final_html,
-            source_text=context.get("combined_text", ""),
-            patient_history=context.get("patient_history", ""),
-            research_findings=_format_findings_block("Research", context.get("research_findings")),
-            guideline_findings=_format_findings_block("Guidelines", context.get("guideline_findings")),
-            client=critic_client,
-        )
+        
+        # 4. Critic Review with Keep-Alive
+        review = None
+        async for chunk in run_with_keepalive(
+            critic_agent.review_summary(
+                summary_html=final_html,
+                source_text=context.get("combined_text", ""),
+                patient_history=context.get("patient_history", ""),
+                research_findings=_format_findings_block("Research", context.get("research_findings")),
+                guideline_findings=_format_findings_block("Guidelines", context.get("guideline_findings")),
+                client=critic_client,
+            )
+        ):
+            if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                yield chunk
+            else:
+                review = chunk
+
         await guardrails_util.record_critic_issues(review.get("issues", []), client)
         
         if critic_agent.review_requires_regen(review):
@@ -527,7 +725,16 @@ async def generate_summary_stream(
                     )
                 )
             
-            gen_results = await asyncio.gather(*gen_tasks, return_exceptions=True)
+            # 5. Tournament Generation with Keep-Alive
+            gen_results = None
+            async def _gather_gen():
+                return await asyncio.gather(*gen_tasks, return_exceptions=True)
+
+            async for chunk in run_with_keepalive(_gather_gen()):
+                if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                    yield chunk
+                else:
+                    gen_results = chunk
             
             candidates = []
             for res in gen_results:
@@ -556,7 +763,16 @@ async def generate_summary_stream(
                         )
                     )
                 
-                critique_results = await asyncio.gather(*critique_tasks, return_exceptions=True)
+                # 6. Tournament Critique with Keep-Alive
+                critique_results = None
+                async def _gather_critique():
+                    return await asyncio.gather(*critique_tasks, return_exceptions=True)
+
+                async for chunk in run_with_keepalive(_gather_critique()):
+                    if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                        yield chunk
+                    else:
+                        critique_results = chunk
                 
                 # 4. Pick Winner
                 best_cand = None
@@ -600,27 +816,23 @@ async def generate_summary_stream(
 
     doctor_info = await _fill_doctor_info_from_summary(doctor_info, final_html, client)
     
-    # --- Stream the HTML ---
-    lines = final_html.split("\n")
-    for line in lines[:-1]:
-        if await _abort_now("during stream"):
-            return
-        yield f"data: {line}\n\n"
-        yield "data:  \n"
-    if lines:
-        if await _abort_now("during stream"):
-            return
-        yield f"data: {lines[-1]}\n\n"
-
-    # --- Now that the summary is streamed, do slower tasks ---
+    # --- Now that the summary is generated, do slower tasks ---
     
     # Coordinator Agent: Extract actions
     if await _abort_now("before action extraction"):
         return
+        
+    yield "event: status\ndata: Extracting next steps...\n\n"
+    
     actions = actions_from_tool
     if actions is None:
         logger.info("Coordinator Agent: Manually extracting actions from final summary.")
-        actions = await coordinator_agent.extract_actions(final_html, client)
+        # 7. Action Extraction with Keep-Alive
+        async for chunk in run_with_keepalive(coordinator_agent.extract_actions(final_html, client)):
+            if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                yield chunk
+            else:
+                actions = chunk
         logger.info("Coordinator Agent: Action extraction finished.")
     else:
         logger.info("Coordinator Agent: Actions were already extracted via tool call.")
@@ -643,43 +855,63 @@ async def generate_summary_stream(
     # Evidence mapping
     if await _abort_now("before evidence mapping"):
         return
+        
+    yield "event: status\ndata: Linking evidence to source documents...\n\n"
     logger.info("Starting evidence mapping.")
-    evidence_map = await evidence_agent.build_evidence_map(final_html, context, client)
+    
+    # Run evidence mapping with keep-alive
+    try:
+        evidence_map = None
+        async for chunk in run_with_keepalive(evidence_agent.build_evidence_map(final_html, context, client)):
+            if isinstance(chunk, str) and chunk.startswith(": keep-alive"):
+                yield chunk
+            else:
+                evidence_map = chunk
+    except Exception as exc:
+        logger.error(f"Evidence mapping failed: {exc}")
+        evidence_map = {"chunks": [], "citations": []}
+
     logger.info("Evidence mapping finished.")
     yield f"event: evidence_update\ndata: {json.dumps(evidence_map)}\n\n"
 
-    # Memory Agent
-    if await _abort_now("before memory save"):
-        return
+    # Persist summary, notes, and evidence to long-term memory after evidence mapping completes.
     try:
         summary_text = html_to_text(final_html)
-        await memory_agent.remember_visit(
-            summary_text,
-            visit.patient_name, 
-            visit.date_of_visit, 
-            client,
-            doc_type="visit_summary",
-        )
-        original_notes = _normalize_notes_text(context.get("combined_text", ""))
-        if original_notes:
+        notes_text = _format_notes_text(context)
+        evidence_text = _format_evidence_text(evidence_map)
+        if summary_text and visit.patient_name and visit.date_of_visit:
             await memory_agent.remember_visit(
-                original_notes,
-                visit.patient_name,
-                visit.date_of_visit,
-                client,
+                summary=summary_text,
+                patient_name=visit.patient_name,
+                date=visit.date_of_visit,
+                client=client,
+            )
+            logger.info("Saved summary to long-term memory.")
+        if notes_text and visit.patient_name and visit.date_of_visit:
+            await memory_agent.remember_visit(
+                summary=notes_text,
+                patient_name=visit.patient_name,
+                date=visit.date_of_visit,
+                client=client,
                 doc_type="visit_notes",
             )
-        evidence_text = _format_evidence_text(evidence_map)
-        if evidence_text:
+            logger.info("Saved notes to long-term memory.")
+        if evidence_text and visit.patient_name and visit.date_of_visit:
             await memory_agent.remember_visit(
-                evidence_text,
-                visit.patient_name,
-                visit.date_of_visit,
-                client,
+                summary=evidence_text,
+                patient_name=visit.patient_name,
+                date=visit.date_of_visit,
+                client=client,
                 doc_type="visit_evidence",
             )
-    except Exception as e:
-        logger.warning(f"Failed to save memory: {e}")
+            logger.info("Saved evidence links to long-term memory.")
+        if not (summary_text and visit.patient_name and visit.date_of_visit):
+            logger.info("Skipping summary memory save: missing summary text or visit metadata.")
+    except Exception as exc:
+        logger.error(f"Failed to save memory records: {exc}")
+
+    # Send final summary as a single payload for clients that do not stream partial output.
+    yield f"event: summary\ndata: {json.dumps({'summary_html': final_html})}\n\n"
 
 
 async def run_summary_pipeline(
@@ -762,3 +994,14 @@ async def run_summary_pipeline(
         return
 
     _cache_set(cache_key, {"events": events})
+
+
+async def run_summary_pipeline_resumable(
+    visit: Visit,
+    client: AsyncOpenAI,
+    request: Optional[Any] = None,
+) -> AsyncGenerator[str, None]:
+    job_id = start_summary_job(visit, client)
+    yield f"event: job\ndata: {json.dumps({'job_id': job_id})}\n\n"
+    async for chunk in stream_summary_job(job_id, request=request):
+        yield chunk

@@ -238,3 +238,57 @@ Node.js (`npx`) is required at runtime to launch the Brave MCP server.
     *   `utils/`: Shared utilities (Fallback logic, Logging, HTML normalization, Templates).
     *   `models.py`: Shared Pydantic data models.
 *   `api/index.py`: API Gateway/Router that delegates requests to specific agents.
+
+# Local Docker Deployment
+export $(cat .env | grep -v '^#' | xargs)
+
+docker build \
+  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
+  --build-arg NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
+  -t consultation-app .
+
+ docker run -p 8000:8000 \
+  -v memory_db:/app/data \
+  -e CLERK_SECRET_KEY="$CLERK_SECRET_KEY" \
+  -e CLERK_JWKS_URL="$CLERK_JWKS_URL" \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e RESEND_API_KEY="$RESEND_API_KEY" \
+  -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+  -e GEMINI_API_URL="$GEMINI_API_URL" \
+  -e BRAVE_API_KEY="$BRAVE_API_KEY" \
+  -e DEEPSEEK_API_URL="$DEEPSEEK_API_URL" \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
+  consultation-app 
+
+## AWS DEPLOYMENT ECR
+
+# aws configure
+
+Enter:
+
+AWS Access Key ID: (paste your key)
+AWS Secret Access Key: (paste your secret)
+Default region: Choose based on your location:
+US East Coast: us-east-1 (N. Virginia)
+US West Coast: us-west-2 (Oregon)
+Europe: eu-west-1 (Ireland)
+Asia: ap-southeast-1 (Singapore)
+Pick the closest region for best performance!
+Default output format: json
+Important: Remember your region choice
+
+
+# 1. Authenticate Docker to ECR (using your .env values!)
+aws ecr get-login-password --region $DEFAULT_AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com
+
+docker build --platform linux/amd64 \
+  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
+  --build-arg NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
+  -t consultation-app .
+
+# 3. Tag your image (using your .env values!)
+docker tag consultation-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/consultation-app:latest
+
+# 4. Push to ECR
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/consultation-app:latest

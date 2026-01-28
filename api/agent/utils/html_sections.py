@@ -107,19 +107,30 @@ def render_summary_section(lines: list[str], template: dict) -> str:
 
 def ensure_html_summary(raw: str, template: dict) -> str:
     cleaned = (raw or "").strip()
-    if looks_like_html(cleaned):
-        return cleaned
+    
+    # If it's not HTML at all, convert the whole thing from markdown-like text
+    if not looks_like_html(cleaned):
+        sections = split_sections(cleaned)
+        summary_html = render_summary_section(sections["summary"], template)
+        next_steps_html = render_list(sections["next_steps"])
+        patient_email_html = render_paragraphs(sections["patient_email"])
 
-    sections = split_sections(cleaned)
-    summary_html = render_summary_section(sections["summary"], template)
-    next_steps_html = render_list(sections["next_steps"])
-    patient_email_html = render_paragraphs(sections["patient_email"])
+        return (
+            f"<section data-section=\"summary\"><h3>{SECTION_HEADINGS['summary']}</h3>{summary_html}</section>"
+            f"<section data-section=\"next_steps\"><h3>{SECTION_HEADINGS['next_steps']}</h3>{next_steps_html}</section>"
+            f"<section data-section=\"patient_email\"><h3>{SECTION_HEADINGS['patient_email']}</h3>{patient_email_html}</section>"
+        )
 
-    return (
-        f"<section data-section=\"summary\"><h3>{SECTION_HEADINGS['summary']}</h3>{summary_html}</section>"
-        f"<section data-section=\"next_steps\"><h3>{SECTION_HEADINGS['next_steps']}</h3>{next_steps_html}</section>"
-        f"<section data-section=\"patient_email\"><h3>{SECTION_HEADINGS['patient_email']}</h3>{patient_email_html}</section>"
-    )
+    # If it is HTML, ensure all three sections are present, appending if necessary.
+    final_html = cleaned
+    if 'data-section="summary"' not in final_html:
+        final_html += f"<section data-section=\"summary\"><h3>{SECTION_HEADINGS['summary']}</h3><p>Not documented.</p></section>"
+    if 'data-section="next_steps"' not in final_html:
+        final_html += f"<section data-section=\"next_steps\"><h3>{SECTION_HEADINGS['next_steps']}</h3><ul><li>Not documented.</li></ul></section>"
+    if 'data-section="patient_email"' not in final_html:
+        final_html += f"<section data-section=\"patient_email\"><h3>{SECTION_HEADINGS['patient_email']}</h3><p>Not documented.</p></section>"
+        
+    return final_html
 
 
 def html_to_text(html: str) -> str:
