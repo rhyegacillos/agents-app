@@ -42,4 +42,4 @@ next-env.d.ts
 .env*.local
 
 *.zip
-/aws
+/aws/
