@@ -1,6 +1,8 @@
 import os
 from typing import List, Dict, Any, AsyncGenerator
 from openai import AsyncOpenAI
+
+from .utils.provider_clients import get_gemini_client
 from .utils import generate_stream_with_fallback, get_logger
 from . import memory_agent
 
@@ -17,15 +19,8 @@ async def run_chat_agent(
     Allows the doctor to ask questions about the current summary or past history.
     """
     
-    # Configure Gemini Client if key is available
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    chat_client = client
-    
-    if gemini_key:
-        chat_client = AsyncOpenAI(
-            api_key=gemini_key,
-            base_url=os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-        )
+    # Configure Gemini Client if key is available (cached)
+    chat_client = get_gemini_client() or client
     
     # 1. Retrieve relevant memory based on the user's last message
     last_user_msg = history[-1]["content"] if history else ""

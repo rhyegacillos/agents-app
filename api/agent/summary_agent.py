@@ -1,4 +1,5 @@
 import asyncio
+import os
 import json
 import re
 import hashlib
@@ -7,10 +8,12 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, Callable, Awaitable, Optional
+from fastapi import Request
 
 from openai import AsyncOpenAI
 from .models import Visit
 from .utils import generate_with_fallback, get_logger
+from .utils.upstash_rest import get_upstash, UpstashError
 from .utils.templates import get_template
 from .utils.html_sections import ensure_html_summary, html_to_text
 from .utils import guardrails as guardrails_util
@@ -18,13 +21,35 @@ from . import extraction_agent, coordinator_agent, memory_agent, research_agent,
 
 logger = get_logger(__name__)
 
+redis = get_upstash()
+
 SUMMARY_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 SUMMARY_CACHE_MAX = 10
 MEMORY_DB_PATH = Path("data/memory_db.json")
 SUMMARY_JOBS_MAX = 10
-SUMMARY_JOBS_TTL_SECONDS = 60 * 30
+SUMMARY_JOBS_TTL_SECONDS = int(os.getenv("SUMMARY_JOBS_TTL_SECONDS", str(60 * 60 * 6)))
+SUMMARY_JOBS_POLL_SECONDS = float(os.getenv("SUMMARY_JOBS_POLL_SECONDS", "0.5"))
+SUMMARY_EVENTS_MAX = int(os.getenv("SUMMARY_EVENTS_MAX", "250"))  # keep last N events only
+EVIDENCE_MAX_CHUNKS = int(os.getenv("EVIDENCE_MAX_CHUNKS", "25"))  # shrink evidence payload
+EVIDENCE_MAX_CITATIONS = int(os.getenv("EVIDENCE_MAX_CITATIONS", "40"))
+EVIDENCE_SNIPPET_MAX = int(os.getenv("EVIDENCE_SNIPPET_MAX", "180"))
+
 SUMMARY_JOBS_BY_ID: Dict[str, "SummaryJob"] = {}
 SUMMARY_JOBS_BY_KEY: Dict[str, "SummaryJob"] = {}
+REGEN_MODELS = ["deepseek-chat"]
+
+SSE_EVENT_RE = re.compile(r"(?m)^event:\s*([a-zA-Z0-9_:-]+)\s*$")
+
+# Only persist events needed for resumability + UI rendering
+_PERSIST_EVENTS = {
+    "status",
+    "metadata",
+    "actions",
+    "evidence_update",
+    "summary",
+    "error",
+    "job",
+}
 
 class SummaryJob:
     def __init__(self, key: str, job_id: str):
@@ -37,6 +62,23 @@ class SummaryJob:
         self.created_at = time.time()
         self.last_access = self.created_at
         self.task: asyncio.Task | None = None
+
+
+def _upstash():
+    return get_upstash()
+
+def _upstash_enabled() -> bool:
+    return _upstash() is not None
+
+def _job_meta_key(job_id: str) -> str:
+    return f"summary:job:{job_id}:meta"
+
+def _job_events_key(job_id: str) -> str:
+    return f"summary:job:{job_id}:events"
+
+def _job_keymap_key(cache_key: str) -> str:
+    # cache_key is already a sha256 hex string
+    return f"summary:jobkey:{cache_key}"
 
 MEDICATION_HINT_RE = re.compile(
     r"\b(?:mg|mcg|g|ml|units|tablet|tab|capsule|cap|injection|iv|po|bid|tid|qid|qd|prn|rx|prescribed|medication|medications)\b",
@@ -220,9 +262,19 @@ def _format_findings_block(label: str, value: Any) -> str:
 def _strip_tool_call_artifacts(text: str) -> str:
     if not text:
         return ""
-    # Remove DeepSeek-style tool call markup if it leaks into the draft.
-    cleaned = re.sub(r"<\|DSML\|function_calls>.*?</\|DSML\|function_calls>", "", text, flags=re.DOTALL)
-    return cleaned.strip()
+    # Match both ASCII '|' and fullwidth '｜'
+    bar = r"[|｜]"
+    # Remove DSML tool call blocks
+    text = re.sub(
+        rf"<{bar}DSML{bar}function_calls>.*?</{bar}DSML{bar}function_calls>",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    # Remove any remaining DSML tags
+    text = re.sub(rf"<{bar}DSML{bar}.*?>", "", text, flags=re.DOTALL)
+    return text.strip()
+
 
 
 def correction_prompt_for(
@@ -290,7 +342,7 @@ def _memory_db_mtime() -> float:
 
 def _summary_cache_key(visit: Visit) -> str:
     payload = visit.model_dump()
-    payload["_memory_db_mtime"] = _memory_db_mtime()
+    #payload["_memory_db_mtime"] = _memory_db_mtime()
     raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -351,6 +403,9 @@ def _new_job_id() -> str:
     return uuid.uuid4().hex
 
 async def _run_summary_job(job: SummaryJob, visit: Visit, client: AsyncOpenAI) -> None:
+    """
+    In-memory job runner (fallback when Upstash is not configured).
+    """
     try:
         async for event in run_summary_pipeline(visit, client, request=None):
             async with job.condition:
@@ -364,23 +419,127 @@ async def _run_summary_job(job: SummaryJob, visit: Visit, client: AsyncOpenAI) -
             job.done = True
             job.condition.notify_all()
 
-def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
-    _prune_jobs()
-    cache_key = _summary_cache_key(visit)
-    cached = _cache_get(cache_key)
-    existing = _get_job_by_key(cache_key)
-    if existing and not existing.done:
-        return existing.job_id
-    job_id = _new_job_id()
-    job = SummaryJob(cache_key, job_id)
-    if cached:
-        job.events = list(cached.get("events") or [])
-        job.done = True
+async def _run_summary_job_upstash(job_id: str, visit: Visit, client: AsyncOpenAI) -> None:
+    """
+    Upstash-backed job runner. Writes SSE chunks into a Redis list so any instance can stream them.
+    """
+    redis = _upstash()
+    if redis is None:
+        return
+
+    meta_key = _job_meta_key(job_id)
+    events_key = _job_events_key(job_id)
+    now = time.time()
+
+    async def _meta_set_done(done: bool, error: str | None = None) -> None:
+        fields = ["updated_at", str(time.time()), "done", "1" if done else "0"]
+        if error:
+            fields += ["error", error]
+        await redis.execute("HSET", meta_key, *fields)
+
+    async def _emit(chunk: str) -> None:
+        if not chunk or chunk.startswith(":"):
+            return
+
+        ev = _sse_event_name(chunk)
+        if ev is None or ev not in _PERSIST_EVENTS:
+            return
+
+        await redis.execute("RPUSH", events_key, chunk)
+
+        # FINAL FIX: cap list size using existing SUMMARY_EVENTS_MAX
+        await redis.execute("LTRIM", events_key, str(-SUMMARY_EVENTS_MAX), "-1")
+
+        await redis.execute("HINCRBY", meta_key, "event_count", "1")
+        await redis.execute("HSET", meta_key, "updated_at", str(time.time()))
+
+    try:
+        # mark running
+        await redis.execute("HSET", meta_key, "status", "running", "updated_at", str(now), "done", "0")
+        async for event in run_summary_pipeline(visit, client, request=None):
+            await _emit(event)
+    except Exception as exc:
+        err = str(exc)
+        logger.error(f"Summary job failed: {exc}")
+        await _meta_set_done(True, error=err)
+        # also emit a final error event for clients
+        try:
+            await _emit(f"event: error\\ndata: {json.dumps({'error': err})}\\n\\n")
+        except Exception:
+            pass
+    else:
+        await _meta_set_done(True, error=None)
+        await redis.execute("HSET", meta_key, "status", "done")
+
+
+async def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
+    """
+    Start (or reuse) a summary job.
+
+    - If Upstash is configured, job state/events are persisted in Redis.
+    - Otherwise, falls back to in-memory jobs.
+    """
+    if not _upstash_enabled():
+        _prune_jobs()
+        cache_key = _summary_cache_key(visit)
+        cached = _cache_get(cache_key)
+        existing = _get_job_by_key(cache_key)
+        if existing and not existing.done:
+            return existing.job_id
+        job_id = _new_job_id()
+        job = SummaryJob(cache_key, job_id)
+        if cached:
+            job.events = list(cached.get("events") or [])
+            job.done = True
+            _register_job(job)
+            return job.job_id
         _register_job(job)
+        job.task = asyncio.create_task(_run_summary_job(job, visit, client))
         return job.job_id
-    _register_job(job)
-    job.task = asyncio.create_task(_run_summary_job(job, visit, client))
-    return job.job_id
+
+    redis = _upstash()
+    assert redis is not None
+
+    cache_key = _summary_cache_key(visit)
+    keymap_key = _job_keymap_key(cache_key)
+
+    # Reuse existing job for the same input if present
+    existing_job_id = await redis.execute("GET", keymap_key)
+    if existing_job_id:
+        return str(existing_job_id)
+
+    job_id = _new_job_id()
+
+    # SET keymap NX to avoid races
+    set_res = await redis.execute("SET", keymap_key, job_id, "NX", "EX", str(SUMMARY_JOBS_TTL_SECONDS))
+    if set_res is None:
+        # Someone else won; reuse theirs
+        existing_job_id = await redis.execute("GET", keymap_key)
+        if existing_job_id:
+            return str(existing_job_id)
+
+    meta_key = _job_meta_key(job_id)
+    events_key = _job_events_key(job_id)
+
+    now = str(time.time())
+    await redis.execute(
+        "HSET",
+        meta_key,
+        "key", cache_key,
+        "status", "queued",
+        "done", "0",
+        "error", "",
+        "event_count", "0",
+        "created_at", now,
+        "updated_at", now,
+    )
+
+    # TTL for job metadata + events list
+    await redis.execute("EXPIRE", meta_key, str(SUMMARY_JOBS_TTL_SECONDS))
+    await redis.execute("EXPIRE", events_key, str(SUMMARY_JOBS_TTL_SECONDS))
+
+    asyncio.create_task(_run_summary_job_upstash(job_id, visit, client))
+    return job_id
 
 async def _stream_job_events(
     job: SummaryJob,
@@ -403,17 +562,172 @@ async def _stream_job_events(
             if job.done:
                 return
 
+
+async def _stream_job_events_upstash(
+    job_id: str,
+    request: Optional[Any] = None
+) -> AsyncGenerator[str, None]:
+    """
+    Stream SSE event chunks for a job from Upstash Redis (REST).
+
+    GOAL
+    - Avoid aggressive polling (HMGET + LLEN every 0.5s).
+    - Keep resumability intact (client can reconnect and continue from last idx).
+
+    KEY IDEAS
+    1) Do NOT call LLEN at all. It’s extra work and shows up as spam in your logs.
+       Instead, rely on the meta field `event_count` that you already maintain via HINCRBY.
+    2) Use adaptive backoff:
+       - Poll fast while events are flowing.
+       - Back off (poll slower) when idle.
+       - Reset to fast polling immediately when new events appear.
+    3) Only fetch new events using LRANGE(start=idx, end=event_count-1).
+       That keeps bandwidth bounded and ensures reconnect works.
+
+    WHAT THIS DOES NOT CHANGE
+    - Restarting behavior/resume correctness:
+      You still stream from Redis list + event_count; reconnect picks up where it left off.
+    """
+
+    redis = _upstash()
+    if redis is None:
+        return  # Upstash not configured
+
+    meta_key = _job_meta_key(job_id)      # e.g. summary:job:<id>:meta
+    events_key = _job_events_key(job_id)  # e.g. summary:job:<id>:events
+
+    # idx = how many events we have already yielded to this client stream
+    idx = 0
+
+    # Base polling interval (fast mode) while job is active or just started.
+    # This is your existing env var. Keep it low-ish (e.g. 0.25–0.75).
+    base_sleep_s = float(os.getenv("SUMMARY_JOBS_POLL_SECONDS", "0.5"))
+
+    # Maximum backoff interval when idle. This is new.
+    # This is where you get “less polling” without hurting active streaming much.
+    max_sleep_s = float(os.getenv("SUMMARY_JOBS_POLL_MAX_SECONDS", "5.0"))
+
+    # Current sleep starts at base and grows when idle.
+    sleep_s = base_sleep_s
+
+    # Backoff multiplier. 1.6 is a typical compromise (fast ramp without exploding).
+    backoff_mult = float(os.getenv("SUMMARY_JOBS_POLL_BACKOFF_MULT", "1.6"))
+
+    # Optional: cap how long we keep streaming if job disappears (rare).
+    # Not required; only if you want to prevent infinite loops on missing meta.
+    # max_missing_meta_loops = int(os.getenv("SUMMARY_JOBS_META_MISS_MAX", "0"))
+
+    while True:
+        # If the HTTP client disconnected, stop immediately.
+        # Prevents unnecessary Upstash queries after browser/tab close.
+        if request is not None:
+            try:
+                if await request.is_disconnected():
+                    return
+            except Exception:
+                # If request object doesn’t support is_disconnected in some context,
+                # do not fail streaming; just continue.
+                pass
+
+        # Single meta call per poll. No LLEN.
+        #
+        # We rely on these meta fields being written by _run_summary_job_upstash:
+        # - done: "0" or "1"
+        # - event_count: integer count of persisted events
+        # - error: optional error string
+        meta = await redis.execute("HMGET", meta_key, "done", "event_count", "error")
+
+        # Parse meta safely (Upstash returns list-like results)
+        done = "0"
+        event_count = 0
+        error = ""
+
+        if meta and len(meta) >= 1 and meta[0] is not None:
+            done = str(meta[0])
+        if meta and len(meta) >= 2 and meta[1] is not None:
+            try:
+                event_count = int(meta[1])
+            except Exception:
+                event_count = 0
+        if meta and len(meta) >= 3 and meta[2] is not None:
+            error = str(meta[2])
+
+        # If new events exist since last yield, fetch only that range.
+        # This keeps network + Redis load minimal.
+        if idx < event_count:
+            start = idx
+            end = event_count - 1
+
+            # Fetch new chunks only.
+            # Each item is already a full SSE chunk string like:
+            #   "event: status\ndata: ...\n\n"
+            items = await redis.execute("LRANGE", events_key, str(start), str(end)) or []
+
+            for item in items:
+                yield str(item)
+
+            # Advance idx so reconnect continues properly.
+            idx = event_count
+
+            # Reset backoff because we’re “active” again.
+            sleep_s = base_sleep_s
+            continue
+
+        # No new events; if job is done, end the stream.
+        if done == "1":
+            # Optional safety: ensure client receives an error event if job ended in error
+            # and the runner didn’t emit one for some reason.
+            if error:
+                yield f"event: error\ndata: {json.dumps({'error': error})}\n\n"
+            return
+
+        # Idle: wait, then back off.
+        # This is where you reduce the aggressive HMGET spam in Upstash logs.
+        await asyncio.sleep(sleep_s)
+
+        # Increase sleep up to a cap (exponential-ish backoff).
+        sleep_s = min(max_sleep_s, sleep_s * backoff_mult)
+
+
 async def stream_summary_job(
     job_id: str,
     request: Optional[Any] = None,
 ) -> AsyncGenerator[str, None]:
+    """
+    Stream SSE chunks for a job.
+
+    - Upstash configured: tail Redis list for job events (polling).
+    - Otherwise: stream in-memory job events.
+    """
+    if _upstash_enabled():
+        async for chunk in _stream_job_events_upstash(job_id, request=request):
+            yield chunk
+        return
+
     job = _get_job_by_id(job_id)
     if not job:
         return
     async for chunk in _stream_job_events(job, request=request):
         yield chunk
 
-def get_summary_job(job_id: str) -> SummaryJob | None:
+async def get_summary_job(job_id: str) -> Dict[str, Any] | SummaryJob | None:
+    """
+    Returns job metadata (Upstash) or SummaryJob (in-memory), or None if not found.
+    """
+    if _upstash_enabled():
+        redis = _upstash()
+        assert redis is not None
+        meta_key = _job_meta_key(job_id)
+        meta = await redis.execute("HGETALL", meta_key)
+        if not meta:
+            return None
+        # Upstash returns flat list [k1,v1,k2,v2,...] for HGETALL
+        if isinstance(meta, list):
+            it = iter(meta)
+            return {str(k): str(v) for k, v in zip(it, it)}
+        if isinstance(meta, dict):
+            return {str(k): str(v) for k, v in meta.items()}
+        return {"raw": str(meta)}
     return _get_job_by_id(job_id)
 
 
@@ -673,7 +987,10 @@ async def generate_summary_stream(
 
     raw_text = _strip_tool_call_artifacts(raw_text)
     template = get_template(visit)
-    final_html = ensure_html_summary(raw_text, template)
+    # final_html = ensure_html_summary(raw_text, template)
+
+    # FINALIZE once here before critic/other agents
+    final_html = await finalize_summary_html(client, template, raw_text)
 
     if critic_agent.critic_enabled():
         if await _abort_now("before critic review"):
@@ -720,7 +1037,7 @@ async def generate_summary_stream(
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": correction_prompt},
                         ],
-                        models=critic_agent.critic_models(),
+                        models=REGEN_MODELS,
                         temperature=0.7 # Slight variance for diversity
                     )
                 )
@@ -813,6 +1130,8 @@ async def generate_summary_stream(
                     logger.warning("Tournament produced no valid candidates. Keeping original.")
 
         logger.info("Critic review finished.")
+        # Enforce strict 3-section HTML after any critic/tournament edits
+        final_html = await finalize_summary_html(client, template, final_html)
 
     doctor_info = await _fill_doctor_info_from_summary(doctor_info, final_html, client)
     
@@ -872,7 +1191,9 @@ async def generate_summary_stream(
         evidence_map = {"chunks": [], "citations": []}
 
     logger.info("Evidence mapping finished.")
+    evidence_map = _shrink_evidence_map(evidence_map)
     yield f"event: evidence_update\ndata: {json.dumps(evidence_map)}\n\n"
+
 
     # Persist summary, notes, and evidence to long-term memory after evidence mapping completes.
     try:
@@ -996,12 +1317,169 @@ async def run_summary_pipeline(
     _cache_set(cache_key, {"events": events})
 
 
+
+
 async def run_summary_pipeline_resumable(
-    visit: Visit,
-    client: AsyncOpenAI,
-    request: Optional[Any] = None,
+    visit,
+    client,
+    request: Request,
 ) -> AsyncGenerator[str, None]:
-    job_id = start_summary_job(visit, client)
+    """
+    Starts (or reuses) a job_id, sends it immediately to the UI, then streams
+    status + final output from the job event log (Upstash or in-memory).
+    """
+    try:
+        job_id = await start_summary_job(visit, client)
+    except UpstashError as e:
+        yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        return
+
+    # Always tell the UI the job_id first (so reconnect works)
     yield f"event: job\ndata: {json.dumps({'job_id': job_id})}\n\n"
+
+    # Then stream the job events (this is where your status + final output come from)
     async for chunk in stream_summary_job(job_id, request=request):
         yield chunk
+
+# --- STRICT HTML FINALIZER (3 sections only) ---
+
+_SECTION_NAMES = ("summary", "next_steps", "patient_email")
+
+def _extract_section(html: str, name: str) -> Optional[str]:
+    if not html:
+        return None
+    # case-insensitive match, tolerate extra attributes
+    pattern = re.compile(
+        rf'<section\s+[^>]*data-section=["\']{re.escape(name)}["\'][^>]*>.*?</section>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    m = pattern.search(html)
+    return m.group(0).strip() if m else None
+
+def _strict_three_sections(html: str) -> Optional[str]:
+    s = _extract_section(html, "summary")
+    n = _extract_section(html, "next_steps")
+    p = _extract_section(html, "patient_email")
+    if not (s and n and p):
+        return None
+    return f"{s}\n\n{n}\n\n{p}".strip()
+
+async def _repair_to_three_sections(
+    client: AsyncOpenAI,
+    template: dict,
+    text_or_html: str,
+) -> str:
+    """
+    One repair pass: force the model to return ONLY the three <section> blocks.
+    Then we still validate with _strict_three_sections.
+    """
+    repair_system = (
+        "Return ONLY strict HTML with EXACTLY these 3 sections and NOTHING else:\n"
+        '<section data-section="summary">...</section>\n'
+        '<section data-section="next_steps">...</section>\n'
+        '<section data-section="patient_email">...</section>\n'
+        "No preamble, no titles, no markdown. Do not wrap in <html> or <body>.\n"
+        "Follow the provided template headings exactly."
+    )
+
+    repair_user = (
+        "Fix this content so it becomes valid output (three sections only).\n\n"
+        f"Template label: {template.get('label','')}\n"
+        f"Template HTML:\n{template.get('summary_html','')}\n\n"
+        f"Content to fix:\n{text_or_html}"
+    )
+
+    resp = await generate_with_fallback(
+        client=client,
+        messages=[
+            {"role": "system", "content": repair_system},
+            {"role": "user", "content": repair_user},
+        ],
+        models=["deepseek-chat"],
+        temperature=0.0,
+    )
+    raw = resp.choices[0].message.content or ""
+    raw = _strip_tool_call_artifacts(raw)
+    return raw.strip()
+
+async def finalize_summary_html(
+    client: AsyncOpenAI,
+    template: dict,
+    raw_text_or_html: str,
+) -> str:
+    """
+    Guarantee the final output is ONLY the three required <section data-section="..."> blocks.
+    """
+    # 1) If it already contains the 3 sections, strip everything else
+    strict = _strict_three_sections(raw_text_or_html)
+    if strict:
+        return strict
+
+    # 2) Try your wrapper/normalizer, then extract again
+    wrapped = ensure_html_summary(raw_text_or_html or "", template)
+    strict = _strict_three_sections(wrapped)
+    if strict:
+        return strict
+
+    # 3) One repair pass, then validate
+    repaired = await _repair_to_three_sections(client, template, raw_text_or_html or "")
+    strict = _strict_three_sections(repaired)
+    if strict:
+        return strict
+
+    wrapped2 = ensure_html_summary(repaired, template)
+    strict = _strict_three_sections(wrapped2)
+    if strict:
+        return strict
+
+    # 4) Last resort (still valid for the UI)
+    return (
+        '<section data-section="summary"><h3>Summary of visit for the doctor\'s records</h3>'
+        "<p>Not documented.</p></section>\n\n"
+        '<section data-section="next_steps"><h3>Next steps for the doctor</h3><ul>'
+        "<li>Not documented.</li></ul></section>\n\n"
+        '<section data-section="patient_email"><h3>Draft Email for Patient</h3>'
+        "<p>Not documented.</p></section>"
+    )
+
+
+
+def _sse_event_name(chunk: str) -> str | None:
+    if not chunk:
+        return None
+    m = SSE_EVENT_RE.search(chunk)
+    return m.group(1) if m else None
+
+def _shrink_evidence_map(evidence_map: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reduce Redis payload size while keeping UI useful.
+    Keeps first N chunks/citations and truncates long snippet texts.
+    """
+    if not isinstance(evidence_map, dict):
+        return {"chunks": [], "citations": []}
+
+    chunks = evidence_map.get("chunks") or []
+    citations = evidence_map.get("citations") or []
+
+    if isinstance(chunks, list):
+        chunks = chunks[:EVIDENCE_MAX_CHUNKS]
+        for c in chunks:
+            if isinstance(c, dict) and "text" in c and isinstance(c["text"], str):
+                t = c["text"].strip()
+                if len(t) > EVIDENCE_SNIPPET_MAX:
+                    c["text"] = t[:EVIDENCE_SNIPPET_MAX] + "..."
+
+    if isinstance(citations, list):
+        citations = citations[:EVIDENCE_MAX_CITATIONS]
+        for cit in citations:
+            if not isinstance(cit, dict):
+                continue
+            snips = cit.get("snippets")
+            if isinstance(snips, dict):
+                for k, v in list(snips.items()):
+                    if isinstance(v, str):
+                        vv = v.strip()
+                        if len(vv) > EVIDENCE_SNIPPET_MAX:
+                            snips[k] = vv[:EVIDENCE_SNIPPET_MAX] + "..."
+
+    return {"chunks": chunks, "citations": citations}

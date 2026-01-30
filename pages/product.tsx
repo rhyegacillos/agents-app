@@ -256,6 +256,7 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                 await fetchEventSource('/api/chat', {
                     method: 'POST',
                     signal: controller.signal,
+                    openWhenHidden: true,
                     headers: {
                         'Content-Type': 'application/json',
                         Authorization: `Bearer ${token}`,
@@ -761,6 +762,7 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         await fetchEventSource(url, {
             signal: controller.signal,
             method: jobId ? 'GET' : 'POST',
+            openWhenHidden: true,
             headers: {
                 ...(jobId ? {} : { 'Content-Type': 'application/json' }),
                 Authorization: `Bearer ${token}`,
@@ -1437,11 +1439,15 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
             return;
         }
         const handleFocus = () => {
-            if (!loading || summaryStreamingRef.current) {
+            if (summaryStreamingRef.current) {
                 return;
             }
             const jobId = localStorage.getItem(SUMMARY_JOB_STORAGE_KEY);
             if (!jobId) {
+                return;
+            }
+            const existing = localStorage.getItem(SUMMARY_OUTPUT_STORAGE_KEY);
+            if (existing && existing.trim()) {
                 return;
             }
             const reconnect = async () => {

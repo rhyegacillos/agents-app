@@ -13,6 +13,7 @@ from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCr
 from openai import AsyncOpenAI
 from typing import Optional
 from clerk_backend_api import Clerk
+import hashlib
 
 # Import models and agents
 from .agent.models import Visit, SendEmailRequest, Base64File, ChatRequest
@@ -122,7 +123,14 @@ async def consultation_summary(
     # Summary Pipeline
     stream_generator = summary_agent.run_summary_pipeline_resumable(visit, client, request)
 
-    return StreamingResponse(stream_generator, media_type="text/event-stream")
+    return StreamingResponse(
+        stream_generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+)
 
 
 @app.get("/api/consultation")
@@ -131,7 +139,7 @@ async def consultation_stream(
     request: Request,
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
 ):
-    job = summary_agent.get_summary_job(job_id)
+    job = await summary_agent.get_summary_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Summary job not found.")
 
@@ -154,7 +162,14 @@ async def chat_endpoint(
         current_summary=request.current_summary or "",
         client=client
     )
-    return StreamingResponse(stream_generator, media_type="text/event-stream")
+    return StreamingResponse(
+        stream_generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/send-email")

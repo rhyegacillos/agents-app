@@ -26,7 +26,7 @@ CACHE_TTL_SECONDS = 3600  # 1 hour
 
 MCP_SERVER_COMMAND = "npx"
 MCP_SERVER_ARGS = ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"]
-MCP_SERVER_TIMEOUT_SECONDS = 120
+MCP_SERVER_TIMEOUT_SECONDS = 60
 OPENAI_RESEARCH_MODEL = "gpt-4o-mini"
 
 

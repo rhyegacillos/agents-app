@@ -4,6 +4,8 @@ import re
 from typing import Dict, Any, List
 
 from openai import AsyncOpenAI
+
+from .utils.provider_clients import get_gemini_client
 from .utils import generate_with_fallback, get_logger
 
 logger = get_logger(__name__)
@@ -32,13 +34,13 @@ def critic_models() -> List[str]:
 
 
 def build_critic_client(default_client: AsyncOpenAI) -> AsyncOpenAI:
-    return AsyncOpenAI(
-        api_key=os.getenv("GEMINI_API_KEY"),
-        base_url=os.getenv(
-            "GEMINI_API_URL",
-            "https://generativelanguage.googleapis.com/v1beta/openai/",
-        ),
-    )
+    """Return a Gemini client for critic calls.
+
+    Uses the cached client when GEMINI_API_KEY is configured.
+    Falls back to the passed-in default client otherwise.
+    """
+    cached = get_gemini_client()
+    return cached or default_client
 
 
 def _extract_json(text: str) -> Dict[str, Any]:

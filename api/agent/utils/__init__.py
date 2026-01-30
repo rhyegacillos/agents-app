@@ -2,6 +2,9 @@ import logging
 import os
 from typing import List, Optional, Any, Dict
 from openai import AsyncOpenAI
+import httpx
+
+from .provider_clients import client_for_model
 
 # Configure logging
 logging.basicConfig(
@@ -17,6 +20,7 @@ logger = logging.getLogger("agent_api")
 
 # Fallback configuration
 DEFAULT_MODEL_CHAIN = ["gpt-5-nano", "gpt-4o-mini", "gpt-3.5-turbo"]
+REQ_TIMEOUT = httpx.Timeout(60.0, connect=5.0, read=60.0, write=10.0)
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
@@ -28,10 +32,11 @@ async def generate_with_fallback(
     max_retries: int = 1,
     **kwargs
 ) -> Any:
-    """
-    Generates a response using a list of models for fallback.
-    Dynamically switches to a dedicated client if a model name
-    contains "deepseek" or "gemini" and the corresponding API key is set.
+    """Generate a response using a fallback chain.
+
+    For non-OpenAI providers exposed via OpenAI-compatible endpoints (e.g.,
+    DeepSeek, Gemini), the underlying AsyncOpenAI client is selected from a
+    small in-process cache to avoid per-request client construction overhead.
     """
     chain = models or DEFAULT_MODEL_CHAIN
     last_exception = None
@@ -39,24 +44,8 @@ async def generate_with_fallback(
     for model in chain:
         for attempt in range(max_retries + 1):
             try:
-                generation_client = client  # Default to the passed-in client
-
-                if "deepseek" in model:
-                    api_key = os.getenv("DEEPSEEK_API_KEY")
-                    if api_key:
-                        logger.info(f"Using dedicated DeepSeek client for model {model}.")
-                        generation_client = AsyncOpenAI(
-                            api_key=api_key,
-                            base_url=os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1")
-                        )
-                elif "gemini" in model:
-                    api_key = os.getenv("GEMINI_API_KEY")
-                    if api_key:
-                        logger.info(f"Using dedicated Gemini client for model {model}.")
-                        generation_client = AsyncOpenAI(
-                            api_key=api_key,
-                            base_url=os.getenv("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-                        )
+                generation_client = client_for_model(model=model, default_client=client).with_options(
+                    timeout=REQ_TIMEOUT)
 
                 logger.info(f"Attempting generation with model: {model} (attempt {attempt + 1})")
                 response = await generation_client.chat.completions.create(
@@ -91,8 +80,10 @@ async def generate_stream_with_fallback(
     for model in chain:
         for attempt in range(max_retries + 1):
             try:
+                generation_client = client_for_model(model=model, default_client=client).with_options(
+                    timeout=REQ_TIMEOUT)
                 logger.info(f"Attempting stream with model: {model} (attempt {attempt + 1})")
-                stream = await client.chat.completions.create(
+                stream = await generation_client.chat.completions.create(
                     model=model,
                     messages=messages,
                     stream=True,

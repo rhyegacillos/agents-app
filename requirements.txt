@@ -10,3 +10,4 @@ resend
 numpy
 httpx
 clerk-backend-api
+upstash-redis
