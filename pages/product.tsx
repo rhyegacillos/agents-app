@@ -60,6 +60,19 @@ function normalizeChatMarkdown(text: string): string {
     return linkifyText(withoutFences);
 }
 
+function renderHistoryHighlighted(text: string) {
+    const raw = text || '';
+    const trimmed = raw.trim();
+    const isHistory = /^history:/i.test(trimmed);
+    if (!isHistory) return raw;
+    const rest = trimmed.replace(/^history:\s*/i, '');
+    return (
+        <span className="inline-block rounded-md bg-emerald-100/80 px-2 py-1 text-sm font-medium text-emerald-900 dark:bg-emerald-800/70 dark:text-emerald-100">
+            History: {rest}
+        </span>
+    );
+}
+
 type TokenGetter = (opts?: { skipCache?: boolean; template?: string }) => Promise<string | null>;
 
 class AuthError extends Error {
@@ -202,13 +215,14 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
         try {
             const res = await fetchWithAuthRetry(
                 getToken,
-                '/api/patients',
+                '/api/patients?limit=50',
                 {},
                 noopAuthFailure
             );
             if (res?.ok) {
                 const data = await res.json();
-                setPatientList(data);
+                const names = Array.isArray(data) ? data : data?.items || [];
+                setPatientList(names);
             }
         } catch (err) {
             console.error(err);
@@ -598,10 +612,756 @@ const LANGUAGE_OPTIONS = [
     'Zulu',
 ];
 
+type HistoryPatient = {
+    id: string;
+    name: string;
+    lastVisit?: string;
+    noteCount?: number;
+};
+
+type EvidenceChunk = {
+    id: string;
+    source?: string;
+    label?: string;
+    text?: string;
+    sources?: { title?: string; url?: string }[];
+};
+
+type EvidenceMap = {
+    chunks?: EvidenceChunk[];
+    citations?: {
+        sentence?: string;
+        chunk_ids?: string[];
+        snippets?: Record<string, string>;
+    }[];
+};
+
+type EvidenceCitation = {
+    sentence?: string;
+    chunk_ids?: string[];
+    snippets?: Record<string, string>;
+};
+
+type HistoryEntry = {
+    date: string;
+    type?: string;
+    summary: string;
+    evidence?: EvidenceMap | null;
+    has_evidence?: boolean;
+};
+
+type WorkspaceTab = 'current' | 'history';
+
 type ConsultationFormProps = {
     isPremium?: boolean;
     onSessionExpired: () => Promise<void>;
 };
+
+function PatientHistoryPanel() {
+    const { getToken } = useAuth();
+    const [searchTerm, setSearchTerm] = useState('');
+    const [dropdownOpen, setDropdownOpen] = useState(false);
+    const [patientOptions, setPatientOptions] = useState<HistoryPatient[]>([]);
+    const [optionsLoading, setOptionsLoading] = useState(false);
+    const [optionsError, setOptionsError] = useState('');
+    const [optionsOffset, setOptionsOffset] = useState(0);
+    const [optionsHasMore, setOptionsHasMore] = useState(false);
+    const [optionsQuery, setOptionsQuery] = useState('');
+    const loadMoreCooldownRef = useRef<number>(0);
+    const [selectedPatient, setSelectedPatient] = useState<HistoryPatient | null>(null);
+    const [historyItems, setHistoryItems] = useState<HistoryEntry[]>([]);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyError, setHistoryError] = useState('');
+    const [selectedVisit, setSelectedVisit] = useState<HistoryEntry | null>(null);
+    const [historyStartDate, setHistoryStartDate] = useState('');
+    const [historyEndDate, setHistoryEndDate] = useState('');
+    const historyStartRef = useRef<HTMLInputElement | null>(null);
+    const historyEndRef = useRef<HTMLInputElement | null>(null);
+    const [copyStatus, setCopyStatus] = useState('');
+    const [historyQuery, setHistoryQuery] = useState('');
+    const timelineRef = useRef<HTMLDivElement | null>(null);
+    const [isPanning, setIsPanning] = useState(false);
+    const panStartX = useRef(0);
+    const panScrollLeft = useRef(0);
+
+    const filteredPatients = patientOptions; // server-side filtering handles search
+    const timelineItems = useMemo(() => {
+        return historyItems.map((item) => ({
+            date: item.date,
+            type: item.type || 'Visit',
+            hasEvidence: !!item.has_evidence,
+        }));
+    }, [historyItems]);
+
+    async function loadPatients(fetchOffset?: number, fetchQuery?: string, replace?: boolean) {
+        const targetOffset = typeof fetchOffset === 'number' ? fetchOffset : optionsOffset;
+        const targetQuery = fetchQuery !== undefined ? fetchQuery : optionsQuery;
+        if (optionsLoading) return;
+        if (!replace && fetchOffset === undefined && patientOptions.length > 0 && targetQuery === optionsQuery) {
+            // already have first page for this query
+            return;
+        }
+        if (replace) {
+            setPatientOptions([]);
+            setOptionsOffset(0);
+            setOptionsHasMore(false);
+            setOptionsQuery(targetQuery);
+        }
+        setOptionsLoading(true);
+        setOptionsError('');
+        try {
+            const queryParam = targetQuery ? `&q=${encodeURIComponent(targetQuery)}` : '';
+            const res = await fetchWithAuthRetry(
+                getToken,
+                `/api/patients?limit=50&offset=${targetOffset}${queryParam}`,
+                {},
+                noopAuthFailure
+            );
+            if (!res?.ok) {
+                setOptionsError('Unable to load patients.');
+                return;
+            }
+            const data = await res.json();
+            const items = Array.isArray(data) ? data : data?.items || [];
+            const details = Array.isArray(data?.details) ? data.details : null;
+            const nextOffset = data?.next_offset ?? targetOffset + items.length;
+            const hasMore = data?.has_more ?? false;
+            const mapped: HistoryPatient[] = details
+                ? details.map((entry: any, idx: number) => ({
+                    id: `${targetOffset + idx}-${entry?.name}`,
+                    name: entry?.name,
+                    lastVisit: entry?.last_visit,
+                    noteCount: entry?.note_count,
+                }))
+                : (items || []).map((name: string, idx: number) => ({
+                    id: `${targetOffset + idx}-${name}`,
+                    name,
+                }));
+            setPatientOptions((prev) => replace ? mapped : [...prev, ...mapped]);
+            setOptionsOffset(nextOffset);
+            setOptionsHasMore(Boolean(hasMore));
+            setOptionsQuery(targetQuery);
+        } catch (err) {
+            console.error(err);
+            setOptionsError('Unable to load patients.');
+        } finally {
+            setOptionsLoading(false);
+        }
+    }
+
+    async function loadHistory(patientName: string, startDate?: string, endDate?: string, keyword?: string) {
+        if (!patientName) return;
+        setHistoryLoading(true);
+        setHistoryError('');
+        setHistoryItems([]);
+        setSelectedVisit(null);
+        try {
+            const dateParams = [
+                startDate ? `start_date=${encodeURIComponent(startDate)}` : null,
+                endDate ? `end_date=${encodeURIComponent(endDate)}` : null,
+                keyword ? `q=${encodeURIComponent(keyword)}` : null,
+            ].filter(Boolean).join('&');
+            const dateQuery = dateParams ? `&${dateParams}` : '';
+            const res = await fetchWithAuthRetry(
+                getToken,
+                `/api/patient-history?patient=${encodeURIComponent(patientName)}&limit=10${dateQuery}`,
+                {},
+                noopAuthFailure
+            );
+            if (!res?.ok) {
+                setHistoryError('Unable to load history.');
+                return;
+            }
+            const data = await res.json();
+            setHistoryItems(data?.items || []);
+        } catch (err) {
+            console.error(err);
+            setHistoryError('Unable to load history.');
+        } finally {
+            setHistoryLoading(false);
+        }
+    }
+
+    const handleSelect = (patient: HistoryPatient) => {
+        setSelectedPatient(patient);
+        setSearchTerm(''); // clear search so full list shows next time
+        setDropdownOpen(false);
+        loadHistory(patient.name, historyStartDate, historyEndDate, historyQuery);
+        setSelectedVisit(null);
+    };
+
+    const handleLoadMorePatients = () => {
+        const now = Date.now();
+        if (now - loadMoreCooldownRef.current < 350) return;
+        loadMoreCooldownRef.current = now;
+        if (optionsLoading || !optionsHasMore) return;
+        loadPatients(optionsOffset, optionsQuery, false);
+    };
+
+    const handleCopySummary = async (text: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopyStatus('Copied');
+            setTimeout(() => setCopyStatus(''), 1500);
+        } catch (err) {
+            console.error('Copy failed', err);
+            setCopyStatus('Copy failed');
+            setTimeout(() => setCopyStatus(''), 1500);
+        }
+    };
+
+    useEffect(() => {
+        // Fetch first page when tab opens
+        loadPatients(0, '', true);
+    }, []);
+
+    useEffect(() => {
+        const handle = setTimeout(() => {
+            loadPatients(0, searchTerm, true);
+        }, 250);
+        return () => clearTimeout(handle);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        const el = timelineRef.current;
+        if (!el) return;
+
+        const onMouseDown = (e: MouseEvent) => {
+            setIsPanning(true);
+            panStartX.current = e.pageX;
+            panScrollLeft.current = el.scrollLeft;
+            document.body.style.userSelect = 'none';
+        };
+
+        const onMouseUp = () => {
+            setIsPanning(false);
+            document.body.style.userSelect = '';
+        };
+
+        const onMouseMove = (e: MouseEvent) => {
+            if (!isPanning) return;
+            e.preventDefault();
+            const walk = (e.pageX - panStartX.current);
+            el.scrollLeft = panScrollLeft.current - walk;
+        };
+
+        el.addEventListener('mousedown', onMouseDown);
+        window.addEventListener('mouseup', onMouseUp);
+        window.addEventListener('mousemove', onMouseMove);
+
+        return () => {
+            el.removeEventListener('mousedown', onMouseDown);
+            window.removeEventListener('mouseup', onMouseUp);
+            window.removeEventListener('mousemove', onMouseMove);
+            document.body.style.userSelect = '';
+        };
+    }, [timelineItems, isPanning]);
+
+    return (
+        <div className="mx-auto max-w-5xl px-6 pb-16">
+            <section className="animate-fade-in rounded-2xl border border-emerald-100/80 bg-white/90 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.55)] backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/85 dark:shadow-[0_18px_40px_-32px_rgba(15,23,42,0.9)]">
+                <div className="border-b border-emerald-100/80 px-6 py-5 dark:border-slate-700/80">
+                    <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
+                        Patient History
+                    </p>
+                    <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Longitudinal View</h2>
+                    <p className="text-sm text-slate-500 dark:text-slate-300">
+                        Select a patient to review prior visits; the layout is ready and will pull from Memory once connected.
+                    </p>
+                </div>
+
+                <div className="px-6 py-6 space-y-6">
+                    <div className="space-y-2">
+                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200">
+                            Patient
+                        </label>
+                        <div className="relative">
+                            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-400/30 dark:border-slate-700 dark:bg-slate-900">
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    strokeWidth={2}
+                                    stroke="currentColor"
+                                    className="h-5 w-5 text-slate-400"
+                                >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m0 0A7.5 7.5 0 1010.5 18a7.5 7.5 0 006.15-3.35z" />
+                                </svg>
+                                <input
+                                    type="text"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    onFocus={() => {
+                                        setDropdownOpen(true);
+                                        loadPatients(undefined, searchTerm || '', false);
+                                    }}
+                                    placeholder="Search or select a patient"
+                                    className="flex-1 bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none dark:text-slate-100 dark:placeholder:text-slate-500"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setDropdownOpen((prev) => !prev)}
+                                    className="rounded-lg p-1 text-slate-400 transition hover:text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400/40 dark:text-slate-300 dark:hover:text-emerald-300"
+                                    aria-label="Toggle patient list"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                                        <path fillRule="evenodd" d="M12 14.25a.75.75 0 01-.53-.22l-4.5-4.5a.75.75 0 111.06-1.06L12 12.44l3.97-3.97a.75.75 0 111.06 1.06l-4.5 4.5a.75.75 0 01-.53.22z" clipRule="evenodd" />
+                                    </svg>
+                                </button>
+                            </div>
+                            {dropdownOpen && (
+                                <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                                    <ul className="max-h-64 overflow-y-auto">
+                                        {optionsLoading && (
+                                            <li className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+                                                Loading patients...
+                                            </li>
+                                        )}
+                                        {optionsError && !optionsLoading && (
+                                            <li className="px-4 py-3 text-sm text-rose-600 dark:text-rose-400">
+                                                {optionsError}
+                                            </li>
+                                        )}
+                                        {!optionsLoading && !optionsError && filteredPatients.length === 0 && (
+                                            <li className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+                                                No matches found
+                                            </li>
+                                        )}
+                                        {!optionsLoading && !optionsError && filteredPatients.map((patient) => (
+                                            <li
+                                                key={patient.id}
+                                                onMouseDown={(e) => e.preventDefault()}
+                                                onClick={() => handleSelect(patient)}
+                                                className="cursor-pointer border-b border-slate-100 px-4 py-3 text-sm hover:bg-emerald-50 dark:border-slate-800 dark:hover:bg-slate-800"
+                                            >
+                                                <div className="flex items-center justify-between">
+                                                    <span className="font-semibold text-slate-800 dark:text-slate-100">
+                                                        {patient.name}
+                                                    </span>
+                                                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                                        {patient.lastVisit ? `Last visit ${patient.lastVisit}` : 'No date'}
+                                                    </span>
+                                                </div>
+                                                {typeof patient.noteCount === 'number' && (
+                                                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                                                        {patient.noteCount} prior notes
+                                                    </p>
+                                                )}
+                                            </li>
+                                        ))}
+                                        {!optionsLoading && !optionsError && optionsHasMore && (
+                                            <li className="border-t border-slate-100 bg-slate-50 px-4 py-2 text-center text-sm font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-slate-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-slate-800">
+                                                <button
+                                                    type="button"
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                    onClick={handleLoadMorePatients}
+                                                    className="w-full"
+                                                >
+                                                    {optionsLoading ? 'Loading...' : 'Load 50 more'}
+                                                </button>
+                                            </li>
+                                        )}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Type to filter; the dropdown will query the patient index once wired to live data.
+                        </p>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                        {selectedPatient ? (
+                            <div className="space-y-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <p className="text-[11px] uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
+                                            Overview
+                                        </p>
+                                        <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                            {selectedPatient.name}
+                                        </h3>
+                                    </div>
+                                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                        {selectedPatient.lastVisit ? `Last visit ${selectedPatient.lastVisit}` : 'Recent visit'}
+                                    </span>
+                                </div>
+
+                                {timelineItems.length > 0 && (
+                                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4 shadow-sm dark:border-emerald-800/60 dark:bg-emerald-950/40">
+                                        <div className="flex items-center justify-between">
+                                            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                                                Timeline
+                                            </p>
+                                            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-200">
+                                                {timelineItems.length} visits
+                                            </span>
+                                        </div>
+                                        <div
+                                            className={`mt-3 flex items-center gap-3 overflow-x-auto pb-2 ${isPanning ? 'cursor-grabbing' : 'cursor-grab'} select-none`}
+                                            ref={timelineRef}
+                                            onDragStart={(e) => e.preventDefault()}
+                                        >
+                                            {historyItems.map((item, idx) => {
+                                                const isSelected = selectedVisit?.date === item.date && selectedVisit?.type === item.type;
+                                                const isEvidence = (item.type || '').toLowerCase() === 'visit_evidence';
+                                                return (
+                                                    <div key={`${item.date}-${idx}`} className="flex items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setSelectedVisit(item)}
+                                                            className={`flex h-16 min-w-[120px] flex-col items-center justify-center rounded-full border px-4 py-2 text-center shadow-sm transition ${
+                                                                isSelected
+                                                                    ? 'border-emerald-400 bg-emerald-600 text-white'
+                                                                    : 'border-slate-200 bg-white text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-slate-800'
+                                                            }`}
+                                                        >
+                                                            <span className="text-[11px] font-semibold uppercase tracking-wide leading-tight">
+                                                                {item.type || 'Visit'}
+                                                            </span>
+                                                            <span className={`${isSelected ? 'text-white/90' : 'text-slate-600 dark:text-slate-300'} text-xs font-semibold leading-tight`}>
+                                                                {item.date || '—'}
+                                                            </span>
+                                                        </button>
+                                                        {idx < historyItems.length - 1 && (
+                                                            <div className="h-px w-10 shrink-0 bg-emerald-200 dark:bg-emerald-800/60" />
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4 dark:border-slate-800 dark:bg-slate-900/60">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Visit history</p>
+                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800/80">
+                                                <span className="text-slate-500 text-xs font-semibold uppercase tracking-wide dark:text-slate-400">From</span>
+                                                <div className="relative flex items-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => historyStartRef.current?.showPicker ? historyStartRef.current.showPicker() : historyStartRef.current?.focus()}
+                                                        className="absolute left-1.5 rounded-md p-1 text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-slate-800/80"
+                                                        aria-label="Open start date picker"
+                                                    >
+                                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V5m8 2V5m-9 8h10M5 9h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z" />
+                                                        </svg>
+                                                    </button>
+                                                    <input
+                                                        type="date"
+                                                        value={historyStartDate}
+                                                        onChange={(e) => setHistoryStartDate(e.target.value)}
+                                                        ref={historyStartRef}
+                                                        className="appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-3 py-2 text-sm font-semibold text-slate-800 shadow-inner focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800/80">
+                                                <span className="text-slate-500 text-xs font-semibold uppercase tracking-wide dark:text-slate-400">To</span>
+                                                <div className="relative flex items-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => historyEndRef.current?.showPicker ? historyEndRef.current.showPicker() : historyEndRef.current?.focus()}
+                                                        className="absolute left-1.5 rounded-md p-1 text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-slate-800/80"
+                                                        aria-label="Open end date picker"
+                                                    >
+                                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V5m8 2V5m-9 8h10M5 9h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z" />
+                                                        </svg>
+                                                    </button>
+                                                    <input
+                                                        type="date"
+                                                        value={historyEndDate}
+                                                        onChange={(e) => setHistoryEndDate(e.target.value)}
+                                                        ref={historyEndRef}
+                                                        className="appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-3 py-2 text-sm font-semibold text-slate-800 shadow-inner focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={historyQuery}
+                                                    onChange={(e) => setHistoryQuery(e.target.value)}
+                                                    placeholder="Filter by keyword"
+                                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    disabled={!selectedPatient}
+                                                    onClick={() => selectedPatient && loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery)}
+                                                    className="rounded-lg border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                >
+                                                    Apply
+                                                </button>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setHistoryStartDate('');
+                                                    setHistoryEndDate('');
+                                                    setHistoryQuery('');
+                                                    if (selectedPatient) {
+                                                        loadHistory(selectedPatient.name, '', '', '');
+                                                    }
+                                                }}
+                                                className="rounded-lg border border-slate-200 px-3 py-1 font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-emerald-400 dark:hover:text-emerald-200"
+                                            >
+                                                Clear
+                                            </button>
+                                            {selectedVisit && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSelectedVisit(null)}
+                                                    className="rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                >
+                                                    Return to list
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    {historyLoading && <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Loading history...</p>}
+                                    {historyError && <p className="mt-2 text-sm text-rose-600 dark:text-rose-400">{historyError}</p>}
+                                    {!historyLoading && !historyError && historyItems.length === 0 && (
+        <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No stored visits yet.</p>
+                                    )}
+
+                                    {!selectedVisit && (
+                                        <div className="mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1">
+                                            {historyItems.map((item, idx) => {
+                                                const isEvidence = (item.type || '').toLowerCase() === 'visit_evidence';
+                                                return (
+                                                <button
+                                                    key={idx}
+                                                    type="button"
+                                                    onClick={() => setSelectedVisit(item)}
+                                                    className="w-full text-left"
+                                                >
+                                                    <div className={`rounded-lg border p-3 shadow-sm transition hover:-translate-y-px hover:border-emerald-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900/70 dark:hover:border-emerald-400/50 ${
+                                                        isEvidence ? 'border-emerald-200 bg-emerald-50/70 dark:bg-emerald-950/40' : 'border-slate-200 bg-white/90'
+                                                    }`}>
+                                                        <div className="flex items-center justify-between">
+                                                            <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                                                                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                                                    {item.type || 'Visit'}
+                                                                </span>
+                                                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                                                                    {item.date || 'Unknown date'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                {item.has_evidence && (
+                                                                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                                                        Evidence
+                                                                    </span>
+                                                                )}
+                                                                <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">
+                                                                    View details
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="mt-2 rounded-lg bg-slate-50/60 p-3 text-sm text-slate-700 shadow-inner whitespace-pre-line dark:bg-slate-900/40 dark:text-slate-200 line-clamp-6">
+                                                            <ReactMarkdown
+                                                                remarkPlugins={[remarkGfm, remarkBreaks]}
+                                                                components={{
+                                                                    a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                                                    p: ({ children, ...props }) => <p {...props} className="mb-2 last:mb-0" children={children} />,
+                                                                }}
+                                                            >
+                                                                {normalizeChatMarkdown(item.summary || 'No summary stored.')}
+                                                            </ReactMarkdown>
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    {selectedVisit && (
+                                        <div className="mt-3 space-y-3">
+                                            <div className={`rounded-lg border p-4 shadow-md ${
+                                                (selectedVisit.type || '').toLowerCase() === 'visit_evidence'
+                                                    ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50'
+                                                    : 'border-slate-200 bg-white/95 dark:border-slate-800 dark:bg-slate-900/85'
+                                            }`}>
+                                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                                    <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                                                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                                            {selectedVisit.type || 'Visit'}
+                                                        </span>
+                                                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                                                            {selectedVisit.date || 'Unknown date'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setSelectedVisit(null)}
+                                                            className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                        >
+                                                            Return to list
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => selectedVisit.summary && handleCopySummary(selectedVisit.summary)}
+                                                            className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200 dark:hover:bg-emerald-900/70"
+                                                        >
+                                                            Copy summary
+                                                        </button>
+                                                        {copyStatus && (
+                                                            <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">
+                                                                {copyStatus}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="mt-3 rounded-lg bg-slate-50/80 p-4 text-sm leading-relaxed text-slate-800 shadow-inner whitespace-pre-line dark:bg-slate-900/60 dark:text-slate-200">
+                                                    <ReactMarkdown
+                                                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                                                        components={{
+                                                            a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                                            p: ({ children, ...props }) => (
+                                                                <p {...props} className="mb-3 last:mb-0">
+                                                                    {typeof children === 'string'
+                                                                        ? renderHistoryHighlighted(children)
+                                                                        : children}
+                                                                </p>
+                                                            ),
+                                                            li: ({ children, ...props }) => (
+                                                                <li {...props} className="mb-1 last:mb-0">
+                                                                    {typeof children === 'string'
+                                                                        ? renderHistoryHighlighted(children)
+                                                                        : children}
+                                                                </li>
+                                                            ),
+                                                        }}
+                                                    >
+                                                        {normalizeChatMarkdown(selectedVisit.summary || 'No summary stored.')}
+                                                    </ReactMarkdown>
+                                                </div>
+                                                {selectedVisit.evidence?.chunks && selectedVisit.evidence.chunks.length > 0 && (
+                                                    <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm dark:border-emerald-800 dark:bg-emerald-950/60">
+                                                        <div className="flex items-center justify-between">
+                                                            <div>
+                                                                <p className="text-[11px] uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
+                                                                    Evidence
+                                                                </p>
+                                                                <p className="text-sm text-slate-700 dark:text-slate-200">
+                                                                    Source snippets supporting this visit
+                                                                </p>
+                                                            </div>
+                                                            <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-emerald-700 shadow-sm dark:bg-slate-900 dark:text-emerald-200">
+                                                                {selectedVisit.evidence.chunks.length} sources
+                                                            </span>
+                                                        </div>
+                                                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                                            {selectedVisit.evidence.chunks.map((chunk, idx) => (
+                                                                <div key={chunk.id || idx} className="rounded-lg border border-emerald-100 bg-white/95 p-3 shadow-[0_10px_30px_-22px_rgba(16,185,129,0.6)] dark:border-emerald-800/50 dark:bg-slate-900/80 dark:shadow-[0_10px_30px_-22px_rgba(16,185,129,0.35)]">
+                                                                    <div className="flex items-center justify-between text-xs">
+                                                                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200">
+                                                                            {chunk.source || 'Source'}
+                                                                        </span>
+                                                                        {chunk.label && (
+                                                                            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-300">
+                                                                                {chunk.label}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    {(() => {
+                                                                        const raw = chunk.text || '—';
+                                                                        const trimmed = raw.trim();
+                                                                        const isHistory = /^history:/i.test(trimmed);
+                                                                        const isUpload = /^upload:/i.test(trimmed) || /^uploaded:/i.test(trimmed);
+                                                                        const rest = isHistory
+                                                                            ? trimmed.replace(/^history:\s*/i, '')
+                                                                            : isUpload
+                                                                                ? trimmed.replace(/^upload(ed)?:\s*/i, '')
+                                                                                : raw;
+                                                                        const bg = isHistory
+                                                                            ? 'border border-emerald-300 bg-emerald-50/80 dark:border-emerald-800 dark:bg-emerald-950/50'
+                                                                            : isUpload
+                                                                                ? 'border border-cyan-300 bg-cyan-50/80 dark:border-cyan-800 dark:bg-cyan-950/50'
+                                                                                : 'border border-slate-100 bg-white/80 dark:border-slate-800/50 dark:bg-slate-900/70';
+                                                                        return (
+                                                                            <div
+                                                                                className={`mt-2 rounded-lg p-3 text-sm text-slate-700 break-words whitespace-pre-wrap dark:text-slate-200 ${bg}`}
+                                                                            >
+                                                                                {isHistory && (
+                                                                                    <span className="mr-2 inline-block rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-white dark:bg-emerald-500">
+                                                                                        History
+                                                                                    </span>
+                                                                                )}
+                                                                                {isUpload && (
+                                                                                    <span className="mr-2 inline-block rounded-md bg-cyan-600 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-white dark:bg-cyan-500">
+                                                                                        Upload
+                                                                                    </span>
+                                                                                )}
+                                                                                <span className="align-middle">
+                                                                                    {(isHistory && `History: ${rest}`) ||
+                                                                                        (isUpload && `Upload: ${rest}`) ||
+                                                                                        raw}
+                                                                                </span>
+                                                                            </div>
+                                                                        );
+                                                                    })()}
+                                                                    {chunk.sources && chunk.sources.length > 0 && (
+                                                                        <div className="mt-3 space-y-1 text-[11px] text-emerald-700 dark:text-emerald-300">
+                                                                            {chunk.sources.map((s, i) => (
+                                                                                <a
+                                                                                    key={i}
+                                                                                    href={s.url || '#'}
+                                                                                    target="_blank"
+                                                                                    rel="noopener noreferrer"
+                                                                                    className="flex items-center gap-1 underline decoration-emerald-400 underline-offset-2 hover:text-emerald-800 dark:hover:text-emerald-100"
+                                                                                >
+                                                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H19.5V12M19.5 6L10.5 15L7.5 12L4.5 15" />
+                                                                                    </svg>
+                                                                                    {s.title || 'Source link'}
+                                                                                </a>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                {(!selectedVisit.evidence?.chunks || selectedVisit.evidence.chunks.length === 0) && (selectedVisit.type || '').toLowerCase() === 'visit_evidence' && (
+                                                    <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/70 p-4 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
+                                                        Evidence text is available but no structured snippets were saved for this visit. Newer visits will show linked sources here.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+                                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-6 w-6">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 01.75.75v3.75h3.75a.75.75 0 010 1.5H12.75v3.75a.75.75 0 01-1.5 0V12.75H7.5a.75.75 0 010-1.5h3.75V7.5a.75.75 0 01.75-.75z" />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h4 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Select a patient</h4>
+                                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                                        Use the dropdown above to load historical visits and evidence.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </section>
+        </div>
+    );
+}
 
 type UploadPayload = {
     filename: string;
@@ -612,20 +1372,6 @@ type UploadPayload = {
 type PrescriptionEntry = {
     filename: string;
     text: string;
-};
-
-type EvidenceChunk = {
-    id: string;
-    source: string;
-    label?: string;
-    text: string;
-    sources?: { title?: string; url?: string }[];
-};
-
-type EvidenceCitation = {
-    sentence: string;
-    chunk_ids: string[];
-    snippets?: Record<string, string>;
 };
 
 function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFormProps) {
@@ -2091,14 +2837,16 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
                             </summary>
                             <div className="mt-4 space-y-4 text-sm text-slate-700 dark:text-slate-200">
                                 {evidenceCitations.map((citation, index) => {
-                                    const sources = citation.chunk_ids
+                                    const chunkIds = citation.chunk_ids || [];
+                                    const sources = chunkIds
                                         .map((id) => evidenceById.get(id))
                                         .filter(Boolean) as EvidenceChunk[];
                                     
+                                    const sentence = citation.sentence || 'Supported statement';
                                     return (
-                                        <div key={`${index}-${citation.sentence.slice(0, 24)}`} className="rounded-lg border border-emerald-100/80 bg-white/80 p-4 dark:border-slate-700/70 dark:bg-slate-950/70">
+                                        <div key={`${index}-${sentence.slice(0, 24)}`} className="rounded-lg border border-emerald-100/80 bg-white/80 p-4 dark:border-slate-700/70 dark:bg-slate-950/70">
                                             <p className="font-medium text-slate-900 dark:text-slate-100">
-                                                "{citation.sentence}"
+                                                "{sentence}"
                                             </p>
                                             {sources.map((source) => (
                                                 <div key={source.id} className="mt-3 rounded-md border border-emerald-100/70 bg-emerald-50/70 p-3 text-xs text-slate-600 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-300">
@@ -2410,6 +3158,8 @@ export default function Product() {
     const { getToken } = useAuth();
     const { signOut } = useClerk();
     const [sessionExpiredOpen, setSessionExpiredOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<WorkspaceTab>('current');
+    const selectedPatientNameForChat = '';
     
     const handleSessionExpired = useCallback(async () => {
         // Immediately show the modal. No need for throttling here.
@@ -2427,6 +3177,10 @@ export default function Product() {
     const planRaw = String(subscription?.plan || subscription?.pla || '').toLowerCase();
     const isPremiumPlan = planRaw === 'u:premium_subscription' || planRaw.includes('premium');
     const planLabel = planRaw ? (isPremiumPlan ? 'Premium' : 'Free') : 'Free';
+    const workspaceTabs: { id: WorkspaceTab; label: string }[] = [
+        { id: 'current', label: 'Current Visit' },
+        { id: 'history', label: 'Patient History' },
+    ];
 
     useEffect(() => {
         let mounted = true;
@@ -2456,6 +3210,7 @@ export default function Product() {
     }, [getToken, handleSessionExpired]);
 
     return (
+        <>
         <main className="relative min-h-screen overflow-hidden bg-[#f6fbfb] text-slate-900 dark:bg-[#0b1217] dark:text-slate-100">
             {sessionExpiredOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-6 backdrop-blur-sm">
@@ -2495,7 +3250,8 @@ export default function Product() {
                             </h1>
                             <p className="mt-3 max-w-2xl text-base text-slate-600 dark:text-slate-300">
                                 Turn structured notes, documents, or audio into clear visit summaries, next steps,
-                                and patient-ready communication in minutes.
+                                and patient-ready communication in minutes — plus review prior visits with a searchable
+                                Patient History tab, last-visit context, and date filters.
                             </p>
                             <div className="mt-4 flex flex-wrap gap-2">
                                 <span className="rounded-full border border-emerald-200 bg-white/80 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-700/60 dark:bg-slate-900/70 dark:text-emerald-300">
@@ -2530,7 +3286,33 @@ export default function Product() {
                     <ThemeToggle />
                 </div>
 
-                <Protect
+                <div className="mx-auto max-w-5xl px-6 pb-4">
+                    <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm dark:border-slate-700 dark:bg-slate-900/80">
+                        {workspaceTabs.map((tab) => {
+                            const active = tab.id === activeTab;
+                            return (
+                                <button
+                                    key={tab.id}
+                                    type="button"
+                                    onClick={() => setActiveTab(tab.id)}
+                                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                                        active
+                                            ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-200/60 dark:bg-emerald-500 dark:text-slate-900'
+                                            : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                                    }`}
+                                >
+                                    {tab.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                        Switch between documenting the current visit and browsing prior histories.
+                    </p>
+                </div>
+
+                {activeTab === 'current' ? (
+                    <Protect
                     plan="premium_subscription"
                     fallback={
                         <>
@@ -2558,8 +3340,40 @@ export default function Product() {
                     }
                 >
                     <ConsultationForm onSessionExpired={handleSessionExpired} />
-                </Protect>
+                    </Protect>
+                ) : (
+                    <Protect
+                        plan="premium_subscription"
+                        fallback={
+                            <div className="mx-auto max-w-5xl px-6 pb-16">
+                                <div className="rounded-2xl border border-emerald-100/80 bg-white/90 p-8 text-center shadow-[0_18px_40px_-32px_rgba(15,23,42,0.45)] dark:border-slate-700/80 dark:bg-slate-900/85 dark:shadow-[0_18px_40px_-32px_rgba(15,23,42,0.8)]">
+                                    <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
+                                        Premium feature
+                                    </p>
+                                    <h2 className="mt-2 font-display text-3xl text-slate-900 dark:text-slate-100">
+                                        Patient History
+                                    </h2>
+                                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                                        Upgrade to browse longitudinal notes and evidence for your patients.
+                                    </p>
+                                    <div className="mt-6">
+                                        <PricingTable />
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    >
+                        <PatientHistoryPanel />
+                    </Protect>
+                )}
             </div>
         </main>
+        {/* Global MediNotes Assistant (available on all tabs) */}
+        <ChatInterface
+            patientName={selectedPatientNameForChat}
+            currentSummary=""
+            onSessionExpired={handleSessionExpired}
+        />
+        </>
     );
 }

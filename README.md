@@ -6,6 +6,9 @@ This project is a sophisticated Healthcare SaaS application featuring a **fully 
 
 The application provides a seamless interface for doctors to manage patient consultations. Here is how to interact with the system:
 
+### Asynchronous Job Management & Real-time Streaming
+Leveraging **Upstash Redis**, the system ensures that long-running tasks, like summary generation, are handled efficiently and reliably. This provides real-time updates to the UI and guarantees that your work is always saved and resumable.
+
 ### 1. Intelligent Consultation Capture
 Instead of typing notes manually, you can upload various data sources directly through the UI:
 *   **Audio Recordings:** Upload MP3/WAV files of your consultation. The system will automatically transcribe them.
@@ -48,6 +51,10 @@ Summaries are backed by proof.
 *   **Evidence Mapping:** Key summary statements are linked to source snippets (notes, uploads, research, guidelines).
 *   **External Links:** Research and guideline findings include clickable source URLs.
 *   **Audit Trail:** Evidence text is stored alongside the visit memory for later recall.
+
+### 8. User Interface Customization (Theme Toggle)
+The application offers basic UI customization to enhance user experience:
+*   **Theme Toggle:** Easily switch between light and dark modes to suit your preference and reduce eye strain.
 
 ---
 
@@ -198,6 +205,12 @@ All agents utilize a centralized logging system (`get_logger`) to trace:
 *   Model fallback events (e.g., "Error with model gpt-5-nano, retrying with gpt-4o-mini").
 *   Pipeline stages.
 
+### Asynchronous Job Management & Real-time Streaming (Upstash Redis)
+For handling long-running summary generation jobs and enabling real-time updates to the frontend, the system leverages Upstash Redis:
+*   **Job Persistence:** Summary job states and events are stored in Redis, ensuring resilience and resumability.
+*   **Real-time SSE Streaming:** Server-Sent Events (SSE) chunks are stored in Redis lists, allowing clients to receive real-time updates and seamlessly reconnect to ongoing streams.
+*   **Job Deduplication:** Redis is used to track and reuse existing jobs for identical requests, optimizing resource usage.
+
 ---
 
 ## 🚀 Getting Started
@@ -223,6 +236,8 @@ Ensure you have the following keys in your `.env.local`:
 *   `BRAVE_API_KEY`: For the Brave MCP research tool.
 *   `RESEND_API_KEY`: For sending emails.
 *   `CLERK_JWKS_URL`: For authentication.
+*   `UPSTASH_REDIS_REST_URL`: The REST URL for Upstash Redis, used for job persistence and real-time streaming.
+*   `UPSTASH_REDIS_REST_TOKEN`: The API token for authenticating with Upstash Redis.
 
 Node.js (`npx`) is required at runtime to launch the Brave MCP server.
 

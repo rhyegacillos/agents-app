@@ -18,6 +18,7 @@ import hashlib
 # Import models and agents
 from .agent.models import Visit, SendEmailRequest, Base64File, ChatRequest
 from .agent import summary_agent, email_agent, chat_agent, memory_agent
+from fastapi import Query
 from .agent.utils import get_logger
 
 # Initialize Logging
@@ -182,9 +183,39 @@ async def send_email_endpoint(
 
 
 @app.get("/api/patients")
-async def get_patients(creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
-    """Returns a list of all unique patient names in the memory store."""
-    return memory_agent.list_known_patients()
+async def get_patients(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None, description="Optional search text"),
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard)
+):
+    """Returns a paginated list of patient names."""
+    return memory_agent.list_patients_paginated(limit=limit, offset=offset, query=q)
+
+
+@app.get("/api/patient-history")
+async def get_patient_history(
+    patient: str = Query(..., description="Patient name (case-insensitive)"),
+    limit: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    start_date: str | None = Query(None, description="Filter visits on/after this date (YYYY-MM-DD)"),
+    end_date: str | None = Query(None, description="Filter visits on/before this date (YYYY-MM-DD)"),
+    q: str | None = Query(None, description="Keyword filter within visit text"),
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
+):
+    """
+    Read-only endpoint to list stored visit summaries for a patient.
+    Does not modify existing APIs.
+    """
+    visits = memory_agent.list_patient_visits(
+        patient,
+        limit=limit,
+        offset=offset,
+        start_date=start_date,
+        end_date=end_date,
+        query=q,
+    )
+    return {"patient": patient, "count": len(visits), "items": visits}
 
 @app.get("/api/subscription")
 async def subscription(creds= Depends(clerk_guard)):

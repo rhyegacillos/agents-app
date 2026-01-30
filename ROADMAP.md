@@ -90,6 +90,18 @@ The goal is to move from single-request workflows to **autonomous, long-running 
 - [ ] **Feature:** "Verifier Agent" checks safety claims and guideline notes.
 - [ ] **Logic:** Regenerate if risk score crosses threshold.
 
+### 3b. 🩺 Patient History Workspace (UI + API)
+**Status:** 🟢 In Progress  
+**Goal:** Give clinicians a dedicated space to browse longitudinal records with filters.  
+- [x] **Feature:** Patient History tab with list/detail views and visit cards.  
+- [x] **UX:** Searchable patient dropdown with pagination and last-visit metadata.  
+- [x] **Filter:** Date range filtering for visits.  
+- [x] **Detail:** Click-through to full visit text with return-to-list control.  
+- [x] **API:** Persist evidence snippets per visit for citation surfacing.  
+- [x] **API:** Server-side search within visits (by keyword).  
+- [x] **UX:** Timeline visualization and “copy summary” actions.  
+- [ ] **Backfill:** Optionally regenerate older visits to attach structured evidence.  
+
 ### 4. 🧾 Evidence-Linked Summaries
 **Status:** ✅ Completed
 **Goal:** Tie clinical summaries to evidence.

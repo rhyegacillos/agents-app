@@ -37,8 +37,8 @@ class VectorStore:
         """Loads and returns all documents from the store."""
         return self._load()
 
-    async def add_document(self, text: str, metadata: Dict[str, Any], client: AsyncOpenAI, patient_name: str, date: str):
-        """Generates embedding and saves document, overwriting duplicates."""
+    async def add_document(self, text: str, metadata: Dict[str, Any], client: AsyncOpenAI, patient_name: str, date: str, payload: Optional[Dict[str, Any]] = None):
+        """Generates embedding and saves document, overwriting duplicates. Optional payload is stored alongside text."""
         response = await client.embeddings.create(
             input=text,
             model="text-embedding-3-small"
@@ -49,7 +49,8 @@ class VectorStore:
             "text": text,
             "metadata": metadata,
             "embedding": embedding,
-            "timestamp": date
+            "timestamp": date,
+            "payload": payload or None,
         }
         
         db = self._load()

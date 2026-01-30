@@ -61,6 +61,7 @@ export default function Home() {
             <p className="mt-4 max-w-2xl text-base text-slate-600 dark:text-slate-300">
               Premium unlocks secure document and audio ingestion, English transcription, structured clinical detail
               extraction, clinical decision support, and one-click patient email delivery with clinic-branded formatting.
+              A dedicated Patient History tab brings a searchable roster with last-visit context, date filters, and rich visit cards.
               MediNotes Assistant ties it together with proactive briefings, Q&A, and on-demand drafts.
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
@@ -68,6 +69,9 @@ export default function Home() {
                 'Structured summaries',
                 'Clinical templates',
                 'Patient Memory',
+                'Patient History tab',
+                'Searchable patient list',
+                'Date filters',
                 'Action Coordinator',
                 'Clinical Decision Support',
                 'Quality Review',
@@ -203,6 +207,10 @@ export default function Home() {
             {
               title: 'Summaries + Memory',
               body: 'Clear summaries that include relevant patient past visits.',
+            },
+            {
+              title: 'Patient History Workspace',
+              body: 'Toggle to a dedicated tab with searchable patient list, last-visit metadata, visit timeline, and date filters to narrow prior notes.',
             },
             {
               title: 'Action Coordinator',

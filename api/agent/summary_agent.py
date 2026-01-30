@@ -1224,6 +1224,7 @@ async def generate_summary_stream(
                 date=visit.date_of_visit,
                 client=client,
                 doc_type="visit_evidence",
+                payload=evidence_map,
             )
             logger.info("Saved evidence links to long-term memory.")
         if not (summary_text and visit.patient_name and visit.date_of_visit):
