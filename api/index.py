@@ -19,6 +19,7 @@ import hashlib
 from .agent.models import Visit, SendEmailRequest, Base64File, ChatRequest
 from .agent import summary_agent, email_agent, chat_agent, memory_agent
 from fastapi import Query
+from pydantic import BaseModel, Field
 from .agent.utils import get_logger
 
 # Initialize Logging
@@ -41,6 +42,18 @@ class _AccessLogFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
 
 app = FastAPI()
+
+
+class RenamePatientRequest(BaseModel):
+    old_name: str = Field(..., min_length=1)
+    new_name: str = Field(..., min_length=1)
+
+
+class DeleteDocRequest(BaseModel):
+    doc_id: str = Field(..., min_length=1)
+
+class RestoreDocRequest(BaseModel):
+    doc_id: str = Field(..., min_length=1)
 
 # Add CORS middleware (allows frontend to call backend)
 app.add_middleware(
@@ -187,10 +200,12 @@ async def get_patients(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Optional search text"),
+    sort: str = Query("name", regex="^(name|last_visit)$"),
+    order: str = Query("asc", regex="^(asc|desc)$"),
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard)
 ):
     """Returns a paginated list of patient names."""
-    return memory_agent.list_patients_paginated(limit=limit, offset=offset, query=q)
+    return memory_agent.list_patients_paginated(limit=limit, offset=offset, query=q, sort=sort, order=order)
 
 
 @app.get("/api/patient-history")
@@ -201,6 +216,7 @@ async def get_patient_history(
     start_date: str | None = Query(None, description="Filter visits on/after this date (YYYY-MM-DD)"),
     end_date: str | None = Query(None, description="Filter visits on/before this date (YYYY-MM-DD)"),
     q: str | None = Query(None, description="Keyword filter within visit text"),
+    include_deleted: bool = Query(False, description="Include soft-deleted visits"),
     creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
 ):
     """
@@ -214,8 +230,34 @@ async def get_patient_history(
         start_date=start_date,
         end_date=end_date,
         query=q,
+        include_deleted=include_deleted,
     )
-    return {"patient": patient, "count": len(visits), "items": visits}
+    return {"patient": patient, "count": visits.get("count", 0), "next_offset": visits.get("next_offset"), "items": visits.get("items", [])}
+
+
+@app.post("/api/patient/rename")
+async def rename_patient(req: RenamePatientRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    updated = memory_agent.rename_patient(req.old_name, req.new_name)
+    return {"updated": updated, "from": req.old_name, "to": req.new_name}
+
+
+@app.post("/api/patient/delete-entry")
+async def delete_patient_entry(req: DeleteDocRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    updated = memory_agent.soft_delete_doc(req.doc_id)
+    try:
+        summary_agent.clear_summary_cache()
+    except Exception:
+        pass
+    return {"deleted": updated, "doc_id": req.doc_id}
+
+@app.post("/api/patient/restore-entry")
+async def restore_patient_entry(req: RestoreDocRequest, creds: HTTPAuthorizationCredentials = Depends(clerk_guard)):
+    restored = memory_agent.restore_doc(req.doc_id)
+    try:
+        summary_agent.clear_summary_cache()
+    except Exception:
+        pass
+    return {"restored": restored, "doc_id": req.doc_id}
 
 @app.get("/api/subscription")
 async def subscription(creds= Depends(clerk_guard)):

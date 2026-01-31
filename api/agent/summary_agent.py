@@ -13,7 +13,22 @@ from fastapi import Request
 from openai import AsyncOpenAI
 from .models import Visit
 from .utils import generate_with_fallback, get_logger
-from .utils.upstash_rest import get_upstash, UpstashError
+from .utils.upstash_rest import UpstashError
+from .utils.upstash_jobs import (
+    upstash_enabled,
+    upstash_client,
+    job_meta_key,
+    job_events_key,
+    job_keymap_key,
+    run_summary_job_upstash as util_run_summary_job_upstash,
+    stream_job_events_upstash as util_stream_job_events_upstash,
+    get_job_meta_upstash,
+    SUMMARY_JOBS_TTL_SECONDS,
+    SUMMARY_JOBS_POLL_SECONDS,
+    SUMMARY_JOBS_POLL_MAX_SECONDS,
+    SUMMARY_JOBS_POLL_BACKOFF_MULT,
+    SUMMARY_EVENTS_MAX,
+)
 from .utils.templates import get_template
 from .utils.html_sections import ensure_html_summary, html_to_text
 from .utils import guardrails as guardrails_util
@@ -21,15 +36,11 @@ from . import extraction_agent, coordinator_agent, memory_agent, research_agent,
 
 logger = get_logger(__name__)
 
-redis = get_upstash()
-
 SUMMARY_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 SUMMARY_CACHE_MAX = 10
 MEMORY_DB_PATH = Path("data/memory_db.json")
+
 SUMMARY_JOBS_MAX = 10
-SUMMARY_JOBS_TTL_SECONDS = int(os.getenv("SUMMARY_JOBS_TTL_SECONDS", str(60 * 60 * 6)))
-SUMMARY_JOBS_POLL_SECONDS = float(os.getenv("SUMMARY_JOBS_POLL_SECONDS", "0.5"))
-SUMMARY_EVENTS_MAX = int(os.getenv("SUMMARY_EVENTS_MAX", "250"))  # keep last N events only
 EVIDENCE_MAX_CHUNKS = int(os.getenv("EVIDENCE_MAX_CHUNKS", "25"))  # shrink evidence payload
 EVIDENCE_MAX_CITATIONS = int(os.getenv("EVIDENCE_MAX_CITATIONS", "40"))
 EVIDENCE_SNIPPET_MAX = int(os.getenv("EVIDENCE_SNIPPET_MAX", "180"))
@@ -63,22 +74,6 @@ class SummaryJob:
         self.last_access = self.created_at
         self.task: asyncio.Task | None = None
 
-
-def _upstash():
-    return get_upstash()
-
-def _upstash_enabled() -> bool:
-    return _upstash() is not None
-
-def _job_meta_key(job_id: str) -> str:
-    return f"summary:job:{job_id}:meta"
-
-def _job_events_key(job_id: str) -> str:
-    return f"summary:job:{job_id}:events"
-
-def _job_keymap_key(cache_key: str) -> str:
-    # cache_key is already a sha256 hex string
-    return f"summary:jobkey:{cache_key}"
 
 MEDICATION_HINT_RE = re.compile(
     r"\b(?:mg|mcg|g|ml|units|tablet|tab|capsule|cap|injection|iv|po|bid|tid|qid|qd|prn|rx|prescribed|medication|medications)\b",
@@ -342,7 +337,6 @@ def _memory_db_mtime() -> float:
 
 def _summary_cache_key(visit: Visit) -> str:
     payload = visit.model_dump()
-    #payload["_memory_db_mtime"] = _memory_db_mtime()
     raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -359,6 +353,30 @@ def _cache_set(key: str, value: Dict[str, Any]) -> None:
     SUMMARY_CACHE.move_to_end(key)
     while len(SUMMARY_CACHE) > SUMMARY_CACHE_MAX:
         SUMMARY_CACHE.popitem(last=False)
+
+def clear_summary_cache() -> None:
+    """Clear local summary cache and any completed job mappings."""
+    SUMMARY_CACHE.clear()
+    SUMMARY_JOBS_BY_ID.clear()
+    SUMMARY_JOBS_BY_KEY.clear()
+    # Also clear Upstash job keymap if Upstash is enabled
+    try:
+        if upstash_enabled():
+            redis = upstash_client()
+            # Clear keymaps and meta/events for all known jobs (best-effort)
+            # In practice, we don't track all keys here; a simple flush of the keymap space is enough for cache invalidation
+            # WARNING: This will rely on prefix conventions
+            # Remove all summary:jobkey:*
+            awaitable = redis.execute("EVAL",
+                                       "local keys = redis.call('KEYS', ARGV[1]); for i,k in ipairs(keys) do redis.call('DEL', k) end; return #keys;",
+                                       "0",
+                                       "summary:jobkey:*")
+            # Fire and forget; do not block on it
+            if hasattr(awaitable, "__await__"):
+                import asyncio
+                asyncio.create_task(awaitable)
+    except Exception:
+        pass
 
 def _prune_jobs() -> None:
     now = time.time()
@@ -423,53 +441,16 @@ async def _run_summary_job_upstash(job_id: str, visit: Visit, client: AsyncOpenA
     """
     Upstash-backed job runner. Writes SSE chunks into a Redis list so any instance can stream them.
     """
-    redis = _upstash()
-    if redis is None:
-        return
-
-    meta_key = _job_meta_key(job_id)
-    events_key = _job_events_key(job_id)
-    now = time.time()
-
-    async def _meta_set_done(done: bool, error: str | None = None) -> None:
-        fields = ["updated_at", str(time.time()), "done", "1" if done else "0"]
-        if error:
-            fields += ["error", error]
-        await redis.execute("HSET", meta_key, *fields)
-
-    async def _emit(chunk: str) -> None:
-        if not chunk or chunk.startswith(":"):
-            return
-
-        ev = _sse_event_name(chunk)
-        if ev is None or ev not in _PERSIST_EVENTS:
-            return
-
-        await redis.execute("RPUSH", events_key, chunk)
-
-        # FINAL FIX: cap list size using existing SUMMARY_EVENTS_MAX
-        await redis.execute("LTRIM", events_key, str(-SUMMARY_EVENTS_MAX), "-1")
-
-        await redis.execute("HINCRBY", meta_key, "event_count", "1")
-        await redis.execute("HSET", meta_key, "updated_at", str(time.time()))
-
-    try:
-        # mark running
-        await redis.execute("HSET", meta_key, "status", "running", "updated_at", str(now), "done", "0")
-        async for event in run_summary_pipeline(visit, client, request=None):
-            await _emit(event)
-    except Exception as exc:
-        err = str(exc)
-        logger.error(f"Summary job failed: {exc}")
-        await _meta_set_done(True, error=err)
-        # also emit a final error event for clients
-        try:
-            await _emit(f"event: error\\ndata: {json.dumps({'error': err})}\\n\\n")
-        except Exception:
-            pass
-    else:
-        await _meta_set_done(True, error=None)
-        await redis.execute("HSET", meta_key, "status", "done")
+    await util_run_summary_job_upstash(
+        job_id=job_id,
+        visit=visit,
+        client=client,
+        persist_events=_PERSIST_EVENTS,
+        events_max=SUMMARY_EVENTS_MAX,
+        ttl_seconds=SUMMARY_JOBS_TTL_SECONDS,
+        run_pipeline=lambda v, c, request=None: run_summary_pipeline(v, c, request),
+        logger=logger,
+    )
 
 
 async def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
@@ -479,7 +460,8 @@ async def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
     - If Upstash is configured, job state/events are persisted in Redis.
     - Otherwise, falls back to in-memory jobs.
     """
-    if not _upstash_enabled():
+    # Prefer Upstash when available for persistent cache across refreshes
+    if not upstash_enabled():
         _prune_jobs()
         cache_key = _summary_cache_key(visit)
         cached = _cache_get(cache_key)
@@ -497,11 +479,11 @@ async def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
         job.task = asyncio.create_task(_run_summary_job(job, visit, client))
         return job.job_id
 
-    redis = _upstash()
+    redis = upstash_client()
     assert redis is not None
 
     cache_key = _summary_cache_key(visit)
-    keymap_key = _job_keymap_key(cache_key)
+    keymap_key = job_keymap_key(cache_key)
 
     # Reuse existing job for the same input if present
     existing_job_id = await redis.execute("GET", keymap_key)
@@ -518,8 +500,8 @@ async def start_summary_job(visit: Visit, client: AsyncOpenAI) -> str:
         if existing_job_id:
             return str(existing_job_id)
 
-    meta_key = _job_meta_key(job_id)
-    events_key = _job_events_key(job_id)
+    meta_key = job_meta_key(job_id)
+    events_key = job_events_key(job_id)
 
     now = str(time.time())
     await redis.execute(
@@ -586,107 +568,17 @@ async def _stream_job_events_upstash(
 
     WHAT THIS DOES NOT CHANGE
     - Restarting behavior/resume correctness:
-      You still stream from Redis list + event_count; reconnect picks up where it left off.
+    You still stream from Redis list + event_count; reconnect picks up where it left off.
     """
-
-    redis = _upstash()
-    if redis is None:
-        return  # Upstash not configured
-
-    meta_key = _job_meta_key(job_id)      # e.g. summary:job:<id>:meta
-    events_key = _job_events_key(job_id)  # e.g. summary:job:<id>:events
-
-    # idx = how many events we have already yielded to this client stream
-    idx = 0
-
-    # Base polling interval (fast mode) while job is active or just started.
-    # This is your existing env var. Keep it low-ish (e.g. 0.25–0.75).
-    base_sleep_s = float(os.getenv("SUMMARY_JOBS_POLL_SECONDS", "0.5"))
-
-    # Maximum backoff interval when idle. This is new.
-    # This is where you get “less polling” without hurting active streaming much.
-    max_sleep_s = float(os.getenv("SUMMARY_JOBS_POLL_MAX_SECONDS", "5.0"))
-
-    # Current sleep starts at base and grows when idle.
-    sleep_s = base_sleep_s
-
-    # Backoff multiplier. 1.6 is a typical compromise (fast ramp without exploding).
-    backoff_mult = float(os.getenv("SUMMARY_JOBS_POLL_BACKOFF_MULT", "1.6"))
-
-    # Optional: cap how long we keep streaming if job disappears (rare).
-    # Not required; only if you want to prevent infinite loops on missing meta.
-    # max_missing_meta_loops = int(os.getenv("SUMMARY_JOBS_META_MISS_MAX", "0"))
-
-    while True:
-        # If the HTTP client disconnected, stop immediately.
-        # Prevents unnecessary Upstash queries after browser/tab close.
-        if request is not None:
-            try:
-                if await request.is_disconnected():
-                    return
-            except Exception:
-                # If request object doesn’t support is_disconnected in some context,
-                # do not fail streaming; just continue.
-                pass
-
-        # Single meta call per poll. No LLEN.
-        #
-        # We rely on these meta fields being written by _run_summary_job_upstash:
-        # - done: "0" or "1"
-        # - event_count: integer count of persisted events
-        # - error: optional error string
-        meta = await redis.execute("HMGET", meta_key, "done", "event_count", "error")
-
-        # Parse meta safely (Upstash returns list-like results)
-        done = "0"
-        event_count = 0
-        error = ""
-
-        if meta and len(meta) >= 1 and meta[0] is not None:
-            done = str(meta[0])
-        if meta and len(meta) >= 2 and meta[1] is not None:
-            try:
-                event_count = int(meta[1])
-            except Exception:
-                event_count = 0
-        if meta and len(meta) >= 3 and meta[2] is not None:
-            error = str(meta[2])
-
-        # If new events exist since last yield, fetch only that range.
-        # This keeps network + Redis load minimal.
-        if idx < event_count:
-            start = idx
-            end = event_count - 1
-
-            # Fetch new chunks only.
-            # Each item is already a full SSE chunk string like:
-            #   "event: status\ndata: ...\n\n"
-            items = await redis.execute("LRANGE", events_key, str(start), str(end)) or []
-
-            for item in items:
-                yield str(item)
-
-            # Advance idx so reconnect continues properly.
-            idx = event_count
-
-            # Reset backoff because we’re “active” again.
-            sleep_s = base_sleep_s
-            continue
-
-        # No new events; if job is done, end the stream.
-        if done == "1":
-            # Optional safety: ensure client receives an error event if job ended in error
-            # and the runner didn’t emit one for some reason.
-            if error:
-                yield f"event: error\ndata: {json.dumps({'error': error})}\n\n"
-            return
-
-        # Idle: wait, then back off.
-        # This is where you reduce the aggressive HMGET spam in Upstash logs.
-        await asyncio.sleep(sleep_s)
-
-        # Increase sleep up to a cap (exponential-ish backoff).
-        sleep_s = min(max_sleep_s, sleep_s * backoff_mult)
+    async for chunk in util_stream_job_events_upstash(
+        job_id=job_id,
+        request=request,
+        poll_seconds=SUMMARY_JOBS_POLL_SECONDS,
+        poll_max_seconds=SUMMARY_JOBS_POLL_MAX_SECONDS,
+        backoff_mult=SUMMARY_JOBS_POLL_BACKOFF_MULT,
+        logger=logger,
+    ):
+        yield chunk
 
 
 async def stream_summary_job(
@@ -699,7 +591,7 @@ async def stream_summary_job(
     - Upstash configured: tail Redis list for job events (polling).
     - Otherwise: stream in-memory job events.
     """
-    if _upstash_enabled():
+    if upstash_enabled():
         async for chunk in _stream_job_events_upstash(job_id, request=request):
             yield chunk
         return
@@ -714,20 +606,8 @@ async def get_summary_job(job_id: str) -> Dict[str, Any] | SummaryJob | None:
     """
     Returns job metadata (Upstash) or SummaryJob (in-memory), or None if not found.
     """
-    if _upstash_enabled():
-        redis = _upstash()
-        assert redis is not None
-        meta_key = _job_meta_key(job_id)
-        meta = await redis.execute("HGETALL", meta_key)
-        if not meta:
-            return None
-        # Upstash returns flat list [k1,v1,k2,v2,...] for HGETALL
-        if isinstance(meta, list):
-            it = iter(meta)
-            return {str(k): str(v) for k, v in zip(it, it)}
-        if isinstance(meta, dict):
-            return {str(k): str(v) for k, v in meta.items()}
-        return {"raw": str(meta)}
+    if upstash_enabled():
+        return await get_job_meta_upstash(job_id)
     return _get_job_by_id(job_id)
 
 
@@ -1200,12 +1080,19 @@ async def generate_summary_stream(
         summary_text = html_to_text(final_html)
         notes_text = _format_notes_text(context)
         evidence_text = _format_evidence_text(evidence_map)
+
+        # Derive a stable encounter_id from patient + date + notes content
+        encounter_source = f"{visit.patient_name.lower().strip()}|{visit.date_of_visit}|{notes_text}"
+        encounter_id = hashlib.sha256(encounter_source.encode("utf-8")).hexdigest()
+        template_id = visit.template_id or "generic"
         if summary_text and visit.patient_name and visit.date_of_visit:
             await memory_agent.remember_visit(
                 summary=summary_text,
                 patient_name=visit.patient_name,
                 date=visit.date_of_visit,
                 client=client,
+                encounter_id=encounter_id,
+                template_id=template_id,
             )
             logger.info("Saved summary to long-term memory.")
         if notes_text and visit.patient_name and visit.date_of_visit:
@@ -1215,6 +1102,8 @@ async def generate_summary_stream(
                 date=visit.date_of_visit,
                 client=client,
                 doc_type="visit_notes",
+                encounter_id=encounter_id,
+                template_id=template_id,
             )
             logger.info("Saved notes to long-term memory.")
         if evidence_text and visit.patient_name and visit.date_of_visit:
@@ -1225,6 +1114,8 @@ async def generate_summary_stream(
                 client=client,
                 doc_type="visit_evidence",
                 payload=evidence_map,
+                encounter_id=encounter_id,
+                template_id=template_id,
             )
             logger.info("Saved evidence links to long-term memory.")
         if not (summary_text and visit.patient_name and visit.date_of_visit):

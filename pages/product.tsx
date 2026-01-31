@@ -644,11 +644,32 @@ type EvidenceCitation = {
 
 type HistoryEntry = {
     date: string;
+    time?: string;
     type?: string;
     summary: string;
     evidence?: EvidenceMap | null;
     has_evidence?: boolean;
+    doc_id?: string;
+    deleted?: boolean;
+    deleted_at?: number;
+    encounter_id?: string;
+    template_id?: string;
 };
+
+function sortHistoryEntries(items: HistoryEntry[], order: 'asc' | 'desc'): HistoryEntry[] {
+    const toKey = (v: HistoryEntry) => {
+        const date = v?.date ?? '';
+        const time = (v as any)?.time ?? '00:00:00';
+        return `${date}T${time}`;
+    };
+    const sorted = [...(items || [])].sort((a, b) => {
+        const A = toKey(a);
+        const B = toKey(b);
+        return order === 'asc' ? A.localeCompare(B) : B.localeCompare(A);
+    });
+    return sorted;
+}
+
 
 type WorkspaceTab = 'current' | 'history';
 
@@ -657,8 +678,16 @@ type ConsultationFormProps = {
     onSessionExpired: () => Promise<void>;
 };
 
-function PatientHistoryPanel() {
+type PatientHistoryPanelProps = {
+    onAuthFailure: () => void;
+};
+
+function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
     const { getToken } = useAuth();
+    const authFailure = useCallback(async () => {
+        onAuthFailure();
+    }, [onAuthFailure]);
+
     const [searchTerm, setSearchTerm] = useState('');
     const [dropdownOpen, setDropdownOpen] = useState(false);
     const [patientOptions, setPatientOptions] = useState<HistoryPatient[]>([]);
@@ -671,7 +700,14 @@ function PatientHistoryPanel() {
     const [selectedPatient, setSelectedPatient] = useState<HistoryPatient | null>(null);
     const [historyItems, setHistoryItems] = useState<HistoryEntry[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyAnimating, setHistoryAnimating] = useState(false);
     const [historyError, setHistoryError] = useState('');
+    const [historyNextOffset, setHistoryNextOffset] = useState<number | null>(null);
+    const [historyOrder, setHistoryOrder] = useState<'asc' | 'desc'>('desc');
+    const loadMoreHistoryCooldownRef = useRef<number>(0);
+    const [pendingDelete, setPendingDelete] = useState<HistoryEntry | null>(null);
+    const [deleteLoading, setDeleteLoading] = useState(false);
+    const [restoreLoadingId, setRestoreLoadingId] = useState<string | null>(null);
     const [selectedVisit, setSelectedVisit] = useState<HistoryEntry | null>(null);
     const [historyStartDate, setHistoryStartDate] = useState('');
     const [historyEndDate, setHistoryEndDate] = useState('');
@@ -683,6 +719,14 @@ function PatientHistoryPanel() {
     const [isPanning, setIsPanning] = useState(false);
     const panStartX = useRef(0);
     const panScrollLeft = useRef(0);
+    const [renameOpen, setRenameOpen] = useState(false);
+    const [renameValue, setRenameValue] = useState('');
+    const [renameLoading, setRenameLoading] = useState(false);
+    const [chatPatient, setChatPatient] = useState('');
+    const [showDeleted, setShowDeleted] = useState(false);
+    const handleHistorySessionExpired = useCallback(async () => {
+        setHistoryError('Session expired. Please sign in again.');
+    }, []);
 
     const filteredPatients = patientOptions; // server-side filtering handles search
     const timelineItems = useMemo(() => {
@@ -690,7 +734,23 @@ function PatientHistoryPanel() {
             date: item.date,
             type: item.type || 'Visit',
             hasEvidence: !!item.has_evidence,
+            docId: item.doc_id,
         }));
+    }, [historyItems]);
+
+    const groupedHistory = useMemo(() => {
+        const map = new Map<string, HistoryEntry[]>();
+        for (const raw of (historyItems as any[])) {
+            const item = raw as any;
+            const date = (item?.date ?? 'Unknown date') as string;
+            const encounterId = (item?.encounter_id ?? item?.encounterId ?? null) as (string | null);
+            const templateId = (item?.template_id ?? item?.templateId ?? 'generic') as string;
+            const key = `${encounterId ?? date}-${templateId}`;
+            const arr = map.get(key) ?? [];
+            arr.push(raw as HistoryEntry);
+            map.set(key, arr);
+        }
+        return Array.from(map.values());
     }, [historyItems]);
 
     async function loadPatients(fetchOffset?: number, fetchQuery?: string, replace?: boolean) {
@@ -715,7 +775,7 @@ function PatientHistoryPanel() {
                 getToken,
                 `/api/patients?limit=50&offset=${targetOffset}${queryParam}`,
                 {},
-                noopAuthFailure
+                authFailure
             );
             if (!res?.ok) {
                 setOptionsError('Unable to load patients.');
@@ -749,45 +809,92 @@ function PatientHistoryPanel() {
         }
     }
 
-    async function loadHistory(patientName: string, startDate?: string, endDate?: string, keyword?: string) {
+    async function loadHistory(patientName: string, startDate?: string, endDate?: string, keyword?: string, includeDeleted?: boolean) {
         if (!patientName) return;
         setHistoryLoading(true);
+        setHistoryAnimating(true);
         setHistoryError('');
         setHistoryItems([]);
+        setHistoryNextOffset(null);
         setSelectedVisit(null);
         try {
             const dateParams = [
                 startDate ? `start_date=${encodeURIComponent(startDate)}` : null,
                 endDate ? `end_date=${encodeURIComponent(endDate)}` : null,
                 keyword ? `q=${encodeURIComponent(keyword)}` : null,
+                includeDeleted ? `include_deleted=true` : null,
             ].filter(Boolean).join('&');
             const dateQuery = dateParams ? `&${dateParams}` : '';
             const res = await fetchWithAuthRetry(
                 getToken,
                 `/api/patient-history?patient=${encodeURIComponent(patientName)}&limit=10${dateQuery}`,
                 {},
-                noopAuthFailure
+                handleHistorySessionExpired
             );
             if (!res?.ok) {
                 setHistoryError('Unable to load history.');
                 return;
             }
             const data = await res.json();
-            setHistoryItems(data?.items || []);
+            setHistoryItems(sortHistoryEntries((data?.items || []) as HistoryEntry[], historyOrder));
+            setHistoryNextOffset((typeof data?.next_offset === 'number') ? data.next_offset : (data?.next_offset ?? null));
         } catch (err) {
             console.error(err);
             setHistoryError('Unable to load history.');
         } finally {
             setHistoryLoading(false);
+            window.setTimeout(() => setHistoryAnimating(false), 260);
         }
     }
+
+    async function loadMoreHistory() {
+        if (!selectedPatient) return;
+        if (historyLoading) return;
+        if (historyNextOffset == null) return;
+
+        const now = Date.now();
+        if (now - loadMoreHistoryCooldownRef.current < 350) return;
+        loadMoreHistoryCooldownRef.current = now;
+
+        setHistoryLoading(true);
+        setHistoryError('');
+        try {
+            const dateParams = [
+                historyStartDate ? `start_date=${encodeURIComponent(historyStartDate)}` : null,
+                historyEndDate ? `end_date=${encodeURIComponent(historyEndDate)}` : null,
+                historyQuery ? `q=${encodeURIComponent(historyQuery)}` : null,
+                showDeleted ? `include_deleted=true` : null,
+                `offset=${historyNextOffset}`,
+            ].filter(Boolean).join('&');
+            const dateQuery = dateParams ? `&${dateParams}` : '';
+            const res = await fetchWithAuthRetry(
+                getToken,
+                `/api/patient-history?patient=${encodeURIComponent(selectedPatient.name)}&limit=10${dateQuery}`,
+                {},
+                handleHistorySessionExpired
+            );
+            if (!res?.ok) {
+                return;
+            }
+            const data = await res.json();
+            const items = (data?.items || []) as HistoryEntry[];
+            setHistoryItems((prev) => sortHistoryEntries([...prev, ...items], historyOrder));
+            setHistoryNextOffset((typeof data?.next_offset === 'number') ? data.next_offset : (data?.next_offset ?? null));
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setHistoryLoading(false);
+        }
+    }
+
 
     const handleSelect = (patient: HistoryPatient) => {
         setSelectedPatient(patient);
         setSearchTerm(''); // clear search so full list shows next time
         setDropdownOpen(false);
-        loadHistory(patient.name, historyStartDate, historyEndDate, historyQuery);
+        loadHistory(patient.name, historyStartDate, historyEndDate, historyQuery, showDeleted);
         setSelectedVisit(null);
+        setChatPatient(patient.name);
     };
 
     const handleLoadMorePatients = () => {
@@ -797,6 +904,109 @@ function PatientHistoryPanel() {
         if (optionsLoading || !optionsHasMore) return;
         loadPatients(optionsOffset, optionsQuery, false);
     };
+
+    async function handleRenamePatient() {
+        if (!selectedPatient) return;
+        const nextName = renameValue.trim();
+        if (!nextName) return;
+        setRenameLoading(true);
+        try {
+            const res = await fetchWithAuthRetry(
+                getToken,
+                '/api/patient/rename',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_name: selectedPatient.name, new_name: nextName }),
+                },
+                authFailure
+            );
+            if (!res?.ok) {
+                setRenameLoading(false);
+                return;
+            }
+            // refresh patients and history under new name
+            setRenameOpen(false);
+            setSelectedPatient({ ...selectedPatient, name: nextName });
+            setRenameValue('');
+            setPatientOptions((prev) =>
+                prev.map((p) => (p.name === selectedPatient.name ? { ...p, name: nextName } : p))
+            );
+            await loadPatients(0, '', true);
+            await loadHistory(nextName, historyStartDate, historyEndDate, historyQuery);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setRenameLoading(false);
+        }
+    }
+
+    async function handleRestoreVisit(docId?: string) {
+        if (!docId) return;
+        try {
+            setRestoreLoadingId(docId);
+            const res = await fetchWithAuthRetry(
+                getToken,
+                '/api/patient/restore-entry',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: docId }),
+                },
+                handleHistorySessionExpired
+            );
+            if (!res?.ok) return;
+
+            // optimistic: clear deleted flags locally
+            setHistoryItems((prev) =>
+                prev.map((h) => (h.doc_id === docId ? { ...h, deleted: false, deleted_at: undefined } : h))
+            );
+
+            // keep patient list fresh (last visit / counts may change) and refresh history
+            await loadPatients(0, '', true);
+            if (selectedPatient) {
+                await loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, showDeleted);
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setRestoreLoadingId(null);
+        }
+    }
+
+    function handleDeleteVisit(entry: HistoryEntry) {
+        setPendingDelete(entry);
+    }
+
+    async function confirmDeleteVisit() {
+        if (!pendingDelete?.doc_id) return;
+        const docId = pendingDelete.doc_id;
+        try {
+            setDeleteLoading(true);
+            const res = await fetchWithAuthRetry(
+                getToken,
+                '/api/patient/delete-entry',
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: docId }),
+                },
+                handleHistorySessionExpired
+            );
+            if (!res?.ok) return;
+
+            // optimistic: remove from list
+            setHistoryItems((prev) => prev.filter((h) => h.doc_id !== docId));
+            setSelectedVisit((prev) => (prev?.doc_id === docId ? null : prev));
+            setPendingDelete(null);
+
+            await loadPatients(0, '', true);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setDeleteLoading(false);
+        }
+    }
 
     const handleCopySummary = async (text: string) => {
         try {
@@ -821,6 +1031,10 @@ function PatientHistoryPanel() {
         }, 250);
         return () => clearTimeout(handle);
     }, [searchTerm]);
+
+    useEffect(() => {
+        setHistoryItems((prev) => sortHistoryEntries(prev, historyOrder));
+    }, [historyOrder]);
 
     useEffect(() => {
         const el = timelineRef.current;
@@ -866,7 +1080,7 @@ function PatientHistoryPanel() {
                     </p>
                     <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Longitudinal View</h2>
                     <p className="text-sm text-slate-500 dark:text-slate-300">
-                        Select a patient to review prior visits; the layout is ready and will pull from Memory once connected.
+                        Choose a patient to see their past visits.
                     </p>
                 </div>
 
@@ -966,26 +1180,38 @@ function PatientHistoryPanel() {
                             )}
                         </div>
                         <p className="text-xs text-slate-500 dark:text-slate-400">
-                            Type to filter; the dropdown will query the patient index once wired to live data.
+                            Type to filter; the dropdown searches the patient list.
                         </p>
                     </div>
 
                     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                         {selectedPatient ? (
                             <div className="space-y-4">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div>
-                                        <p className="text-[11px] uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
-                                            Overview
-                                        </p>
-                                        <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                                            {selectedPatient.name}
-                                        </h3>
-                                    </div>
-                                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
-                                        {selectedPatient.lastVisit ? `Last visit ${selectedPatient.lastVisit}` : 'Recent visit'}
-                                    </span>
-                                </div>
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div>
+                                                <p className="text-[11px] uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
+                                                    Overview
+                                                </p>
+                                                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                                    {selectedPatient.name}
+                                                </h3>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setRenameValue(selectedPatient.name);
+                                                        setRenameOpen(true);
+                                                    }}
+                                                    className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                >
+                                                    Rename
+                                                </button>
+                                                <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                                    {selectedPatient.lastVisit ? `Last visit ${selectedPatient.lastVisit}` : 'Recent visit'}
+                                                </span>
+                                            </div>
+                                        </div>
 
                                 {timelineItems.length > 0 && (
                                     <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4 shadow-sm dark:border-emerald-800/60 dark:bg-emerald-950/40">
@@ -1002,33 +1228,32 @@ function PatientHistoryPanel() {
                                             ref={timelineRef}
                                             onDragStart={(e) => e.preventDefault()}
                                         >
-                                            {historyItems.map((item, idx) => {
-                                                const isSelected = selectedVisit?.date === item.date && selectedVisit?.type === item.type;
-                                                const isEvidence = (item.type || '').toLowerCase() === 'visit_evidence';
-                                                return (
-                                                    <div key={`${item.date}-${idx}`} className="flex items-center gap-2">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setSelectedVisit(item)}
-                                                            className={`flex h-16 min-w-[120px] flex-col items-center justify-center rounded-full border px-4 py-2 text-center shadow-sm transition ${
-                                                                isSelected
-                                                                    ? 'border-emerald-400 bg-emerald-600 text-white'
-                                                                    : 'border-slate-200 bg-white text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-slate-800'
-                                                            }`}
-                                                        >
-                                                            <span className="text-[11px] font-semibold uppercase tracking-wide leading-tight">
-                                                                {item.type || 'Visit'}
-                                                            </span>
-                                                            <span className={`${isSelected ? 'text-white/90' : 'text-slate-600 dark:text-slate-300'} text-xs font-semibold leading-tight`}>
-                                                                {item.date || '—'}
-                                                            </span>
-                                                        </button>
-                                                        {idx < historyItems.length - 1 && (
-                                                            <div className="h-px w-10 shrink-0 bg-emerald-200 dark:bg-emerald-800/60" />
-                                                        )}
-                                                    </div>
-                                                );
-                                            })}
+                                        {historyItems.map((item: HistoryEntry, idx: number) => {
+                                            const isSelected = (selectedVisit?.doc_id ?? '') === (item.doc_id ?? '');
+                                            return (
+                                                <div key={`${item.doc_id || item.date}-${idx}`} className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setSelectedVisit(item)}
+                                                        className={`flex h-16 min-w-[120px] flex-col items-center justify-center rounded-full border px-4 py-2 text-center shadow-sm transition ${
+                                                            isSelected
+                                                                ? 'border-emerald-400 bg-emerald-600 text-white'
+                                                                : 'border-slate-200 bg-white text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-slate-800'
+                                                        }`}
+                                                    >
+                                                        <span className="text-[11px] font-semibold uppercase tracking-wide leading-tight">
+                                                            {item.type || 'Visit'}
+                                                        </span>
+                                                        <span className={`${isSelected ? 'text-white/90' : 'text-slate-600 dark:text-slate-300'} text-xs font-semibold leading-tight`}>
+                                                            {item.date || '—'}
+                                                        </span>
+                                                    </button>
+                                                    {idx < historyItems.length - 1 && (
+                                                        <div className="h-px w-10 shrink-0 bg-emerald-200 dark:bg-emerald-800/60" />
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
                                         </div>
                                     </div>
                                 )}
@@ -1092,7 +1317,7 @@ function PatientHistoryPanel() {
                                                 <button
                                                     type="button"
                                                     disabled={!selectedPatient}
-                                                    onClick={() => selectedPatient && loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery)}
+                                                    onClick={() => selectedPatient && loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, showDeleted)}
                                                     className="rounded-lg border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
                                                 >
                                                     Apply
@@ -1104,8 +1329,9 @@ function PatientHistoryPanel() {
                                                     setHistoryStartDate('');
                                                     setHistoryEndDate('');
                                                     setHistoryQuery('');
+                                                    setShowDeleted(false);
                                                     if (selectedPatient) {
-                                                        loadHistory(selectedPatient.name, '', '', '');
+                                                        loadHistory(selectedPatient.name, '', '', '', false);
                                                     }
                                                 }}
                                                 className="rounded-lg border border-slate-200 px-3 py-1 font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-emerald-400 dark:hover:text-emerald-200"
@@ -1121,6 +1347,28 @@ function PatientHistoryPanel() {
                                                     Return to list
                                                 </button>
                                             )}
+                                            <button
+                                                type="button"
+                                                onClick={() => setHistoryOrder((v) => (v === 'asc' ? 'desc' : 'asc'))}
+                                                className="rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                            >
+                                                {historyOrder === 'asc' ? 'Oldest first' : 'Newest first'}
+                                            </button>
+
+                                            <label className="ml-auto inline-flex items-center gap-2 rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-200">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={showDeleted}
+                                                    onChange={(e) => {
+                                                        setShowDeleted(e.target.checked);
+                                                        if (selectedPatient) {
+                                                            loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, e.target.checked);
+                                                        }
+                                                    }}
+                                                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800"
+                                                />
+                                                Show deleted
+                                            </label>
                                         </div>
                                     </div>
                                     {historyLoading && <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Loading history...</p>}
@@ -1130,54 +1378,167 @@ function PatientHistoryPanel() {
                                     )}
 
                                     {!selectedVisit && (
-                                        <div className="mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1">
-                                            {historyItems.map((item, idx) => {
-                                                const isEvidence = (item.type || '').toLowerCase() === 'visit_evidence';
+                                        <div className={`mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1 transition-all duration-300 ease-out ${historyAnimating ? 'opacity-60 blur-[1px] translate-y-1' : 'opacity-100 blur-0 translate-y-0'}`}>
+                                            {groupedHistory.map((group: HistoryEntry[], groupIdx: number) => {
+                                                const first = (group?.[0] ?? {}) as any;
+                                                const groupDate = (first?.date ?? 'Unknown date') as string;
+                                                const templateId = (first?.template_id ?? first?.templateId ?? 'generic') as string;
+                                                const groupKey = `${(first?.encounter_id ?? first?.encounterId ?? groupDate) as string}-${templateId}-${groupIdx}`;
+
                                                 return (
-                                                <button
-                                                    key={idx}
-                                                    type="button"
-                                                    onClick={() => setSelectedVisit(item)}
-                                                    className="w-full text-left"
-                                                >
-                                                    <div className={`rounded-lg border p-3 shadow-sm transition hover:-translate-y-px hover:border-emerald-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900/70 dark:hover:border-emerald-400/50 ${
-                                                        isEvidence ? 'border-emerald-200 bg-emerald-50/70 dark:bg-emerald-950/40' : 'border-slate-200 bg-white/90'
-                                                    }`}>
-                                                        <div className="flex items-center justify-between">
-                                                            <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                                                                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
-                                                                    {item.type || 'Visit'}
+                                                    <div
+                                                        key={groupKey}
+                                                        className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.35)] dark:border-slate-800/70 dark:bg-slate-900/80 dark:shadow-[0_10px_30px_-22px_rgba(15,23,42,0.65)]"
+                                                    >
+                                                        <div className="flex items-center justify-between pb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                            <span className="flex items-center gap-2">
+                                                                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200">
+                                                                    Visits
                                                                 </span>
-                                                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                                                                    {item.date || 'Unknown date'}
-                                                                </span>
-                                                            </div>
-                                                            <div className="flex items-center gap-2">
-                                                                {item.has_evidence && (
-                                                                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
-                                                                        Evidence
-                                                                    </span>
-                                                                )}
-                                                                <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">
-                                                                    View details
-                                                                </span>
-                                                            </div>
+                                                                <span className="text-slate-700 dark:text-slate-200">{groupDate}</span>
+                                                            </span>
+
+                                                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-200">
+                                                                Template: {templateId}
+                                                            </span>
                                                         </div>
-                                                        <div className="mt-2 rounded-lg bg-slate-50/60 p-3 text-sm text-slate-700 shadow-inner whitespace-pre-line dark:bg-slate-900/40 dark:text-slate-200 line-clamp-6">
-                                                            <ReactMarkdown
-                                                                remarkPlugins={[remarkGfm, remarkBreaks]}
-                                                                components={{
-                                                                    a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                                                                    p: ({ children, ...props }) => <p {...props} className="mb-2 last:mb-0" children={children} />,
-                                                                }}
-                                                            >
-                                                                {normalizeChatMarkdown(item.summary || 'No summary stored.')}
-                                                            </ReactMarkdown>
+
+                                                        <div className="space-y-3">
+                                                            {group.map((entry: HistoryEntry, idx: number) => {
+                                                                const {
+                                                                    doc_id: docId = '',
+                                                                    type = 'Visit',
+                                                                    summary = 'No summary stored.',
+                                                                    date = 'Unknown date',
+                                                                    deleted: deletedFlag,
+                                                                    deleted_at: deletedAt,
+                                                                    has_evidence: hasEvidence,
+                                                                } = entry;
+
+                                                                const time = (entry as any)?.time as (string | undefined);
+                                                                const deleted = Boolean(deletedFlag || deletedAt);
+                                                                const selectedDocId = ((selectedVisit as HistoryEntry | null)?.doc_id) ?? '';
+                                                                const isEvidence = (type || '').toLowerCase() === 'visit_evidence';
+                                                                const isSelected = selectedDocId === docId;
+
+                                                                return (
+                                                                    <div key={docId || idx} className="flex w-full items-start gap-3">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setSelectedVisit(entry)}
+                                                                            className="w-full text-left"
+                                                                        >
+                                                                            <div
+                                                                                className={`rounded-lg border p-3 shadow-sm transition hover:-translate-y-px hover:border-emerald-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900/70 dark:hover:border-emerald-400/50 ${
+                                                                                    isEvidence
+                                                                                        ? 'border-emerald-200 bg-emerald-50/70 dark:bg-emerald-950/40'
+                                                                                        : 'border-slate-200 bg-white/90'
+                                                                                } ${isSelected ? 'ring-2 ring-emerald-200 dark:ring-emerald-700/60' : ''} ${
+                                                                                    deleted
+                                                                                        ? '!border-rose-300 !bg-[rgba(254,242,242,0.85)] ring-1 ring-rose-100 dark:!border-rose-800 dark:!bg-[rgba(76,5,25,0.55)] dark:ring-rose-900/50'
+                                                                                        : ''
+                                                                                }`}
+                                                                            >
+                                                                                <div className="flex items-center justify-between">
+                                                                                    <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                                                                                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                                                                            {type}
+                                                                                        </span>
+
+                                                                                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                                                                                            {date}{time ? ` • ${time}` : ''}
+                                                                                        </span>
+
+                                                                                        {deleted && (
+                                                                                            <span className="flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-900/40 dark:text-rose-200">
+                                                                                                <svg
+                                                                                                    xmlns="http://www.w3.org/2000/svg"
+                                                                                                    className="h-3 w-3"
+                                                                                                    fill="none"
+                                                                                                    viewBox="0 0 24 24"
+                                                                                                    strokeWidth={2}
+                                                                                                    stroke="currentColor"
+                                                                                                >
+                                                                                                    <path
+                                                                                                        strokeLinecap="round"
+                                                                                                        strokeLinejoin="round"
+                                                                                                        d="M6 7h12M10 11v6m4-6v6M9 7l1-2h4l1 2m-7 0h8l-.7 11.2a1 1 0 01-1 .8H10.7a1 1 0 01-1-.8L9 7z"
+                                                                                                    />
+                                                                                                </svg>
+                                                                                                Deleted
+                                                                                            </span>
+                                                                                        )}
+                                                                                    </div>
+
+                                                                                    <div className="flex items-center gap-2">
+                                                                                        {hasEvidence && (
+                                                                                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                                                                                Evidence
+                                                                                            </span>
+                                                                                        )}
+                                                                                        <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">
+                                                                                            View details
+                                                                                        </span>
+                                                                                    </div>
+                                                                                </div>
+
+                                                                                <div className={`mt-2 rounded-lg p-3 text-sm text-slate-700 shadow-inner whitespace-pre-line dark:text-slate-200 line-clamp-6 transition-colors ${deleted ? "bg-[rgba(254,242,242,0.55)] dark:bg-[rgba(76,5,25,0.35)]" : "bg-slate-50/60 dark:bg-slate-900/40"}`}>
+                                                                                    <ReactMarkdown
+                                                                                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                                                                                        components={{
+                                                                                            a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                                                                            p: ({ children, ...props }) => (
+                                                                                                <p {...props} className="mb-2 last:mb-0">
+                                                                                                    {children}
+                                                                                                </p>
+                                                                                            ),
+                                                                                        }}
+                                                                                    >
+                                                                                        {normalizeChatMarkdown(summary)}
+                                                                                    </ReactMarkdown>
+                                                                                </div>
+                                                                            </div>
+                                                                        </button>
+
+                                                                        {showDeleted && deleted ? (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleRestoreVisit(docId)}
+                                                                                disabled={restoreLoadingId === docId}
+                                                                                className="mt-1 rounded-full border !border-rose-300 !bg-[rgba(254,242,242,0.85)] px-2 py-1 text-[11px] font-semibold text-rose-700 transition hover:!bg-[rgba(254,242,242,0.95)] disabled:opacity-50 dark:!border-rose-800 dark:!bg-[rgba(76,5,25,0.55)] dark:text-rose-200 dark:hover:!bg-[rgba(76,5,25,0.7)]"
+                                                                                aria-label="Restore visit"
+                                                                            >
+                                                                                {restoreLoadingId === docId ? 'Restoring...' : 'Restore'}
+                                                                            </button>
+                                                                        ) : (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleDeleteVisit(entry)}
+                                                                                className="mt-1 rounded-full border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:border-rose-300 hover:text-rose-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-rose-500 dark:hover:text-rose-300"
+                                                                                aria-label="Delete visit"
+                                                                            >
+                                                                                Delete
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })}
                                                         </div>
                                                     </div>
-                                                </button>
                                                 );
                                             })}
+{historyNextOffset != null && (
+                                            <div className="mt-3 flex justify-center">
+                                                <button
+                                                    type="button"
+                                                    onClick={loadMoreHistory}
+                                                    disabled={historyLoading}
+                                                    className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-emerald-500 dark:hover:text-emerald-200"
+                                                >
+                                                    {historyLoading ? 'Loading...' : 'Load more'}
+                                                </button>
+                                            </div>
+                                        )}
                                         </div>
                                     )}
 
@@ -1205,6 +1566,24 @@ function PatientHistoryPanel() {
                                                         >
                                                             Return to list
                                                         </button>
+                                                        {showDeleted && selectedVisit?.deleted ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleRestoreVisit(selectedVisit.doc_id)}
+                                                            disabled={restoreLoadingId === selectedVisit.doc_id}
+                                                            className="rounded-full border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:border-emerald-400 hover:text-emerald-800 disabled:opacity-50 dark:border-emerald-700 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:text-emerald-100"
+                                                        >
+                                                            {restoreLoadingId === selectedVisit.doc_id ? 'Restoring...' : 'Restore'}
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => selectedVisit && handleDeleteVisit(selectedVisit)}
+                                                            className="rounded-full border border-rose-200 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:border-rose-400 hover:text-rose-800 dark:border-rose-700 dark:text-rose-300 dark:hover:border-rose-500 dark:hover:text-rose-200"
+                                                        >
+                                                            Delete
+                                                        </button>
+                                                    )}
                                                         <button
                                                             type="button"
                                                             onClick={() => selectedVisit.summary && handleCopySummary(selectedVisit.summary)}
@@ -1359,6 +1738,96 @@ function PatientHistoryPanel() {
                     </div>
                 </div>
             </section>
+            <ChatInterface
+                patientName={chatPatient || selectedPatient?.name || ''}
+                currentSummary=""
+                onSessionExpired={handleHistorySessionExpired}
+            />
+            {renameOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4">
+                    <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                        <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Rename patient</h3>
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                            Current: {selectedPatient?.name || '—'}
+                        </p>
+                        <div className="mt-3 space-y-2">
+                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                New name
+                            </label>
+                            <input
+                                type="text"
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                            />
+                        </div>
+                        <div className="mt-4 flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setRenameOpen(false)}
+                                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:border-slate-300 hover:text-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={renameLoading || !renameValue.trim()}
+                                onClick={handleRenamePatient}
+                                className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-400"
+                            >
+                                {renameLoading ? 'Renaming...' : 'Rename'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {pendingDelete && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                                    Remove visit from history?
+                                </h3>
+                                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                                    This will hide the visit from the default view. You can restore it later from “Show deleted”.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setPendingDelete(null)}
+                                className="rounded-lg p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                                aria-label="Close"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        <div className="mt-4 flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setPendingDelete(null)}
+                                disabled={deleteLoading}
+                                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:border-slate-300 hover:text-slate-800 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={confirmDeleteVisit}
+                                disabled={deleteLoading}
+                                className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-700 disabled:opacity-50 dark:bg-rose-500 dark:hover:bg-rose-400"
+                            >
+                                {deleteLoading ? 'Removing...' : 'Remove'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 }
@@ -3363,17 +3832,11 @@ export default function Product() {
                             </div>
                         }
                     >
-                        <PatientHistoryPanel />
+                        <PatientHistoryPanel onAuthFailure={() => setSessionExpiredOpen(true)} />
                     </Protect>
                 )}
             </div>
         </main>
-        {/* Global MediNotes Assistant (available on all tabs) */}
-        <ChatInterface
-            patientName={selectedPatientNameForChat}
-            currentSummary=""
-            onSessionExpired={handleSessionExpired}
-        />
         </>
     );
 }

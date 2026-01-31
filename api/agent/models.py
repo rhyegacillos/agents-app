@@ -12,6 +12,8 @@ class Visit(BaseModel):
     date_of_visit: str
     notes: str
     template_id: Optional[str] = "generic"
+    # Optional encounter identifier from client; backend will also derive one from notes/files.
+    encounter_id: Optional[str] = None
     uploaded_notes: Optional[str] = None
     uploaded_filename: Optional[str] = None
     uploaded_file_b64: Optional[str] = None
