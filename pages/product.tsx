@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, FormEvent, ChangeEvent, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, FormEvent, ChangeEvent, useEffect, useRef, useMemo, useCallback, type ReactNode } from 'react';
 import { useAuth, useClerk } from '@clerk/nextjs';
 import DatePicker from 'react-datepicker';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
@@ -59,6 +59,35 @@ function normalizeChatMarkdown(text: string): string {
     const cleaned = sanitizeMarkdownLinks(text);
     const withoutFences = stripMarkdownCodeFences(cleaned);
     return linkifyText(withoutFences);
+}
+
+function HelpPill({ label, tooltipId, tooltipContent, align = 'right' }: { label: string; tooltipId: string; tooltipContent: ReactNode; align?: 'right' | 'left'; }) {
+    const [open, setOpen] = useState(false);
+    const alignment = align === 'left' ? 'left-0' : 'right-0';
+    return (
+        <div className="relative">
+            <button
+                type="button"
+                onMouseEnter={() => setOpen(true)}
+                onMouseLeave={() => setOpen(false)}
+                onFocus={() => setOpen(true)}
+                onBlur={() => setOpen(false)}
+                className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 shadow-sm transition hover:border-emerald-400 hover:text-emerald-800 dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500"
+                aria-describedby={tooltipId}
+            >
+                {label}
+            </button>
+            {open && (
+                <div
+                    id={tooltipId}
+                    role="tooltip"
+                    className={`absolute ${alignment} z-30 mt-2 w-72 max-w-xs rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200`}
+                >
+                    {tooltipContent}
+                </div>
+            )}
+        </div>
+    );
 }
 
 function renderHistoryHighlighted(text: string) {
@@ -1133,16 +1162,45 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
     }, [timelineItems, isPanning]);
 
     return (
+        <>
         <div className="mx-auto max-w-5xl px-6 pb-16">
             <section className="animate-fade-in rounded-2xl border border-emerald-100/80 bg-white/90 shadow-[0_18px_40px_-32px_rgba(15,23,42,0.55)] backdrop-blur dark:border-slate-700/80 dark:bg-slate-900/85 dark:shadow-[0_18px_40px_-32px_rgba(15,23,42,0.9)]">
                 <div className="border-b border-emerald-100/80 px-6 py-5 dark:border-slate-700/80">
-                    <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
-                        Patient History
-                    </p>
-                    <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Longitudinal View</h2>
-                    <p className="text-sm text-slate-500 dark:text-slate-300">
-                        Choose a patient to see their past visits.
-                    </p>
+                    <div className="flex items-start justify-between gap-3">
+                        <div>
+                            <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
+                                Patient History
+                            </p>
+                            <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Longitudinal View</h2>
+                            <p className="text-sm text-slate-500 dark:text-slate-300">
+                                Choose a patient to see their past visits.
+                            </p>
+                        </div>
+                        <div className="mt-1">
+                            <HelpPill
+                                label="Help"
+                                tooltipId="history-help-tip"
+                                tooltipContent={
+                                    <div>
+                                        <p className="mb-1 font-semibold text-slate-900 dark:text-slate-100">Patient History guide</p>
+                                        <p className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50/80 px-2 py-1 text-[11px] font-semibold text-emerald-900 shadow-sm dark:border-emerald-700/70 dark:bg-emerald-900/50 dark:text-emerald-100">
+                                            Purpose: review prior visits quickly and safely. Objective: find the right patient, narrow the date range, and open the visit you need.
+                                        </p>
+                                        <ul className="list-disc space-y-1 pl-4">
+                                            <li>Select a patient from the dropdown (search + load more).</li>
+                                            <li>Date range defaults to year-to-date; adjust From/To and apply.</li>
+                                            <li>Sort newest/oldest; keyword search filters server-side.</li>
+                                            <li>Timeline pills mirror the list; click to view details.</li>
+                                            <li>Use “Show deleted” to reveal soft-deleted visits and restore.</li>
+                                            <li>Delete prompts are reversible; restored items regain normal styling.</li>
+                                            <li>If uploads+template+date match an existing visit, a modal offers reuse vs regenerate.</li>
+                                            <li>“Load more” paginates visits; respects current filters and sort.</li>
+                                        </ul>
+                                    </div>
+                                }
+                            />
+                        </div>
+                    </div>
                 </div>
 
                 <div className="px-6 py-6 space-y-6">
@@ -1327,9 +1385,10 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                 )}
 
                                 <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-4 dark:border-slate-800 dark:bg-slate-900/60">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Visit history</p>
-                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Patient history</p>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                                             <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800/80">
                                                 <span className="text-slate-500 text-xs font-semibold uppercase tracking-wide dark:text-slate-400">From</span>
                                                 <div className="relative flex items-center">
@@ -1449,7 +1508,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                     )}
 
                                     {!selectedVisit && (
-									<div className={`mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1 transition-opacity duration-300 ease-out ${historyAnimating ? 'opacity-60' : 'opacity-100'}`}>
+                                    <div className={`mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1 transition-opacity duration-300 ease-out ${historyAnimating ? 'opacity-60' : 'opacity-100'}`}>
                                             {groupedHistory.map((group: HistoryEntry[], groupIdx: number) => {
                                                 const first = (group?.[0] ?? {}) as any;
                                                 const groupDate = (first?.date ?? 'Unknown date') as string;
@@ -1792,25 +1851,25 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                         </div>
                                     )}
                                 </div>
-                            </div>
-                        ) : (
-                            <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
-                                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-6 w-6">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 01.75.75v3.75h3.75a.75.75 0 010 1.5H12.75v3.75a.75.75 0 01-1.5 0V12.75H7.5a.75.75 0 010-1.5h3.75V7.5a.75.75 0 01.75-.75z" />
-                                    </svg>
+                            ) : (
+                                <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+                                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-6 w-6">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 01.75.75v3.75h3.75a.75.75 0 010 1.5H12.75v3.75a.75.75 0 01-1.5 0V12.75H7.5a.75.75 0 010-1.5h3.75V7.5a.75.75 0 01.75-.75z" />
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h4 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Select a patient</h4>
+                                        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                                            Use the dropdown above to load historical visits and evidence.
+                                        </p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h4 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Select a patient</h4>
-                                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                                        Use the dropdown above to load historical visits and evidence.
-                                    </p>
-                                </div>
-                            </div>
-                        )}
+                            )}
+                        </div>
                     </div>
-                </div>
-            </section>
+                </section>
+            </div>
             <ChatInterface
                 patientName={chatPatient || selectedPatient?.name || ''}
                 currentSummary=""
@@ -1855,10 +1914,10 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                 </div>
             )}
 
-            {pendingDelete && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-                        <div className="flex items-start justify-between gap-3">
+    {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                                     Remove visit from history?
@@ -1901,7 +1960,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                 </div>
             )}
 
-        </div>
+        </>
     );
 }
 
@@ -3063,11 +3122,34 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
             >
                 <div className="border-b border-emerald-100/80 px-6 py-5">
                     <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
+                        <div className="space-y-1">
                             <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
                                 Clinical Intake
                             </p>
-                            <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Consultation Documentation</h2>
+                            <div className="flex items-center gap-2">
+                                <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">
+                                    Consultation Documentation
+                                </h2>
+                                <HelpPill
+                                    label="Help"
+                                    tooltipId="consult-help-tip"
+                                    tooltipContent={
+                                    <div>
+                                        <p className="mb-1 font-semibold text-slate-900 dark:text-slate-100">Current Visit guide</p>
+                                        <p className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50/80 px-2 py-1 text-[11px] font-semibold text-emerald-900 shadow-sm dark:border-emerald-700/70 dark:bg-emerald-900/50 dark:text-emerald-100">
+                                            Purpose: capture today’s visit clearly. Objective: enter the visit details, attach supporting files, and generate a clean summary.
+                                        </p>
+                                        <ul className="list-disc space-y-1 pl-4">
+                                                <li>Fill patient name, visit date, template, and consultation notes.</li>
+                                                <li>Upload documents/images/audio (premium) to enrich the summary.</li>
+                                                <li>Generate summary streams live; evidence and actions follow.</li>
+                                                <li>If uploads + template + date match a prior visit, you’ll see a reuse vs regenerate prompt.</li>
+                                                <li>Email tab uses extracted clinician/patient details—verify before sending.</li>
+                                            </ul>
+                                        </div>
+                                    }
+                                />
+                            </div>
                             <p className="text-sm text-slate-500 dark:text-slate-300">
                                 Enter visit details and upload relevant documents or audio recordings.
                             </p>
