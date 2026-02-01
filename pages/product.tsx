@@ -1929,6 +1929,8 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
     const [doctorPhone, setDoctorPhone] = useState('');
     const [clinicName, setClinicName] = useState('');
     const [doctorEmail, setDoctorEmail] = useState('');
+    const [regenPromptOpen, setRegenPromptOpen] = useState(false);
+    const [regenMatch, setRegenMatch] = useState<HistoryEntry | null>(null);
     const [attachmentFiles, setAttachmentFiles] = useState<UploadPayload[]>([]);
     const [attachmentError, setAttachmentError] = useState('');
     const [parsingFile, setParsingFile] = useState(false);
@@ -2567,13 +2569,52 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
         }
     }
 
-    async function handleSubmit(e: FormEvent) {
-        e.preventDefault();
-        if (!notes.trim() && !attachmentFiles.length && !audioFiles.length && !imageFiles.length) {
-            setOutput('Please add consultation notes or upload a file/audio/image before generating a summary.');
-            return;
-        }
+    function buildUploadSignature(files: UploadPayload[]) {
+        if (!files.length) return '';
+        return `${files.length}|${files
+            .map((f) => `${f.filename}::${(f.file_b64 || '').length}::${f.mime || ''}`)
+            .join(',')}`;
+    }
 
+    async function findRegenMatch(): Promise<HistoryEntry | null> {
+        if (!patientName.trim() || !visitDate || attachmentFiles.length === 0) return null;
+        const visitIso = visitDate.toISOString().slice(0, 10);
+        try {
+            const res = await fetchWithAuthRetry(
+                getToken,
+                `/api/patient-history?patient=${encodeURIComponent(patientName.trim())}&start_date=${visitIso}&end_date=${visitIso}&include_deleted=true&order=desc&limit=25`,
+                {},
+                onSessionExpired
+            );
+            if (!res?.ok) return null;
+            const data = await res.json();
+            const items: HistoryEntry[] = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+            const uploadSig = buildUploadSignature(attachmentFiles);
+            const match = items.find((item) => {
+                const deleted = item.deleted || item.deleted_at || (item as any).is_deleted;
+                if (deleted) return false;
+                const itemDate = item.date;
+                const itemTemplate = (item as any).template_id || (item as any).templateId || 'generic';
+                if (itemDate !== visitIso) return false;
+                if (itemTemplate !== templateId) return false;
+                const itemUploadSig =
+                    (item as any).upload_signature ||
+                    buildUploadSignature(((item as any).uploaded_files as UploadPayload[]) || []);
+                if (itemUploadSig) {
+                    return itemUploadSig === uploadSig;
+                }
+                // If the API doesn’t return file signatures, fall back to treating any same-date/template
+                // entry as a candidate match when uploads are present—better to prompt than regenerate silently.
+                return Boolean(uploadSig);
+            });
+            return match || null;
+        } catch (err) {
+            console.error('regen check failed', err);
+            return null;
+        }
+    }
+
+    async function runGeneration() {
         setOutput('');
         setStatusMessage('');
         setEmailStatus('');
@@ -2656,6 +2697,26 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
             setLoading(false);
             setStatusMessage('');
         }
+    }
+
+    async function handleSubmit(e: FormEvent) {
+        e.preventDefault();
+        if (!notes.trim() && !attachmentFiles.length && !audioFiles.length && !imageFiles.length) {
+            setOutput('Please add consultation notes or upload a file/audio/image before generating a summary.');
+            return;
+        }
+
+        // Regeneration guard: only when uploaded notes + template + date match an existing non-deleted visit.
+        const maybeMatch = await findRegenMatch();
+        if (maybeMatch) {
+            setRegenMatch(maybeMatch);
+            setRegenPromptOpen(true);
+            setLoading(false);
+            setStatusMessage('');
+            return;
+        }
+
+        await runGeneration();
     }
 
     useEffect(() => {
@@ -3685,7 +3746,96 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
                     )}
                 </section>
             )}
-            
+
+            {regenPromptOpen && regenMatch && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                        <div className="space-y-2">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                                Reuse prior output?
+                            </p>
+                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                A matching visit was already generated
+                            </h3>
+                            <p className="text-sm text-slate-600 dark:text-slate-300">
+                                We found a visit on {regenMatch.date || 'this date'} with the same template and uploaded notes.
+                                You can reuse that summary or regenerate a fresh one.
+                            </p>
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                    Previous summary preview
+                                </p>
+                                <div className="mt-1 max-h-32 overflow-y-auto text-sm leading-relaxed">
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                                        components={{
+                                            p: ({ children, ...props }) => (
+                                                <p {...props} className="mb-2 last:mb-0">
+                                                    {children}
+                                                </p>
+                                            ),
+                                        }}
+                                    >
+                                        {normalizeChatMarkdown(regenMatch.summary || 'No summary stored.')}
+                                    </ReactMarkdown>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="mt-4 flex flex-wrap justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setRegenPromptOpen(false);
+                                    setRegenMatch(null);
+                                }}
+                                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:border-slate-300 hover:text-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setRegenPromptOpen(false);
+                                    if (regenMatch.summary) {
+                                        setOutput(regenMatch.summary);
+                                        if (typeof window !== 'undefined') {
+                                            localStorage.setItem(SUMMARY_OUTPUT_STORAGE_KEY, regenMatch.summary);
+                                        }
+                                    }
+                                    if (regenMatch.evidence) {
+                                        setEvidenceMap({
+                                            chunks: regenMatch.evidence.chunks || [],
+                                            citations: (regenMatch.evidence as any).citations || [],
+                                        });
+                                        setEvidenceOpen(true);
+                                    } else {
+                                        setEvidenceMap(null);
+                                        setEvidenceOpen(false);
+                                    }
+                                    setStatusMessage('Reused previous output.');
+                                    setLoading(false);
+                                    setRegenMatch(null);
+                                }}
+                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200 dark:hover:bg-emerald-900/70"
+                            >
+                                Reuse it
+                            </button>
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    setRegenPromptOpen(false);
+                                    setRegenMatch(null);
+                                    await runGeneration();
+                                }}
+                                className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                            >
+                                Regenerate anyway
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <ChatInterface
                 patientName={patientName}
                 currentSummary={output}
