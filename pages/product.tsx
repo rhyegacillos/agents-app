@@ -443,137 +443,6 @@ function LimitModal({
   );
 }
 
-function ReportModal({
-  open,
-  onClose,
-  selectionItems,
-  output,
-  setOutput,
-  email,
-  setEmail,
-  onSubmit,
-  loading,
-  useAllRuns,
-  setUseAllRuns,
-  canSubmit,
-}: {
-  open: boolean;
-  onClose: () => void;
-  selectionItems: string[];
-  output: "pdf" | "email" | "both";
-  setOutput: (value: "pdf" | "email" | "both") => void;
-  email: string;
-  setEmail: (value: string) => void;
-  onSubmit: () => void;
-  loading: boolean;
-  useAllRuns: boolean;
-  setUseAllRuns: (value: boolean) => void;
-  canSubmit: boolean;
-}) {
-  if (!open) return null;
-
-  return createPortal(
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-white/95 p-5 shadow-2xl backdrop-blur dark:bg-slate-950/95">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-base font-semibold text-gray-900 dark:text-white">Rank Report</h3>
-            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-              Our agent orchestrates the ranking and produces a decision-ready summary.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-black/10 dark:border-white/10 px-2 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-4 rounded-xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 px-3 py-2 text-xs text-gray-700 dark:text-gray-200 space-y-3">
-          <div>
-            <div className="font-semibold">Selected runs {useAllRuns ? "(all)" : ""}</div>
-            <ul className="mt-1 space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-              {selectionItems.map((item, idx) => (
-                <li key={`${item}-${idx}`}>• {item}</li>
-              ))}
-            </ul>
-          </div>
-          <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-300">
-            <input
-              type="checkbox"
-              checked={useAllRuns}
-              onChange={(e) => setUseAllRuns(e.target.checked)}
-              className="mt-0.5"
-            />
-            <span>Include all saved results.</span>
-          </label>
-        </div>
-
-        <div className="mt-4 space-y-2">
-          <div className="text-xs font-semibold text-gray-800 dark:text-gray-200">Delivery options</div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {(["pdf", "email", "both"] as const).map((opt) => (
-              <button
-                key={opt}
-                type="button"
-                onClick={() => setOutput(opt)}
-                className={cx(
-                  "rounded-xl border px-3 py-2 text-xs font-semibold",
-                  "border-black/10 dark:border-white/10",
-                  output === opt
-                    ? "bg-blue-600 text-white"
-                    : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
-                )}
-              >
-                {opt === "pdf" ? "PDF download" : opt === "email" ? "Email only" : "PDF + email"}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {(output === "email" || output === "both") ? (
-          <div className="mt-4">
-            <label className="block text-xs font-semibold text-gray-800 dark:text-gray-200 mb-2">
-              Email address
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
-              className="w-full rounded-xl border px-3 py-2 text-sm outline-none bg-white/70 dark:bg-white/5 border-black/10 dark:border-white/10 focus:ring-2 focus:ring-blue-500/40 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-        ) : null}
-
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl border border-black/10 dark:border-white/10 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={loading || !canSubmit}
-            className={cx(
-              "rounded-xl px-4 py-2 text-xs font-semibold text-white",
-              loading || !canSubmit ? "bg-slate-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
-            )}
-          >
-            {loading ? "Generating..." : "Generate report"}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
 function ConstraintMultiSelectDropdown({
   options,
   value,
@@ -773,6 +642,17 @@ function IdeaGenerator({
   const [savedPanelMode, setSavedPanelMode] = useState<"generated" | "compare" | "decision" | null>(null);
   const [savedPanelPos, setSavedPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const savedPanelRef = useRef<HTMLDivElement | null>(null);
+  const savedPanelDragRef = useRef<{
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    width: number;
+    height: number;
+    pointerId: number;
+    target: HTMLElement;
+  } | null>(null);
+  const [isDraggingSavedPanel, setIsDraggingSavedPanel] = useState(false);
   const savedGeneratedButtonRef = useRef<HTMLButtonElement | null>(null);
   const savedCompareButtonRef = useRef<HTMLButtonElement | null>(null);
   const savedDecisionButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -782,6 +662,7 @@ function IdeaGenerator({
     runB: null,
   });
   const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
   const [savedComparisons, setSavedComparisons] = useState<SavedComparisonSummary[]>([]);
   const [comparisonsLoading, setComparisonsLoading] = useState(false);
@@ -791,7 +672,6 @@ function IdeaGenerator({
   const [rankResult, setRankResult] = useState<RankResult | null>(null);
   const [rankResultOpen, setRankResultOpen] = useState(false);
   const [reportSelection, setReportSelection] = useState<number[]>([]);
-  const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportOutput, setReportOutput] = useState<"pdf" | "email" | "both">("pdf");
   const [reportEmail, setReportEmail] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
@@ -807,6 +687,16 @@ function IdeaGenerator({
   const [deleteDecisionOpen, setDeleteDecisionOpen] = useState(false);
   const [deletingDecisionId, setDeletingDecisionId] = useState<number | null>(null);
   const savedPanelOpen = savedPanelMode !== null;
+  const savedPanelLocked =
+    (savedPanelMode === "compare" && compareLoading) || (savedPanelMode === "decision" && reportLoading);
+  const savedPanelStyle: React.CSSProperties = savedPanelPos
+    ? { top: savedPanelPos.top, left: savedPanelPos.left, width: savedPanelPos.width }
+    : {
+        top: "50%",
+        left: "50%",
+        width: "min(768px, calc(100vw - 32px))",
+        transform: "translate(-50%, -50%)",
+      };
 
   const apiLimit: number = isPremium ? 5 : 1;
   const emailLimit: number = isPremium ? 10 : 0;
@@ -923,12 +813,9 @@ function IdeaGenerator({
     const match = /filename="?([^"]+)"?/.exec(value);
     return match?.[1] ?? null;
   };
-  const reportSelectionItems = useAllRuns
-    ? ["All saved runs (server will include your full history)."]
-    : reportSelection.length
-      ? reportSelection.map(formatRunLabel)
-      : ["No runs selected"];
   const reportHasSelection = useAllRuns || reportSelection.length > 0;
+  const reportEmailRequired = reportOutput === "email" || reportOutput === "both";
+  const reportCanSubmit = reportHasSelection && (!reportEmailRequired || reportEmail.trim().length > 0);
   const formatWinnerLabel = (comparison: SavedComparisonSummary) => {
     if (!comparison.winner_run_id) return "Tie";
     return formatRunLabel(comparison.winner_run_id);
@@ -1353,6 +1240,7 @@ function IdeaGenerator({
     if (!resolvedA || !resolvedB) return;
     try {
       setCompareLoading(true);
+      setCompareError(null);
       const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch("/api/compare-results", {
@@ -1371,7 +1259,9 @@ function IdeaGenerator({
       setSavedPanelMode(null);
       fetchSavedComparisons();
     } catch (e: any) {
-      pushNotice(e?.message || "Failed to compare saved results.");
+      const message = e?.message || "Failed to compare saved results.";
+      setCompareError(message);
+      pushNotice(message);
     } finally {
       setCompareLoading(false);
     }
@@ -1467,8 +1357,29 @@ function IdeaGenerator({
           pushNotice("Email delivery failed. Please try again.");
         }
       }
-      fetchSavedReports();
-      setReportModalOpen(false);
+      await fetchSavedReports();
+      try {
+        const latestRes = await fetch("/api/rank-reports?limit=1", {
+          headers: { Authorization: `Bearer ${jwt}` },
+        });
+        if (latestRes.ok) {
+          const latestData = await latestRes.json();
+          const latest = Array.isArray(latestData?.reports) ? latestData.reports[0] : null;
+          if (latest?.id) {
+            const reportRes = await fetch(`/api/rank-reports/${latest.id}`, {
+              headers: { Authorization: `Bearer ${jwt}` },
+            });
+            if (reportRes.ok) {
+              const reportData = await reportRes.json();
+              setDecisionReport(reportData);
+            }
+          }
+        }
+      } catch {
+        // ignore load failures; saved list is still refreshed
+      }
+      setResultsView("decision");
+      setSavedPanelMode(null);
     } catch (e: any) {
       pushNotice(e?.message || "Failed to generate report.");
     } finally {
@@ -1919,28 +1830,42 @@ function IdeaGenerator({
     if (personaOpen) setPersonaActive(0);
   }, [personaOpen, personaQuery]);
 
-  const updateSavedPanelPos = useCallback(() => {
-    const trigger =
-      savedPanelMode === "generated"
-        ? savedGeneratedButtonRef.current
-        : savedPanelMode === "compare"
-        ? savedCompareButtonRef.current
-        : savedPanelMode === "decision"
-        ? savedDecisionButtonRef.current
-        : null;
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const baseWidth = viewportWidth < 640 ? 320 : 360;
-    const panelWidth = Math.min(baseWidth, viewportWidth - 32);
-    const left = Math.min(Math.max(16, rect.right - panelWidth), viewportWidth - panelWidth - 16);
-    const top = rect.bottom + 8;
-    setSavedPanelPos({ top, left, width: panelWidth });
-  }, [savedPanelMode]);
+  const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+  const updateSavedPanelPos = useCallback(
+    (forceCenter = false) => {
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const width = Math.min(768, viewportWidth - 32);
+      const fallbackHeight = Math.min(520, viewportHeight - 32);
+      const panelHeight = savedPanelRef.current?.getBoundingClientRect().height ?? fallbackHeight;
+
+      if (forceCenter || !savedPanelPos) {
+        const left = Math.max(16, Math.round((viewportWidth - width) / 2));
+        const top = Math.max(16, Math.round((viewportHeight - panelHeight) / 2));
+        setSavedPanelPos({ top, left, width });
+        return;
+      }
+
+      const maxLeft = Math.max(16, viewportWidth - savedPanelPos.width - 16);
+      const maxTop = Math.max(16, viewportHeight - panelHeight - 16);
+      const left = clamp(savedPanelPos.left, 16, maxLeft);
+      const top = clamp(savedPanelPos.top, 16, maxTop);
+      if (left !== savedPanelPos.left || top !== savedPanelPos.top) {
+        setSavedPanelPos({ ...savedPanelPos, top, left });
+      }
+    },
+    [savedPanelPos]
+  );
 
   const openSavedPanel = (mode: "generated" | "compare" | "decision") => {
     const isSameMode = savedPanelMode === mode;
-    setSavedPanelMode(isSameMode ? null : mode);
+    if (isSameMode) {
+      setSavedPanelMode(null);
+    } else {
+      setSavedPanelPos(null);
+      setSavedPanelMode(mode);
+    }
     if (!isSameMode) {
       if (mode === "generated") {
         fetchSavedResults();
@@ -1954,12 +1879,37 @@ function IdeaGenerator({
     }
   };
 
+  const startSavedPanelDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (savedPanelLocked) return;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button")) return;
+    const panel = savedPanelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+    savedPanelDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      width: rect.width,
+      height: rect.height,
+      pointerId: e.pointerId,
+      target: handle,
+    };
+    setIsDraggingSavedPanel(true);
+  };
+
   useEffect(() => {
     if (!savedPanelOpen) return;
 
-    updateSavedPanelPos();
+    updateSavedPanelPos(true);
 
     function onDocDown(e: MouseEvent) {
+      if (savedPanelLocked) return;
       const panel = savedPanelRef.current;
       const target = e.target as Node;
       const triggers = [
@@ -1973,20 +1923,59 @@ function IdeaGenerator({
     }
 
     function onKeyDown(e: KeyboardEvent) {
+      if (savedPanelLocked) return;
       if (e.key === "Escape") setSavedPanelMode(null);
     }
 
-    window.addEventListener("resize", updateSavedPanelPos);
-    window.addEventListener("scroll", updateSavedPanelPos, true);
+    const handleResize = () => updateSavedPanelPos();
+    window.addEventListener("resize", handleResize);
     document.addEventListener("mousedown", onDocDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("resize", updateSavedPanelPos);
-      window.removeEventListener("scroll", updateSavedPanelPos, true);
+      window.removeEventListener("resize", handleResize);
       document.removeEventListener("mousedown", onDocDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [savedPanelOpen, updateSavedPanelPos]);
+  }, [savedPanelOpen, savedPanelLocked, updateSavedPanelPos]);
+
+  useEffect(() => {
+    if (savedPanelOpen) return;
+    setSavedPanelPos(null);
+    setIsDraggingSavedPanel(false);
+    savedPanelDragRef.current = null;
+  }, [savedPanelOpen]);
+
+  useEffect(() => {
+    if (!isDraggingSavedPanel) return;
+
+    function onPointerMove(e: PointerEvent) {
+      const drag = savedPanelDragRef.current;
+      if (!drag) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+      const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
+      const left = clamp(drag.originX + dx, 8, maxLeft);
+      const top = clamp(drag.originY + dy, 8, maxTop);
+      setSavedPanelPos({ top, left, width: drag.width });
+    }
+
+    function onPointerUp() {
+      const drag = savedPanelDragRef.current;
+      if (drag?.target?.hasPointerCapture?.(drag.pointerId)) {
+        drag.target.releasePointerCapture(drag.pointerId);
+      }
+      setIsDraggingSavedPanel(false);
+      savedPanelDragRef.current = null;
+    }
+
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+    return () => {
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [isDraggingSavedPanel, clamp]);
 
 
 
@@ -1998,20 +1987,6 @@ function IdeaGenerator({
         onClose={() => setLimitModal({ ...limitModal, open: false })} 
         title={limitModal.title} 
         message={limitModal.message} 
-      />
-      <ReportModal
-        open={reportModalOpen}
-        onClose={() => setReportModalOpen(false)}
-        selectionItems={reportSelectionItems}
-        output={reportOutput}
-        setOutput={setReportOutput}
-        email={reportEmail}
-        setEmail={setReportEmail}
-        onSubmit={runAgenticReport}
-        loading={reportLoading}
-        useAllRuns={useAllRuns}
-        setUseAllRuns={setUseAllRuns}
-        canSubmit={reportHasSelection}
       />
       {deleteTarget ? (
         <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
@@ -2878,13 +2853,27 @@ function IdeaGenerator({
 
             {mounted && savedPanelOpen
               ? createPortal(
-                  <div className="fixed inset-0 z-50 flex items-start justify-center px-4 py-10 sm:items-center">
-                    <div className="fixed inset-0 -z-10 bg-black/40" aria-hidden="true" />
+                  <div className="fixed inset-0 z-50">
+                    <div
+                      className="absolute inset-0 bg-black/40"
+                      aria-hidden="true"
+                      onClick={() => {
+                        if (savedPanelLocked) return;
+                        setSavedPanelMode(null);
+                      }}
+                    />
                     <div
                       ref={savedPanelRef}
-                      className="w-full max-w-3xl box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-visible"
+                      style={savedPanelStyle}
+                      className="fixed z-10 box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-visible flex flex-col h-[520px] max-h-[85vh]"
                     >
-                      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5">
+                      <div
+                        className={cx(
+                          "flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5 select-none touch-none",
+                          isDraggingSavedPanel ? "cursor-grabbing" : "cursor-grab"
+                        )}
+                        onPointerDown={startSavedPanelDrag}
+                      >
                         <div className="flex items-center gap-2">
                           <div className="text-sm font-semibold text-gray-900 dark:text-white">
                             {savedPanelMode === "generated"
@@ -2924,33 +2913,60 @@ function IdeaGenerator({
                             />
                           )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (savedPanelMode === "generated") {
-                              fetchSavedResults();
-                            } else if (savedPanelMode === "compare") {
-                              fetchSavedResults();
-                              fetchSavedComparisons();
-                            } else if (savedPanelMode === "decision") {
-                              fetchSavedResults();
-                              fetchSavedReports();
-                            }
-                          }}
-                          disabled={savedPanelLoading}
-                          className={cx(
-                            "rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
-                            "border-black/10 dark:border-white/10",
-                            "bg-white/60 dark:bg-white/5",
-                            savedPanelLoading ? "opacity-60 cursor-wait" : "hover:bg-white/80 dark:hover:bg-white/10"
-                          )}
-                        >
-                          {savedPanelLoading ? "Loading..." : "Refresh"}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (savedPanelMode === "generated") {
+                                fetchSavedResults();
+                              } else if (savedPanelMode === "compare") {
+                                setCompareError(null);
+                                fetchSavedResults();
+                                fetchSavedComparisons();
+                              } else if (savedPanelMode === "decision") {
+                                fetchSavedResults();
+                                fetchSavedReports();
+                              }
+                            }}
+                            disabled={savedPanelLoading || savedPanelLocked}
+                            className={cx(
+                              "rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
+                              "border-black/10 dark:border-white/10",
+                              "bg-white/60 dark:bg-white/5",
+                              savedPanelLoading || savedPanelLocked
+                                ? "opacity-60 cursor-not-allowed"
+                                : "hover:bg-white/80 dark:hover:bg-white/10"
+                            )}
+                          >
+                            {savedPanelLoading ? "Loading..." : "Refresh"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSavedPanelMode(null)}
+                            disabled={savedPanelLocked}
+                            className={cx(
+                              "rounded-lg border px-2.5 py-1 text-[11px] font-semibold border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5",
+                              savedPanelLocked
+                                ? "text-gray-400 dark:text-gray-500 cursor-not-allowed"
+                                : "text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                            )}
+                            aria-label="Close saved panel"
+                          >
+                            Close
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="max-h-[420px] overflow-y-auto p-4 space-y-3 ig-scrollbar">
-                        {savedPanelMode === "generated" ? (
+                      <div className="flex-1 min-h-0 flex flex-col">
+                        <div
+                          className={cx(
+                            "flex-1 min-h-0 overflow-y-auto p-4 space-y-3 ig-scrollbar",
+                            (savedPanelMode === "compare" || savedPanelMode === "decision") && "flex flex-col",
+                            savedPanelMode === "compare" && "pb-1",
+                            savedPanelMode === "decision" && "pb-0"
+                          )}
+                        >
+                          {savedPanelMode === "generated" ? (
                           savedLoading ? (
                             <div className="text-xs text-gray-500 dark:text-gray-400">Loading saved results…</div>
                           ) : savedResults.length === 0 ? (
@@ -3006,7 +3022,7 @@ function IdeaGenerator({
                             ))
                           )
                         ) : savedPanelMode === "compare" ? (
-                          <>
+                          <div className="flex flex-col gap-3 flex-1 min-h-0">
                             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
                               <div className="flex items-center justify-between gap-2">
                                 <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Select two runs</div>
@@ -3073,29 +3089,11 @@ function IdeaGenerator({
                                   {compareRunB ? ` • B: ${formatRunLabel(compareRunB)}` : ""}
                                 </div>
                               )}
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="text-[11px] text-gray-600 dark:text-gray-300">
-                                  {compareReady ? "Ready to compare." : "Select two runs with the same configuration."}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => runCompare()}
-                                  disabled={!compareReady || compareLoading || isTokenLimited}
-                                  className={cx(
-                                    "rounded-lg px-3 py-1 text-[11px] font-semibold text-white",
-                                    !compareReady || compareLoading || isTokenLimited
-                                      ? "bg-slate-400 cursor-not-allowed"
-                                      : "bg-blue-600 hover:bg-blue-700"
-                                  )}
-                                >
-                                  {compareLoading ? "Comparing..." : "Compare"}
-                                </button>
-                              </div>
                             </div>
 
-                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 flex-1 min-h-0 flex flex-col">
                               <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved comparisons</div>
-                              <div className="max-h-28 space-y-2 overflow-y-auto ig-scrollbar pr-1">
+                              <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
                                 {comparisonsLoading ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading comparisons…</div>
                                 ) : savedComparisons.length === 0 ? (
@@ -3130,10 +3128,12 @@ function IdeaGenerator({
                                           setSavedPanelMode(null);
                                           runCompare(item.run_a_id, item.run_b_id);
                                         }}
-                                        disabled={isTokenLimited}
+                                        disabled={isTokenLimited || compareLoading || savedPanelLocked}
                                         className={cx(
                                           "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
-                                          isTokenLimited ? "bg-slate-400 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700"
+                                          isTokenLimited || compareLoading || savedPanelLocked
+                                            ? "bg-slate-400 cursor-not-allowed"
+                                            : "bg-emerald-600 hover:bg-emerald-700"
                                         )}
                                       >
                                         View
@@ -3143,10 +3143,9 @@ function IdeaGenerator({
                                 )}
                               </div>
                             </div>
-
-                          </>
+                          </div>
                         ) : savedPanelMode === "decision" ? (
-                          <>
+                          <div className="flex flex-col gap-3 flex-1 min-h-0">
                             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
                               <div className="flex items-center justify-between gap-2">
                                 <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Select runs for the report</div>
@@ -3158,48 +3157,61 @@ function IdeaGenerator({
                                   {decisionSelectOpen ? "Hide" : "Show"}
                                 </button>
                               </div>
+                              <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                                <input
+                                  type="checkbox"
+                                  checked={useAllRuns}
+                                  onChange={(e) => setUseAllRuns(e.target.checked)}
+                                  className="mt-0.5"
+                                />
+                                <span>Include all saved results.</span>
+                              </label>
                               {decisionSelectOpen ? (
                                 savedLoading ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading saved runs…</div>
                                 ) : savedResults.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No saved runs yet.</div>
                                 ) : (
-                                  savedResults.map((item) => (
-                                    <label
-                                      key={item.id}
-                                      className="flex items-start gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={reportSelection.includes(item.id)}
-                                        onChange={() => toggleReportSelection(item.id)}
-                                      />
-                                      <div className="min-w-0">
-                                        <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
-                                          {formatSavedDate(item.created_at)}
+                                  <div className={cx("space-y-2", useAllRuns && "opacity-60 pointer-events-none")}>
+                                    {savedResults.map((item) => (
+                                      <label
+                                        key={item.id}
+                                        className="flex items-start gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={reportSelection.includes(item.id)}
+                                          onChange={() => toggleReportSelection(item.id)}
+                                        />
+                                        <div className="min-w-0">
+                                          <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                            {formatSavedDate(item.created_at)}
+                                          </div>
+                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                            {item.industry || "Saved result"} · {formatModelList(item.models || [])}
+                                          </div>
+                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                            {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
+                                          </div>
                                         </div>
-                                        <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                          {item.industry || "Saved result"} · {formatModelList(item.models || [])}
-                                        </div>
-                                        <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                          {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
-                                        </div>
-                                      </div>
-                                    </label>
-                                  ))
+                                      </label>
+                                    ))}
+                                  </div>
                                 )
                               ) : (
                                 <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                                  {reportSelection.length > 0
+                                  {useAllRuns
+                                    ? "All saved runs selected"
+                                    : reportSelection.length > 0
                                     ? `${reportSelection.length} run(s) selected`
                                     : "No runs selected"}
                                 </div>
                               )}
                             </div>
 
-                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 flex-1 min-h-0 flex flex-col">
                               <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved decision summary reports</div>
-                              <div className="max-h-28 space-y-2 overflow-y-auto ig-scrollbar pr-1">
+                              <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
                                 {reportsLoading ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading reports…</div>
                                 ) : savedReports.length === 0 ? (
@@ -3248,10 +3260,10 @@ function IdeaGenerator({
                                               setReportDownloadId(null);
                                             }
                                           }}
-                                          disabled={reportDownloadId === item.id}
+                                          disabled={reportDownloadId === item.id || reportLoading || savedPanelLocked}
                                           className={cx(
                                             "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
-                                            reportDownloadId === item.id
+                                            reportDownloadId === item.id || reportLoading || savedPanelLocked
                                               ? "bg-slate-400 cursor-not-allowed"
                                               : "bg-blue-600 hover:bg-blue-700"
                                           )}
@@ -3265,44 +3277,138 @@ function IdeaGenerator({
                               </div>
                             </div>
 
-                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
-                              <div className="flex items-center gap-2 text-[11px] font-semibold text-gray-700 dark:text-gray-300">
-                                <span>Decision summary report</span>
-                                <HelpTooltip content="Pick 1-5 runs, then generate a decision-ready summary report using the selected runs." />
+                            {isTokenLimited ? (
+                              <div className="mt-2 text-[11px] text-rose-500 dark:text-rose-400">
+                                Token limit reached. Diff Mode and rank reports are disabled until the monthly reset.
                               </div>
-                              <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                                Rank selected runs, summarize insights, and export.
+                            ) : null}
+                          </div>
+                        ) : null}
+                        </div>
+                        {savedPanelMode === "compare" ? (
+                          <div className="h-9 border-t border-white/10 bg-white/90 px-4 dark:bg-slate-950/90">
+                            <div className="flex h-full items-center justify-between gap-3 overflow-hidden">
+                              <div
+                                className={cx(
+                                  "min-w-0 text-[11px] leading-none whitespace-nowrap truncate",
+                                  compareError ? "text-rose-500 dark:text-rose-300" : "text-gray-600 dark:text-gray-300"
+                                )}
+                              >
+                                {compareError ?? (compareReady ? "Ready to compare." : "Select two runs with the same configuration.")}
                               </div>
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="text-[11px] text-gray-600 dark:text-gray-300">
-                                  {reportSelection.length > 0
-                                    ? `${reportSelection.length} run(s) selected`
-                                    : "No runs selected"}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setReportModalOpen(true);
-                                    setSavedPanelMode(null);
-                                  }}
-                                  className={cx(
-                                    "rounded-lg px-3 py-1 text-[11px] font-semibold text-white",
-                                    isTokenLimited
-                                      ? "bg-slate-400 cursor-not-allowed"
-                                      : "bg-purple-600 hover:bg-purple-700"
-                                  )}
-                                  disabled={isTokenLimited}
-                                >
-                                  Decision Summary Report
-                                </button>
-                              </div>
-                              {isTokenLimited ? (
-                                <div className="text-[11px] text-rose-500 dark:text-rose-400">
-                                  Token limit reached. Diff Mode and rank reports are disabled until the monthly reset.
-                                </div>
-                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => runCompare()}
+                                disabled={!compareReady || compareLoading || isTokenLimited}
+                                className={cx(
+                                  "inline-flex items-center gap-2 rounded-lg px-3 py-1 text-[11px] font-semibold text-white",
+                                  !compareReady || compareLoading || isTokenLimited
+                                    ? "bg-slate-400 cursor-not-allowed"
+                                    : "bg-blue-600 hover:bg-blue-700"
+                                )}
+                              >
+                                {compareLoading ? (
+                                  <>
+                                    <svg
+                                      viewBox="0 0 20 20"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="1.5"
+                                      className="h-3.5 w-3.5 animate-spin"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        d="M15.5 10a5.5 5.5 0 01-9.96 3.25M4.5 10a5.5 5.5 0 019.96-3.25"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                      <path d="M14.5 3.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M5.5 16.5v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                    Comparing...
+                                  </>
+                                ) : (
+                                  "Compare"
+                                )}
+                              </button>
                             </div>
-                          </>
+                          </div>
+                        ) : null}
+                        {savedPanelMode === "decision" ? (
+                          <div className="h-9 border-t border-white/10 bg-white/90 px-4 dark:bg-slate-950/90 overflow-hidden">
+                            <div className="flex h-full items-center gap-2 overflow-hidden flex-nowrap">
+                              <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">Delivery</div>
+                              <div className="flex items-center gap-2">
+                                {(["pdf", "email", "both"] as const).map((opt) => (
+                                  <button
+                                    key={opt}
+                                    type="button"
+                                    onClick={() => setReportOutput(opt)}
+                                    className={cx(
+                                      "rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap",
+                                      "border-black/10 dark:border-white/10",
+                                      reportOutput === opt
+                                        ? "bg-blue-600 text-white"
+                                        : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                                    )}
+                                  >
+                                    {opt === "pdf" ? "PDF" : opt === "email" ? "Email" : "PDF + Email"}
+                                  </button>
+                                ))}
+                              </div>
+                              {reportEmailRequired ? (
+                                <input
+                                  type="email"
+                                  value={reportEmail}
+                                  onChange={(e) => setReportEmail(e.target.value)}
+                                  placeholder="you@company.com"
+                                  className="h-8 w-44 rounded-lg border px-2.5 text-[11px] outline-none bg-white/70 dark:bg-white/5 border-black/10 dark:border-white/10 text-gray-900 dark:text-gray-100"
+                                />
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={runAgenticReport}
+                                className={cx(
+                                  "inline-flex items-center gap-2 rounded-lg px-3 py-1 text-[11px] font-semibold text-white whitespace-nowrap",
+                                  reportLoading || !reportCanSubmit || isTokenLimited
+                                    ? "bg-slate-400 cursor-not-allowed"
+                                    : "bg-purple-600 hover:bg-purple-700"
+                                )}
+                                disabled={reportLoading || !reportCanSubmit || isTokenLimited}
+                              >
+                                {reportLoading ? (
+                                  <>
+                                    <svg
+                                      viewBox="0 0 20 20"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="1.5"
+                                      className="h-3.5 w-3.5 animate-spin"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        d="M15.5 10a5.5 5.5 0 01-9.96 3.25M4.5 10a5.5 5.5 0 019.96-3.25"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                      <path d="M14.5 3.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M5.5 16.5v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                    Generating...
+                                  </>
+                                ) : (
+                                  "Decision Summary Report"
+                                )}
+                              </button>
+                              <div className="ml-auto text-[11px] leading-none text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                                {useAllRuns
+                                  ? "All saved runs selected"
+                                  : reportSelection.length > 0
+                                  ? `${reportSelection.length} run(s) selected`
+                                  : "No runs selected"}
+                              </div>
+                            </div>
+                          </div>
                         ) : null}
                       </div>
                     </div>
@@ -3445,12 +3551,12 @@ function IdeaGenerator({
                           <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Quick start</div>
                           <div className="mt-3 space-y-1.5 text-left text-sm text-gray-700 dark:text-gray-200">
                             {[
-                              "Pick a Target Industry",
-                              "Choose constraints (must-have rules)",
-                              "Select an AI persona (voice/POV)",
-                              "Pick 1–4 AI models to compare",
+                              <>Pick a <span className="font-semibold text-indigo-700 dark:text-indigo-300">Target Industry</span></>,
+                              <>Choose <span className="font-semibold text-indigo-700 dark:text-indigo-300">constraints</span> (must-have rules)</>,
+                              <>Select an <span className="font-semibold text-indigo-700 dark:text-indigo-300">AI persona</span> (voice/POV)</>,
+                              <>Pick 1–4 <span className="font-semibold text-indigo-700 dark:text-indigo-300">AI models</span> to compare</>,
                             ].map((step, idx) => (
-                              <div key={step} className="flex items-center gap-2">
+                              <div key={idx} className="flex items-center gap-2">
                                 <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 text-[11px] font-semibold text-white/95 shadow-sm">
                                   {idx + 1}
                                 </span>
@@ -3463,8 +3569,8 @@ function IdeaGenerator({
                         </div>
                           <div className="mt-3 space-y-1 text-left text-xs text-gray-700 dark:text-gray-300">
                             <div className="font-semibold text-gray-800 dark:text-gray-100">Optional (Premium)</div>
-                            <div>• Set Creativity (safe ↔ bold)</div>
-                            <div>• Set Idea Diversity (focused ↔ varied)</div>
+                            <div>• Set <span className="font-semibold text-indigo-700 dark:text-indigo-300">Creativity</span> (safe ↔ bold)</div>
+                            <div>• Set <span className="font-semibold text-indigo-700 dark:text-indigo-300">Idea Diversity</span> (focused ↔ varied)</div>
                           </div>
                           <div className="mt-3 text-left text-sm font-semibold">
                             <span className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-2.5 py-1 text-white shadow">
@@ -3606,11 +3712,11 @@ function IdeaGenerator({
                         <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Compare Results quick tips</div>
                         <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
                           {[
-                            <>Open <strong className="text-indigo-700 dark:text-indigo-200">Compare Results</strong> from <strong className="text-indigo-700 dark:text-indigo-200">Saved Results</strong>.</>,
+                            <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare Results</span> from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span>.</>,
                             "Click Show under Select two runs.",
-                            <>Choose <strong className="text-indigo-700 dark:text-indigo-200">Run A</strong> and <strong className="text-indigo-700 dark:text-indigo-200">Run B</strong> from the list.</>,
+                            <>Choose <span className="font-semibold text-indigo-700 dark:text-indigo-300">Run A</span> and <span className="font-semibold text-indigo-700 dark:text-indigo-300">Run B</span> from the list.</>,
                             "Make sure both runs used the same Industry, Persona, and Constraints.",
-                            <>Click <strong className="text-indigo-700 dark:text-indigo-200">Compare</strong> to generate the Diff Insight.</>,
+                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare</span> to generate the Diff Insight.</>,
                             "Review the winner and key changes, then export if needed.",
                           ].map((tip, idx) => (
                             <div key={idx} className="flex items-center gap-2">
@@ -3747,11 +3853,11 @@ function IdeaGenerator({
                         <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Decision Summary quick tips</div>
                         <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
                           {[
-                            <>Open <strong className="text-indigo-700 dark:text-indigo-200">Decision Summary Report</strong> from <strong className="text-indigo-700 dark:text-indigo-200">Saved Results</strong>.</>,
-                            <>Click Show under <strong className="text-indigo-700 dark:text-indigo-200">Select runs for the report</strong>.</>,
+                            <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span>.</>,
+                            <>Click Show under <span className="font-semibold text-indigo-700 dark:text-indigo-300">Select runs for the report</span>.</>,
                             "Choose 1–5 runs you want to summarize.",
-                            <>Make sure all selected runs share the same <strong className="text-indigo-700 dark:text-indigo-200">Industry</strong>.</>,
-                            <>Click <strong className="text-indigo-700 dark:text-indigo-200">Decision Summary Report</strong> to generate the summary.</>,
+                            <>Make sure all selected runs share the same <span className="font-semibold text-indigo-700 dark:text-indigo-300">Industry</span>.</>,
+                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> to generate the summary.</>,
                             "Review ranked runs, insights, risks, and next steps.",
                             "Export or email the report if needed.",
                           ].map((tip, idx) => (
