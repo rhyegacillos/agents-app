@@ -709,6 +709,15 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
     const [deleteLoading, setDeleteLoading] = useState(false);
     const [restoreLoadingId, setRestoreLoadingId] = useState<string | null>(null);
     const [selectedVisit, setSelectedVisit] = useState<HistoryEntry | null>(null);
+
+    const selectedIsDeleted =
+        !!selectedVisit &&
+        (
+            selectedVisit.deleted === true ||
+            !!selectedVisit.deleted_at ||
+            !!(selectedVisit as any).deletedAt
+        );
+
     const [historyStartDate, setHistoryStartDate] = useState('');
     const [historyEndDate, setHistoryEndDate] = useState('');
     const historyStartRef = useRef<HTMLInputElement | null>(null);
@@ -814,9 +823,14 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
         setHistoryLoading(true);
         setHistoryAnimating(true);
         setHistoryError('');
-        setHistoryItems([]);
-        setHistoryNextOffset(null);
-        setSelectedVisit(null);
+		// Avoid layout "twitch": keep the current list rendered while loading filters/actions
+		// and only hard-reset when switching to a different patient.
+		const isSwitchingPatient = Boolean(selectedPatient?.name && selectedPatient.name !== patientName);
+		if (isSwitchingPatient) {
+			setHistoryItems([]);
+			setSelectedVisit(null);
+		}
+		setHistoryNextOffset(null);
         try {
             const dateParams = [
                 startDate ? `start_date=${encodeURIComponent(startDate)}` : null,
@@ -995,12 +1009,47 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
             );
             if (!res?.ok) return;
 
-            // optimistic: remove from list
-            setHistoryItems((prev) => prev.filter((h) => h.doc_id !== docId));
-            setSelectedVisit((prev) => (prev?.doc_id === docId ? null : prev));
+            // optimistic UI:
+            // - if "show deleted" is ON, keep the entry and mark it deleted so it stays visible immediately
+            // - if OFF, remove it from the list (since deleted entries are hidden)
+            let deletedAt: number | null = null;
+            try {
+                const data = await res.json().catch(() => null);
+                const raw = data?.deleted_at ?? data?.deletedAt ?? null;
+
+                if (typeof raw === 'number') {
+                    deletedAt = raw;
+                } else if (typeof raw === 'string') {
+                    const parsed = Date.parse(raw);
+                    if (!Number.isNaN(parsed)) deletedAt = parsed;
+                }
+            } catch {
+                // ignore json parse errors
+            }
+            if (deletedAt === null) deletedAt = Date.now();
+
+            setHistoryItems((prev) => {
+                if (showDeleted) {
+                    return prev.map((h) =>
+                        h.doc_id === docId ? { ...h, deleted: true, deleted_at: deletedAt } : h
+                    );
+                }
+                return prev.filter((h) => h.doc_id !== docId);
+            });
+
+            setSelectedVisit((prev) => {
+                if (prev?.doc_id !== docId) return prev;
+                if (showDeleted) return { ...prev, deleted: true, deleted_at: deletedAt };
+                return null;
+            });
+
             setPendingDelete(null);
 
+            // refresh counts and history so server state stays in sync with filters
             await loadPatients(0, '', true);
+            if (selectedPatient) {
+                await loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, showDeleted);
+            }
         } catch (err) {
             console.error(err);
         } finally {
@@ -1378,7 +1427,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                     )}
 
                                     {!selectedVisit && (
-                                        <div className={`mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1 transition-all duration-300 ease-out ${historyAnimating ? 'opacity-60 blur-[1px] translate-y-1' : 'opacity-100 blur-0 translate-y-0'}`}>
+									<div className={`mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1 transition-opacity duration-300 ease-out ${historyAnimating ? 'opacity-60' : 'opacity-100'}`}>
                                             {groupedHistory.map((group: HistoryEntry[], groupIdx: number) => {
                                                 const first = (group?.[0] ?? {}) as any;
                                                 const groupDate = (first?.date ?? 'Unknown date') as string;
@@ -1548,7 +1597,9 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                 (selectedVisit.type || '').toLowerCase() === 'visit_evidence'
                                                     ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50'
                                                     : 'border-slate-200 bg-white/95 dark:border-slate-800 dark:bg-slate-900/85'
-                                            }`}>
+                                            } ${selectedIsDeleted
+                                                ? '!border-rose-300 !bg-[rgba(254,242,242,0.85)] ring-1 ring-rose-100 dark:!border-rose-800 dark:!bg-[rgba(76,5,25,0.55)] dark:ring-rose-900/50'
+                                                : ''}`}>
                                                 <div className="flex flex-wrap items-center justify-between gap-3">
                                                     <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
                                                         <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
@@ -1566,7 +1617,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         >
                                                             Return to list
                                                         </button>
-                                                        {showDeleted && selectedVisit?.deleted ? (
+                                                        {selectedIsDeleted ? (
                                                         <button
                                                             type="button"
                                                             onClick={() => handleRestoreVisit(selectedVisit.doc_id)}
