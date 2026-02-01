@@ -3,7 +3,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { Protect, UserButton, useAuth, useUser, useClerk } from "@clerk/nextjs";
+import { Protect, UserButton, useAuth, useUser, useClerk, PricingTable } from "@clerk/nextjs";
+
+const CLERK_JWT_TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE || "";
+
+function tokenOptions(skipCache?: boolean) {
+  const opts: { skipCache?: boolean; template?: string } = {};
+  if (skipCache) {
+    opts.skipCache = true;
+  }
+  if (CLERK_JWT_TEMPLATE) {
+    opts.template = CLERK_JWT_TEMPLATE;
+  }
+  return opts;
+}
 
 
 
@@ -924,7 +937,7 @@ function IdeaGenerator({
   const fetchSavedResults = useCallback(async () => {
     try {
       setSavedLoading(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) return;
       const res = await fetch("/api/saved-results?limit=6", {
         headers: { Authorization: `Bearer ${jwt}` },
@@ -954,7 +967,7 @@ function IdeaGenerator({
   const fetchSavedComparisons = useCallback(async () => {
     try {
       setComparisonsLoading(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) return;
       const res = await fetch("/api/compare-results?limit=6", {
         headers: { Authorization: `Bearer ${jwt}` },
@@ -972,7 +985,7 @@ function IdeaGenerator({
   const fetchSavedReports = useCallback(async () => {
     try {
       setReportsLoading(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) return;
       const res = await fetch("/api/rank-reports?limit=6", {
         headers: { Authorization: `Bearer ${jwt}` },
@@ -1014,7 +1027,7 @@ function IdeaGenerator({
   const refreshUsage = useCallback(async (showLoading = false) => {
     try {
       if (showLoading) setUsageRefreshing(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) return;
       const res = await fetch("/api/subscription", {
         headers: { Authorization: `Bearer ${jwt}` },
@@ -1052,6 +1065,16 @@ function IdeaGenerator({
   const FREE_ALLOWED_CONSTRAINTS = 3; // first 3 options (including "None")
   const FREE_MAX_CONSTRAINTS = 1;
   const FREE_MAX_MODELS = 1;
+
+  const scrollToPricing = () => {
+    if (typeof window === "undefined") return;
+    const el = document.getElementById("pricing-table");
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    window.location.hash = "pricing-table";
+  };
 
   const handleAccountClick = () => {
     // same “account” surface users expect from the avatar menu
@@ -1129,7 +1152,7 @@ function IdeaGenerator({
     if (Object.keys(payload.results || {}).length === 0) return;
     try {
       setSavingResults(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const snapshot = buildSaveSnapshot(payload);
       if (loadedSavedId && loadedSavedSnapshot && snapshot === loadedSavedSnapshot) {
@@ -1185,7 +1208,7 @@ function IdeaGenerator({
   const loadSavedResult = async (savedId: number) => {
     try {
       setLoadingSavedId(savedId);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch(`/api/saved-results/${savedId}`, {
         headers: { Authorization: `Bearer ${jwt}` },
@@ -1258,7 +1281,7 @@ function IdeaGenerator({
   const deleteSavedResult = async (savedId: number) => {
     try {
       setDeletingSavedId(savedId);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch(`/api/saved-results/${savedId}`, {
         method: "DELETE",
@@ -1287,7 +1310,7 @@ function IdeaGenerator({
   const deleteComparison = async (comparisonId: number) => {
     try {
       setDeletingComparisonId(comparisonId);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch(`/api/compare-results/${comparisonId}`, {
         method: "DELETE",
@@ -1307,7 +1330,7 @@ function IdeaGenerator({
   const deleteDecisionReport = async (reportId: number) => {
     try {
       setDeletingDecisionId(reportId);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch(`/api/rank-reports/${reportId}`, {
         method: "DELETE",
@@ -1330,7 +1353,7 @@ function IdeaGenerator({
     if (!resolvedA || !resolvedB) return;
     try {
       setCompareLoading(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch("/api/compare-results", {
         method: "POST",
@@ -1395,7 +1418,7 @@ function IdeaGenerator({
     }
     try {
       setReportLoading(true);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch("/api/rank-report", {
         method: "POST",
@@ -1456,7 +1479,7 @@ function IdeaGenerator({
   const downloadSavedReport = async (reportId: number) => {
     try {
       setReportDownloadId(reportId);
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
       const res = await fetch(`/api/rank-reports/${reportId}/pdf`, {
         headers: { Authorization: `Bearer ${jwt}` },
@@ -1614,7 +1637,7 @@ function IdeaGenerator({
     setDeleteComparisonOpen(false);
     setDecisionReport(null);
 
-    const jwt = await getToken();
+    const jwt = await getToken(tokenOptions());
 
     const payload: any = { 
       industry, 
@@ -1675,14 +1698,14 @@ function IdeaGenerator({
 
   const recommendCombination = async () => {
     if (!isPremium) {
-      if (planLoaded) openUserProfile();
+      if (planLoaded) scrollToPricing();
       return;
     }
 
     setRecoLoading(true);
     setRecoHtml("");
 
-    const jwt = await getToken();
+    const jwt = await getToken(tokenOptions());
 
     try {
       const res = await fetch("/api/recommend-combination", {
@@ -1729,12 +1752,12 @@ function IdeaGenerator({
       if (resultsView === "insights" && compareResult?.comparison_id) {
         response = await fetch(`/api/compare-results/${compareResult.comparison_id}/pdf`, {
           method: "GET",
-          headers: { Authorization: `Bearer ${await getToken()}` },
+          headers: { Authorization: `Bearer ${await getToken(tokenOptions())}` },
         });
       } else if (resultsView === "decision" && decisionReport?.id) {
         response = await fetch(`/api/rank-reports/${decisionReport.id}/pdf`, {
           method: "GET",
-          headers: { Authorization: `Bearer ${await getToken()}` },
+          headers: { Authorization: `Bearer ${await getToken(tokenOptions())}` },
         });
       } else {
         response = await fetch("/api/download-pdf", {
@@ -1786,7 +1809,7 @@ function IdeaGenerator({
     setEmailStatus("");
 
     try {
-      const jwt = await getToken();
+      const jwt = await getToken(tokenOptions());
       if (resultsView === "insights" && !compareResult?.comparison_id) {
         setEmailStatus("Run a comparison before emailing the compare report.");
         return;
@@ -2146,7 +2169,7 @@ function IdeaGenerator({
 
               <button
                 type="button"
-                onClick={handleAccountClick}
+                onClick={scrollToPricing}
                 className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
               >
                 Upgrade to Premium
@@ -3214,7 +3237,7 @@ function IdeaGenerator({
                                           onClick={async () => {
                                             try {
                                               setReportDownloadId(item.id);
-                                              const jwt = await getToken();
+                                              const jwt = await getToken(tokenOptions());
                                               if (!jwt) throw new Error("no_token");
                                               const res = await fetch(`/api/rank-reports/${item.id}`, {
                                                 headers: { Authorization: `Bearer ${jwt}` },
@@ -3815,7 +3838,7 @@ export default function Product() {
     (async () => {
       try {
         setPlanLoading(true);
-        const jwt = await getToken();
+        const jwt = await getToken(tokenOptions());
         if (!jwt) throw new Error("no_token");
 
         const res = await fetch("/api/subscription", {
@@ -3897,9 +3920,31 @@ export default function Product() {
           </p>
         </div>
 
-        <Protect fallback={<IdeaGenerator isPremium={false} planLoaded={true} />}>
+        <Protect plan="premium_subscription" fallback={<IdeaGenerator isPremium={false} planLoaded={true} />}>
           <IdeaGenerator isPremium={isPremium} planLoaded={!planLoading} initialUsage={initialUsage} />
         </Protect>
+
+        {!isPremium && !planLoading ? (
+          <section
+            id="pricing-table"
+            className="mt-14 scroll-mt-24 rounded-3xl border border-white/10 bg-white/5 p-6 sm:p-8 text-white shadow-[0_30px_80px_-60px_rgba(15,23,42,0.9)]"
+          >
+            <div className="mb-6">
+              <p className="text-[11px] uppercase tracking-[0.35em] text-emerald-200/80">
+                Upgrade
+              </p>
+              <h2 className="mt-2 text-2xl sm:text-3xl font-semibold text-white">
+                Unlock Premium access
+              </h2>
+              <p className="mt-2 text-sm text-white/70">
+                Upgrade to remove limits and access all models, comparisons, and export features.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+              <PricingTable />
+            </div>
+          </section>
+        ) : null}
       </div>
     </main>
   );

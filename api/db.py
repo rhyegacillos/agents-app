@@ -4,7 +4,7 @@ import os
 import json
 from datetime import datetime, timezone
 
-DB_PATH = "data/usage.db"
+DB_PATH = os.getenv("DB_PATH", "/app/data/usage.db")
 
 TOKEN_LIMIT_FREE = int(os.getenv("TOKEN_LIMIT_FREE", "50000"))
 TOKEN_LIMIT_PREMIUM = int(os.getenv("TOKEN_LIMIT_PREMIUM", "500000"))

@@ -1,13 +1,16 @@
 from calendar import c
 import os
+
 import asyncio
 from pathlib import Path
 import re
 from token import OP
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCredentials
+import jwt
+from jwt import PyJWKClient
 from openai import AsyncOpenAI
 from google import genai
 from dotenv import load_dotenv
@@ -64,7 +67,60 @@ logging.getLogger("fontTools.ttLib").setLevel(logging.WARNING)
 
 # --- API Clients & Config ---
 clerk_config = ClerkConfig(jwks_url=os.getenv("CLERK_JWKS_URL"))
-clerk_guard = ClerkHTTPBearer(clerk_config)
+logger = logging.getLogger(__name__)
+
+# Initialize PyJWKClient
+jwks_client = PyJWKClient(os.getenv("CLERK_JWKS_URL"))
+
+class CustomClerkHTTPBearer(ClerkHTTPBearer):
+    async def __call__(self, request: Request):
+        auth = request.headers.get("Authorization")
+        if not auth or not auth.startswith("Bearer "):
+            raise HTTPException(status_code=403, detail="Not authenticated")
+
+        token = auth.split(" ")[1]
+
+        try:
+            if not jwks_client:
+                raise Exception("JWKS client not initialized")
+
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+            # Manual verification with leeway and relaxed audience check
+            data = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                leeway=120,
+                options={"verify_aud": False},
+            )
+
+            # Create the credentials object expected by the endpoint
+            creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+            creds.decoded = data  # Attach decoded payload manually
+            return creds
+
+        except Exception as e:
+            logger.error("Manual Token Verification Failed: %s", e)
+            # Try to debug log the token content if possible
+            try:
+                decoded_debug = jwt.decode(token, options={"verify_signature": False})
+                exp_ts = decoded_debug.get("exp", 0)
+                iat_ts = decoded_debug.get("iat", 0)
+                now_ts = datetime.now(timezone.utc).timestamp()
+                logger.info(
+                    "Debug Token: exp=%s, iat=%s, now=%s, skew=%.2fs",
+                    exp_ts,
+                    iat_ts,
+                    now_ts,
+                    iat_ts - now_ts,
+                )
+            except Exception:
+                pass
+
+            raise HTTPException(status_code=403, detail=f"Token verification failed: {str(e)}")
+
+clerk_guard = CustomClerkHTTPBearer(clerk_config)
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 deepseek_client = AsyncOpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os.getenv("DEEPSEEK_API_URL"))
 grok_client = AsyncOpenAI(api_key=os.getenv("GROK_API_KEY"), base_url=os.getenv("GROK_API_URL"))
