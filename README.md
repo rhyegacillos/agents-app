@@ -40,6 +40,13 @@ The agent remembers.
 *   **Continuity:** The generated summary automatically flags changes from previous visits (e.g., "Condition has improved since Jan 12").
 *   **Plain-Text Storage:** Summaries are stored as plain text to keep chat/RAG results readable.
 
+### 5b. Patient History Workspace
+Clinicians can browse prior visits without leaving the app.
+*   **Searchable roster:** Paginated patient list with last-visit metadata and sort.
+*   **Filters & timeline:** Year-to-date default range, keyword filter, timeline pills that mirror deleted/restore state.
+*   **Soft delete/restore:** Visits can be hidden and restored; “Show deleted” toggles styling.
+*   **Reuse vs regenerate:** Matching uploads/template/date trigger a modal to reuse the previous output or regenerate.
+
 ### 6. Quality Review (Critic Loop)
 The system self-corrects.
 *   **Critic Pass:** A dedicated Critic Agent reviews the summary against source notes, uploads, and patient history.

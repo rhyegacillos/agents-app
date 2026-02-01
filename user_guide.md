@@ -42,6 +42,8 @@ This guide explains how to use the web app to review and manage patient visits, 
 - When you re-run a summary with the same patient, date, template, notes, and attachments:
   - A modal asks to **Reuse previous output** (load cached summary/actions/evidence) or **Regenerate** (run model again).
 - If inputs differ (notes, template, files), regeneration runs automatically.
+- Why it matters: reusing avoids duplicate runs and preserves consistency; regenerating is for when you believe the cached result is stale or wrong.
+- Expect timing: regeneration calls the full pipeline (uploads → extraction → LLM → critic/evidence), so large PDFs, audio transcription, and evidence linking can take longer than reuse.
 
 ## 8) Consultation tab workflow (current visit)
 - Upload files (PDF/DOCX/TXT), paste text, or add audio (transcribed to English).
@@ -65,5 +67,4 @@ This guide explains how to use the web app to review and manage patient visits, 
 - Use date filters to narrow a patient with many visits before searching by keyword.
 - If you expect cached reuse but see regeneration, check that notes/files/template match exactly.
 - Keep “Show deleted” off for cleaner reading; toggle it only when you need to restore.
-
 

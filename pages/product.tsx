@@ -4,6 +4,7 @@ import { useState, FormEvent, ChangeEvent, useEffect, useRef, useMemo, useCallba
 import { useAuth, useClerk } from '@clerk/nextjs';
 import DatePicker from 'react-datepicker';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
+import Link from 'next/link';
 import { Protect, PricingTable, UserButton } from '@clerk/nextjs';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -3934,6 +3935,17 @@ export default function Product() {
 
             <div className="relative">
                 <header className="mx-auto max-w-5xl px-6 pt-16 pb-6">
+                    <div className="mb-4">
+                        <Link
+                            href="/"
+                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:border-emerald-500 dark:hover:text-emerald-200"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12l7.5-7.5M3 12h18" />
+                            </svg>
+                            Back to main
+                        </Link>
+                    </div>
                     <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
                         <div>
                             <h1 className="font-display text-4xl text-slate-900 md:text-5xl dark:text-slate-100">

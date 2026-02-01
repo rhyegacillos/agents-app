@@ -101,6 +101,8 @@ The goal is to move from single-request workflows to **autonomous, long-running 
 - [x] **API:** Server-side search within visits (by keyword).  
 - [x] **UX:** Timeline visualization and “copy summary” actions.  
 - [ ] **Backfill:** Optionally regenerate older visits to attach structured evidence.  
+- [x] **UX:** Regeneration modal to reuse prior outputs when uploaded notes, template, and visit date match an existing visit; soft-deleted items skip the prompt.  
+- [x] **UX:** “Back to main” navigation pill; default date range set to current year-to-date; timeline pills and visit cards reflect deleted/restored state.  
 
 ### 4. 🧾 Evidence-Linked Summaries
 **Status:** ✅ Completed

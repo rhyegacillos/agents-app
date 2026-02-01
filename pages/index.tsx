@@ -70,8 +70,6 @@ export default function Home() {
                 'Clinical templates',
                 'Patient Memory',
                 'Patient History tab',
-                'Searchable patient list',
-                'Date filters',
                 'Action Coordinator',
                 'Clinical Decision Support',
                 'Quality Review',
@@ -167,6 +165,17 @@ export default function Home() {
                   </p>
                   <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
                     <li>An automated check compares each summary against the original notes, finds missing or incorrect details, and regenerates the summary when needed</li>
+                  </ul>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">
+                    Patient Visits History
+                  </p>
+                  <ul className="mt-1 ml-4 list-disc text-sm text-slate-600 dark:text-slate-300">
+                    <li>Offers patient search, a timeline view, flexible filters, smooth pagination, and access to past visit summaries.</li>
                   </ul>
                 </div>
               </li>
