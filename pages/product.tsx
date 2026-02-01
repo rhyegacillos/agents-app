@@ -718,8 +718,10 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
             !!(selectedVisit as any).deletedAt
         );
 
-    const [historyStartDate, setHistoryStartDate] = useState('');
-    const [historyEndDate, setHistoryEndDate] = useState('');
+    const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
+    const yearStartIso = useMemo(() => `${new Date().getFullYear()}-01-01`, []);
+    const [historyStartDate, setHistoryStartDate] = useState(yearStartIso);
+    const [historyEndDate, setHistoryEndDate] = useState(todayIso);
     const historyStartRef = useRef<HTMLInputElement | null>(null);
     const historyEndRef = useRef<HTMLInputElement | null>(null);
     const [copyStatus, setCopyStatus] = useState('');
@@ -973,7 +975,16 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
 
             // optimistic: clear deleted flags locally
             setHistoryItems((prev) =>
-                prev.map((h) => (h.doc_id === docId ? { ...h, deleted: false, deleted_at: undefined } : h))
+                prev.map((h) =>
+                    h.doc_id === docId
+                        ? ({ ...h, deleted: false, deleted_at: undefined, is_deleted: false } as HistoryEntry)
+                        : h
+                )
+            );
+            setSelectedVisit((prev) =>
+                prev && prev.doc_id === docId
+                    ? ({ ...prev, deleted: false, deleted_at: undefined, is_deleted: false } as HistoryEntry)
+                    : prev
             );
 
             // keep patient list fresh (last visit / counts may change) and refresh history
@@ -1279,21 +1290,28 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                         >
                                         {historyItems.map((item: HistoryEntry, idx: number) => {
                                             const isSelected = (selectedVisit?.doc_id ?? '') === (item.doc_id ?? '');
+                                            const isDeleted = showDeleted && Boolean(item.deleted || item.deleted_at || (item as any).is_deleted);
+                                            const pillClass = isDeleted
+                                                ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-700 dark:bg-rose-950/60 dark:text-rose-100 ring-1 ring-rose-100 dark:ring-rose-900/40'
+                                                : isSelected
+                                                    ? 'border-emerald-400 bg-emerald-600 text-white ring-2 ring-emerald-200'
+                                                    : 'border-slate-200 bg-white text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-slate-800';
+                                            const dateTextClass = isDeleted
+                                                ? 'text-rose-700 dark:text-rose-200'
+                                                : isSelected
+                                                    ? 'text-white/90'
+                                                    : 'text-slate-600 dark:text-slate-300';
                                             return (
                                                 <div key={`${item.doc_id || item.date}-${idx}`} className="flex items-center gap-2">
                                                     <button
                                                         type="button"
                                                         onClick={() => setSelectedVisit(item)}
-                                                        className={`flex h-16 min-w-[120px] flex-col items-center justify-center rounded-full border px-4 py-2 text-center shadow-sm transition ${
-                                                            isSelected
-                                                                ? 'border-emerald-400 bg-emerald-600 text-white'
-                                                                : 'border-slate-200 bg-white text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-slate-800'
-                                                        }`}
+                                                        className={`flex h-16 min-w-[120px] flex-col items-center justify-center rounded-full border px-4 py-2 text-center shadow-sm transition ${pillClass}`}
                                                     >
                                                         <span className="text-[11px] font-semibold uppercase tracking-wide leading-tight">
                                                             {item.type || 'Visit'}
                                                         </span>
-                                                        <span className={`${isSelected ? 'text-white/90' : 'text-slate-600 dark:text-slate-300'} text-xs font-semibold leading-tight`}>
+                                                        <span className={`${dateTextClass} text-xs font-semibold leading-tight`}>
                                                             {item.date || '—'}
                                                         </span>
                                                     </button>
@@ -1387,20 +1405,18 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                             >
                                                 Clear
                                             </button>
-                                            {selectedVisit && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setSelectedVisit(null)}
-                                                    className="rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
-                                                >
-                                                    Return to list
-                                                </button>
-                                            )}
                                             <button
                                                 type="button"
                                                 onClick={() => setHistoryOrder((v) => (v === 'asc' ? 'desc' : 'asc'))}
-                                                className="rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
                                             >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                    {historyOrder === 'asc' ? (
+                                                        <path d="M10 3l4 4H6l4-4zm0 14l-4-4h8l-4 4z" />
+                                                    ) : (
+                                                        <path d="M10 17l-4-4h8l-4 4zm0-14l4 4H6l4-4z" />
+                                                    )}
+                                                </svg>
                                                 {historyOrder === 'asc' ? 'Oldest first' : 'Newest first'}
                                             </button>
 
@@ -1409,9 +1425,14 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                     type="checkbox"
                                                     checked={showDeleted}
                                                     onChange={(e) => {
-                                                        setShowDeleted(e.target.checked);
+                                                        const next = e.target.checked;
+                                                        setShowDeleted(next);
+                                                        if (!next) {
+                                                            // exit detail view when leaving deleted mode to avoid stale red state
+                                                            setSelectedVisit(null);
+                                                        }
                                                         if (selectedPatient) {
-                                                            loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, e.target.checked);
+                                                            loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, next);
                                                         }
                                                     }}
                                                     className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800"
