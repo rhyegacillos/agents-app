@@ -2836,7 +2836,7 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("generated")}
                   className={cx(
-                    "rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap",
+                    "flex-1 rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap text-center",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "generated"
                       ? "bg-blue-600 text-white"
@@ -2850,7 +2850,7 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("compare")}
                   className={cx(
-                    "rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap",
+                    "flex-1 rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap text-center",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "compare"
                       ? "bg-blue-600 text-white"
@@ -2864,7 +2864,7 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("decision")}
                   className={cx(
-                    "rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap",
+                    "flex-1 rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap text-center",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "decision"
                       ? "bg-blue-600 text-white"
@@ -2876,18 +2876,13 @@ function IdeaGenerator({
               </div>
             </div>
 
-            {mounted && savedPanelOpen && savedPanelPos
+            {mounted && savedPanelOpen
               ? createPortal(
-                  <>
-                    <div className="fixed inset-0 z-40 bg-black/40" aria-hidden="true" />
+                  <div className="fixed inset-0 z-50 flex items-start justify-center px-4 py-10 sm:items-center">
+                    <div className="fixed inset-0 -z-10 bg-black/40" aria-hidden="true" />
                     <div
                       ref={savedPanelRef}
-                      style={{
-                        top: savedPanelPos.top,
-                        left: savedPanelPos.left,
-                        width: savedPanelPos.width,
-                      }}
-                      className="fixed z-50 box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-visible"
+                      className="w-full max-w-3xl box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-visible"
                     >
                       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5">
                         <div className="flex items-center gap-2">
@@ -2922,7 +2917,7 @@ function IdeaGenerator({
                                   <div>Step 3: Choose 1-5 runs you want to summarize.</div>
                                   <div>Step 4: Make sure you select the same Industry</div>
                                   <div>Step 5: Click Decision Summary Report to generate the summary.</div>
-                                  <div>Step 6: Review the ranked runs, insights, risks, and next steps.</div>
+                                  <div>Step 6: Review the ranked runs, insights, and next steps.</div>
                                   <div>Step 7: Export or email the report if needed.</div>
                                 </>
                               }
@@ -3311,7 +3306,7 @@ function IdeaGenerator({
                         ) : null}
                       </div>
                     </div>
-                  </>,
+                  </div>,
                   document.body
                 )
               : null}
@@ -3438,11 +3433,47 @@ function IdeaGenerator({
               <div className="mt-4 space-y-5">
                 {!isLoading && Object.keys(results).length === 0 && (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
-                    <div className="mx-auto max-w-md">
+                    <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                       <p className="text-sm font-semibold text-gray-900 dark:text-white">Your generated ideas will appear here</p>
-                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                        Select a model, set constraints/persona, then click “Generate Ideas”.
+                      <p className="text-sm text-gray-700 dark:text-gray-200">
+                        Go to <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span> and click the <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generated Results</span> button to load the generated results.
                       </p>
+                    </div>
+                    <div className="mt-6 text-left">
+                      <div className="mx-auto max-w-lg">
+                        <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
+                          <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Quick start</div>
+                          <div className="mt-3 space-y-1.5 text-left text-sm text-gray-700 dark:text-gray-200">
+                            {[
+                              "Pick a Target Industry",
+                              "Choose constraints (must-have rules)",
+                              "Select an AI persona (voice/POV)",
+                              "Pick 1–4 AI models to compare",
+                            ].map((step, idx) => (
+                              <div key={step} className="flex items-center gap-2">
+                                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 text-[11px] font-semibold text-white/95 shadow-sm">
+                                  {idx + 1}
+                                </span>
+                                <span className="leading-tight">{step}</span>
+                              </div>
+                            ))}
+                          </div>
+                        <div className="mt-3 text-xs font-semibold text-blue-800 dark:text-blue-200 text-left">
+                          Premium boost: Tap <span className="font-extrabold uppercase tracking-wide text-blue-700 dark:text-blue-200">Recommend Combination</span> to auto-pick the best-fit persona + constraints for this industry (it will replace your current selections) before you run.
+                        </div>
+                          <div className="mt-3 space-y-1 text-left text-xs text-gray-700 dark:text-gray-300">
+                            <div className="font-semibold text-gray-800 dark:text-gray-100">Optional (Premium)</div>
+                            <div>• Set Creativity (safe ↔ bold)</div>
+                            <div>• Set Idea Diversity (focused ↔ varied)</div>
+                          </div>
+                          <div className="mt-3 text-left text-sm font-semibold">
+                            <span className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-2.5 py-1 text-white shadow">
+                              Click “Generate Ideas”
+                            </span>
+                            <span className="ml-2 text-gray-800 dark:text-gray-200">— adjust and rerun anytime</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -3563,11 +3594,37 @@ function IdeaGenerator({
               <div className="mt-4 space-y-4">
                 {!showInsights ? (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
-                    <div className="mx-auto max-w-md">
-                      <p className="text-sm font-semibold text-gray-900 dark:text-white">No comparison insights yet</p>
-                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                        Run Diff Mode to compare top-ranked outputs from two saved runs.
-                      </p>
+                    <div className="mx-auto max-w-md text-left space-y-4">
+                      <div className="rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
+                        <p className="text-sm font-semibold text-gray-900 dark:text-white">No comparison insights yet</p>
+                        <p className="text-sm text-gray-700 dark:text-gray-200">
+                          Go to <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span> and click the <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare Results</span> button to load the generated comparison results.
+                        </p>
+                      </div>
+
+                      <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4 text-left">
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Compare Results quick tips</div>
+                        <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
+                          {[
+                            <>Open <strong className="text-indigo-700 dark:text-indigo-200">Compare Results</strong> from <strong className="text-indigo-700 dark:text-indigo-200">Saved Results</strong>.</>,
+                            "Click Show under Select two runs.",
+                            <>Choose <strong className="text-indigo-700 dark:text-indigo-200">Run A</strong> and <strong className="text-indigo-700 dark:text-indigo-200">Run B</strong> from the list.</>,
+                            "Make sure both runs used the same Industry, Persona, and Constraints.",
+                            <>Click <strong className="text-indigo-700 dark:text-indigo-200">Compare</strong> to generate the Diff Insight.</>,
+                            "Review the winner and key changes, then export if needed.",
+                          ].map((tip, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-[11px] font-semibold text-white/95 shadow-sm">
+                                {idx + 1}
+                              </span>
+                              <span className="leading-tight">{tip}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-3 rounded-lg bg-indigo-600/15 px-3 py-2 text-xs font-semibold text-indigo-900 dark:text-indigo-100">
+                          Diff Mode compares two saved runs with the same configuration using their top-ranked outputs, highlights what changed, and explains which one is stronger.
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ) : null}
@@ -3678,11 +3735,38 @@ function IdeaGenerator({
               <div className="mt-4 space-y-4">
                 {!decisionReport ? (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
-                    <div className="mx-auto max-w-md">
+                    <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                       <p className="text-sm font-semibold text-gray-900 dark:text-white">No decision report loaded</p>
-                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                        Open Saved Results and choose a Decision Summary Report to view it here.
+                      <p className="text-sm text-gray-700 dark:text-gray-200">
+                        Go to <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span> and click the <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> button to load the decision summary reports.
                       </p>
+                    </div>
+
+                    <div className="mt-6 text-left">
+                      <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Decision Summary quick tips</div>
+                        <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
+                          {[
+                            <>Open <strong className="text-indigo-700 dark:text-indigo-200">Decision Summary Report</strong> from <strong className="text-indigo-700 dark:text-indigo-200">Saved Results</strong>.</>,
+                            <>Click Show under <strong className="text-indigo-700 dark:text-indigo-200">Select runs for the report</strong>.</>,
+                            "Choose 1–5 runs you want to summarize.",
+                            <>Make sure all selected runs share the same <strong className="text-indigo-700 dark:text-indigo-200">Industry</strong>.</>,
+                            <>Click <strong className="text-indigo-700 dark:text-indigo-200">Decision Summary Report</strong> to generate the summary.</>,
+                            "Review ranked runs, insights, risks, and next steps.",
+                            "Export or email the report if needed.",
+                          ].map((tip, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-[11px] font-semibold text-white/95 shadow-sm">
+                                {idx + 1}
+                              </span>
+                              <span className="leading-tight">{tip}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-3 rounded-lg bg-indigo-600/15 px-3 py-2 text-xs font-semibold text-indigo-900 dark:text-indigo-100">
+                          The Decision Summary Report ranks the selected runs, highlights the best choice, and packages insights, risks, and next steps in one shareable summary.
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ) : (
