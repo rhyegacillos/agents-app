@@ -12,17 +12,23 @@ import remarkBreaks from 'remark-breaks';
 import ThemeToggle from '../components/ThemeToggle';
 
 const GENERAL_CHIPS = [
-    'How does this app work?',
-    'What file formats are supported?',
-    'Explain Premium features',
+    'How do I create a consultation note?',
+    'What fields should I fill first?',
+    'What file formats can I upload?',
+    'How do Patient History timeline and date range work?',
 ];
 
-const CLINICAL_CHIPS = [
-    'Summarize patient history',
-    'Draft a referral letter',
-    'Check for drug interactions',
-    'Explain the treatment plan',
-];
+function getClinicalChips(patientName: string): string[] {
+    const name = (patientName || 'this patient').trim();
+    return [
+        `Summarize the latest visit for ${name}`,
+        `What changed since the previous visit for ${name}?`,
+        `List current medications and doses for ${name}`,
+        `Any drug interaction concerns for ${name}?`,
+        `Draft a referral letter for ${name}`,
+        `Create patient-friendly follow-up instructions for ${name}`,
+    ];
+}
 
 const SUMMARY_JOB_STORAGE_KEY = 'medinotes_summary_job_id';
 const SUMMARY_OUTPUT_STORAGE_KEY = 'medinotes_summary_output';
@@ -207,6 +213,8 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
     const [showPatientList, setShowPatientList] = useState(false);
     const [patientList, setPatientList] = useState<string[]>([]);
     const [patientListLoading, setPatientListLoading] = useState(false);
+    const [showQuickPrompts, setShowQuickPrompts] = useState(true);
+    const quickPromptsRef = useRef<HTMLDivElement | null>(null);
     const chatAbortRef = useRef<AbortController | null>(null);
 
     // Sync chat's patient context from the main form
@@ -217,7 +225,12 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
         }
     }, [patientName]);
     
-    const activeChips = chatPatientName || currentSummary ? CLINICAL_CHIPS : GENERAL_CHIPS;
+    const activeChips = useMemo(() => {
+        if (chatPatientName || currentSummary) {
+            return getClinicalChips(chatPatientName || patientName || 'this patient');
+        }
+        return GENERAL_CHIPS;
+    }, [chatPatientName, currentSummary, patientName]);
 
     useEffect(() => {
         if (messagesEndRef.current) {
@@ -225,12 +238,19 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
         }
     }, [messages]);
 
+    useEffect(() => {
+        if (showQuickPrompts) {
+            quickPromptsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }, [showQuickPrompts]);
+
     // This is the primary auto-briefing trigger.
     // It runs when the chat's patient context changes.
     useEffect(() => {
         if (chatPatientName && chatPatientName !== lastCheckedPatientRef.current) {
             lastCheckedPatientRef.current = chatPatientName;
             setMessages([]); // Clear chat for new patient context
+            setShowQuickPrompts(false);
             
             // Use a short timeout to allow the UI to clear before sending the new message
             setTimeout(() => {
@@ -270,12 +290,14 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
 
     function selectPatient(name: string) {
         setChatPatientName(name);
+        setShowQuickPrompts(false);
         setShowPatientList(false);
     }
 
     async function handleSend(textOverride?: string) {
         const text = textOverride || input;
         if (!text.trim() || loading) return;
+        setShowQuickPrompts(false);
 
         const userMsg: Message = { role: 'user', content: text };
         setMessages((prev) => [...prev, userMsg]);
@@ -420,9 +442,9 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                             </p>
                         </div>
                         <button onClick={handleSwitchPatientClick} className="rounded-md px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-slate-800">
-                            {showPatientList ? 'Close' : 'Patient List'}
-                        </button>
-                    </div>
+                                {showPatientList ? 'Go Back' : 'Patient List'}
+                            </button>
+                        </div>
 
                     {/* Patient Selector */}
                     {showPatientList && (
@@ -441,19 +463,24 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                     )}
 
                     {/* Messages */}
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 dark:bg-slate-950/30">
-                        {messages.length === 0 && (
-                            <div className="mt-4 text-center">
-                                <p className="text-sm text-slate-500 mb-6 dark:text-slate-400">
-                                    {chatPatientName 
-                                        ? "I'm ready to assist with this consultation." 
-                                        : "I can guide you through the app features."}
-                                </p>
+                    <div className="relative flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 dark:bg-slate-950/30">
+                        {showQuickPrompts && (
+                            <div ref={quickPromptsRef} className="mt-4 text-center">
+                                {messages.length === 0 && (
+                                    <p className="text-sm text-slate-500 mb-6 dark:text-slate-400">
+                                        {chatPatientName 
+                                            ? "I'm ready to assist with this consultation." 
+                                            : "I can guide you through the app features."}
+                                    </p>
+                                )}
                                 <div className="flex flex-col gap-2">
                                     {activeChips.map((chip) => (
                                         <button
                                             key={chip}
-                                            onClick={() => handleSend(chip)}
+                                            onClick={() => {
+                                                setShowQuickPrompts(false);
+                                                handleSend(chip);
+                                            }}
                                             className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:text-emerald-400"
                                         >
                                             {chip}
@@ -522,7 +549,20 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                     </div>
 
                     {/* Input */}
-                    <div className="border-t border-slate-100 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                    <div className="bg-slate-50/50 p-3 dark:bg-slate-950/30">
+                        {messages.length > 0 && !showQuickPrompts && !showPatientList && (
+                            <div className="mb-2 flex justify-center">
+                                <div className="inline-flex rounded-2xl border border-slate-100 bg-white px-2 py-1 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowQuickPrompts(true)}
+                                    className="rounded-full px-3 py-1 text-xs font-semibold text-slate-700 transition hover:text-emerald-700 dark:text-slate-200 dark:hover:text-emerald-400"
+                                >
+                                    Go back to chips
+                                </button>
+                                </div>
+                            </div>
+                        )}
                         <form
                             onSubmit={(e) => {
                                 e.preventDefault();

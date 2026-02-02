@@ -4,7 +4,8 @@ const nextConfig: NextConfig = {
   output: 'export',  // This exports static HTML/JS files
   images: {
     unoptimized: true  // Required for static export
-  }
+  },
+  trailingSlash: true,
 };
 
 export default nextConfig;
