@@ -1167,6 +1167,10 @@ async def rank_report(request: RankReportRequest, creds: HTTPAuthorizationCreden
         raise HTTPException(status_code=400, detail="Output must be pdf, email, or both.")
     if output in {"email", "both"} and not request.email:
         raise HTTPException(status_code=400, detail="Email is required for email delivery.")
+    if output in {"email", "both"}:
+        allowed, msg = db.check_and_increment_email(user_id, plan)
+        if not allowed:
+            raise HTTPException(status_code=429, detail=msg)
     include_all_runs = bool(request.include_all_runs)
     run_ids = list(dict.fromkeys(request.run_ids or []))
 

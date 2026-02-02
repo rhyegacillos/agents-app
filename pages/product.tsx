@@ -443,6 +443,23 @@ function LimitModal({
   );
 }
 
+function ResultsSkeletonCard() {
+  return (
+    <div className="mt-4 space-y-4 animate-pulse">
+      <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-4 space-y-3">
+        <div className="h-4 w-40 rounded bg-black/10 dark:bg-white/10" />
+        <div className="h-3 w-2/3 rounded bg-black/10 dark:bg-white/10" />
+      </div>
+      <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-5 space-y-3">
+        <div className="h-4 w-1/3 rounded bg-black/10 dark:bg-white/10" />
+        <div className="h-3 w-full rounded bg-black/10 dark:bg-white/10" />
+        <div className="h-3 w-11/12 rounded bg-black/10 dark:bg-white/10" />
+        <div className="h-3 w-10/12 rounded bg-black/10 dark:bg-white/10" />
+      </div>
+    </div>
+  );
+}
+
 function ConstraintMultiSelectDropdown({
   options,
   value,
@@ -618,6 +635,7 @@ function IdeaGenerator({
 
   const [results, setResults] = useState<IdeaResults>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [resultsHydrating, setResultsHydrating] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("");
   const [resultsView, setResultsView] = useState<"generated" | "insights" | "decision">("generated");
   const [loadedSavedId, setLoadedSavedId] = useState<number | null>(null);
@@ -649,14 +667,13 @@ function IdeaGenerator({
     originY: number;
     width: number;
     height: number;
-    pointerId: number;
-    target: HTMLElement;
   } | null>(null);
   const [isDraggingSavedPanel, setIsDraggingSavedPanel] = useState(false);
   const savedGeneratedButtonRef = useRef<HTMLButtonElement | null>(null);
   const savedCompareButtonRef = useRef<HTMLButtonElement | null>(null);
   const savedDecisionButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [pageBootLoading, setPageBootLoading] = useState(true);
   const [compareSelection, setCompareSelection] = useState<{ runA: number | null; runB: number | null }>({
     runA: null,
     runB: null,
@@ -747,6 +764,13 @@ function IdeaGenerator({
     setMounted(true);
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPageBootLoading(false);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const formatSavedDate = (value: string) => {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
@@ -813,6 +837,13 @@ function IdeaGenerator({
     const match = /filename="?([^"]+)"?/.exec(value);
     return match?.[1] ?? null;
   };
+  const ensureMinLoadingTime = async (startedAt: number, minMs = 350) => {
+    const elapsed = Date.now() - startedAt;
+    const remaining = Math.max(0, minMs - elapsed);
+    if (remaining > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+  };
   const reportHasSelection = useAllRuns || reportSelection.length > 0;
   const reportEmailRequired = reportOutput === "email" || reportOutput === "both";
   const reportCanSubmit = reportHasSelection && (!reportEmailRequired || reportEmail.trim().length > 0);
@@ -822,6 +853,7 @@ function IdeaGenerator({
   };
 
   const fetchSavedResults = useCallback(async () => {
+    const startedAt = Date.now();
     try {
       setSavedLoading(true);
       const jwt = await getToken(tokenOptions());
@@ -847,11 +879,17 @@ function IdeaGenerator({
       setCompareSelection({ runA: null, runB: null });
       setReportSelection([]);
     } finally {
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, 350 - elapsed);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
       setSavedLoading(false);
     }
   }, [getToken]);
 
   const fetchSavedComparisons = useCallback(async () => {
+    const startedAt = Date.now();
     try {
       setComparisonsLoading(true);
       const jwt = await getToken(tokenOptions());
@@ -865,11 +903,17 @@ function IdeaGenerator({
     } catch {
       setSavedComparisons([]);
     } finally {
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, 350 - elapsed);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
       setComparisonsLoading(false);
     }
   }, [getToken]);
 
   const fetchSavedReports = useCallback(async () => {
+    const startedAt = Date.now();
     try {
       setReportsLoading(true);
       const jwt = await getToken(tokenOptions());
@@ -883,6 +927,11 @@ function IdeaGenerator({
     } catch {
       setSavedReports([]);
     } finally {
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, 350 - elapsed);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
       setReportsLoading(false);
     }
   }, [getToken]);
@@ -912,6 +961,7 @@ function IdeaGenerator({
   }, [initialUsage]);
 
   const refreshUsage = useCallback(async (showLoading = false) => {
+    const startedAt = Date.now();
     try {
       if (showLoading) setUsageRefreshing(true);
       const jwt = await getToken(tokenOptions());
@@ -927,7 +977,14 @@ function IdeaGenerator({
     } catch {
       // silent refresh
     } finally {
-      if (showLoading) setUsageRefreshing(false);
+      if (showLoading) {
+        const elapsed = Date.now() - startedAt;
+        const remaining = Math.max(0, 500 - elapsed);
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining));
+        }
+        setUsageRefreshing(false);
+      }
     }
   }, [getToken]);
 
@@ -1093,7 +1150,10 @@ function IdeaGenerator({
   };
 
   const loadSavedResult = async (savedId: number) => {
+    const startedAt = Date.now();
     try {
+      setSavedPanelMode(null);
+      setResultsHydrating(true);
       setLoadingSavedId(savedId);
       const jwt = await getToken(tokenOptions());
       if (!jwt) throw new Error("no_token");
@@ -1156,11 +1216,12 @@ function IdeaGenerator({
       const nextModels = Array.isArray(data?.models) && data.models.length > 0 ? data.models : resultKeys;
       const normalizedModels = normalizeModelIds(nextModels);
       if (normalizedModels.length > 0) setSelectedModels(normalizedModels);
-      setSavedPanelMode(null);
       pushNotice("Saved results loaded.");
     } catch {
       pushNotice("Failed to load saved results.");
     } finally {
+      await ensureMinLoadingTime(startedAt, 600);
+      setResultsHydrating(false);
       setLoadingSavedId(null);
     }
   };
@@ -1234,11 +1295,16 @@ function IdeaGenerator({
     }
   };
 
-  const runCompare = async (runA?: number, runB?: number) => {
+  const runCompare = async (runA?: number, runB?: number, fromSavedView = false) => {
+    const startedAt = Date.now();
     const resolvedA = runA ?? compareSelection.runA;
     const resolvedB = runB ?? compareSelection.runB;
     if (!resolvedA || !resolvedB) return;
     try {
+      if (fromSavedView) {
+        setSavedPanelMode(null);
+        setResultsHydrating(true);
+      }
       setCompareLoading(true);
       setCompareError(null);
       const jwt = await getToken(tokenOptions());
@@ -1253,16 +1319,19 @@ function IdeaGenerator({
         throw new Error(data?.detail || "Compare failed.");
       }
       const data = await res.json();
+      setCompareError(null);
+      await ensureMinLoadingTime(startedAt, fromSavedView ? 600 : 350);
       setCompareResult(data);
       setResultsView("insights");
       pushNotice(data?.cached ? "Loaded saved comparison." : "Comparison generated and saved.");
-      setSavedPanelMode(null);
+      if (!fromSavedView) setSavedPanelMode(null);
       fetchSavedComparisons();
     } catch (e: any) {
       const message = e?.message || "Failed to compare saved results.";
       setCompareError(message);
       pushNotice(message);
     } finally {
+      if (fromSavedView) setResultsHydrating(false);
       setCompareLoading(false);
     }
   };
@@ -1832,31 +1901,29 @@ function IdeaGenerator({
 
   const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-  const updateSavedPanelPos = useCallback(
-    (forceCenter = false) => {
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      const width = Math.min(768, viewportWidth - 32);
-      const fallbackHeight = Math.min(520, viewportHeight - 32);
-      const panelHeight = savedPanelRef.current?.getBoundingClientRect().height ?? fallbackHeight;
+  const updateSavedPanelPos = useCallback((forceCenter = false) => {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const width = Math.min(768, viewportWidth - 32);
+    const fallbackHeight = Math.min(520, viewportHeight - 32);
+    const panelHeight = savedPanelRef.current?.getBoundingClientRect().height ?? fallbackHeight;
 
-      if (forceCenter || !savedPanelPos) {
+    setSavedPanelPos((prev) => {
+      if (forceCenter || !prev) {
         const left = Math.max(16, Math.round((viewportWidth - width) / 2));
         const top = Math.max(16, Math.round((viewportHeight - panelHeight) / 2));
-        setSavedPanelPos({ top, left, width });
-        return;
+        return { top, left, width };
       }
-
-      const maxLeft = Math.max(16, viewportWidth - savedPanelPos.width - 16);
+      const maxLeft = Math.max(16, viewportWidth - prev.width - 16);
       const maxTop = Math.max(16, viewportHeight - panelHeight - 16);
-      const left = clamp(savedPanelPos.left, 16, maxLeft);
-      const top = clamp(savedPanelPos.top, 16, maxTop);
-      if (left !== savedPanelPos.left || top !== savedPanelPos.top) {
-        setSavedPanelPos({ ...savedPanelPos, top, left });
+      const left = clamp(prev.left, 16, maxLeft);
+      const top = clamp(prev.top, 16, maxTop);
+      if (left !== prev.left || top !== prev.top) {
+        return { ...prev, top, left };
       }
-    },
-    [savedPanelPos]
-  );
+      return prev;
+    });
+  }, []);
 
   const openSavedPanel = (mode: "generated" | "compare" | "decision") => {
     const isSameMode = savedPanelMode === mode;
@@ -1879,16 +1946,14 @@ function IdeaGenerator({
     }
   };
 
-  const startSavedPanelDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+  const startSavedPanelDrag = (e: React.MouseEvent<HTMLDivElement>) => {
     if (savedPanelLocked) return;
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest("button")) return;
+    if (target.closest("button, [data-no-drag='true']")) return;
     const panel = savedPanelRef.current;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
-    const handle = e.currentTarget as HTMLElement;
-    handle.setPointerCapture?.(e.pointerId);
     e.preventDefault();
     savedPanelDragRef.current = {
       startX: e.clientX,
@@ -1897,10 +1962,30 @@ function IdeaGenerator({
       originY: rect.top,
       width: rect.width,
       height: rect.height,
-      pointerId: e.pointerId,
-      target: handle,
     };
     setIsDraggingSavedPanel(true);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const drag = savedPanelDragRef.current;
+      if (!drag) return;
+      const dx = moveEvent.clientX - drag.startX;
+      const dy = moveEvent.clientY - drag.startY;
+      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+      const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
+      const left = clamp(drag.originX + dx, 8, maxLeft);
+      const top = clamp(drag.originY + dy, 8, maxTop);
+      setSavedPanelPos({ top, left, width: drag.width });
+    };
+
+    const onMouseUp = () => {
+      setIsDraggingSavedPanel(false);
+      savedPanelDragRef.current = null;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
   };
 
   useEffect(() => {
@@ -1944,40 +2029,6 @@ function IdeaGenerator({
     setIsDraggingSavedPanel(false);
     savedPanelDragRef.current = null;
   }, [savedPanelOpen]);
-
-  useEffect(() => {
-    if (!isDraggingSavedPanel) return;
-
-    function onPointerMove(e: PointerEvent) {
-      const drag = savedPanelDragRef.current;
-      if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
-      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
-      const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
-      const left = clamp(drag.originX + dx, 8, maxLeft);
-      const top = clamp(drag.originY + dy, 8, maxTop);
-      setSavedPanelPos({ top, left, width: drag.width });
-    }
-
-    function onPointerUp() {
-      const drag = savedPanelDragRef.current;
-      if (drag?.target?.hasPointerCapture?.(drag.pointerId)) {
-        drag.target.releasePointerCapture(drag.pointerId);
-      }
-      setIsDraggingSavedPanel(false);
-      savedPanelDragRef.current = null;
-    }
-
-    document.addEventListener("pointermove", onPointerMove);
-    document.addEventListener("pointerup", onPointerUp);
-    return () => {
-      document.removeEventListener("pointermove", onPointerMove);
-      document.removeEventListener("pointerup", onPointerUp);
-    };
-  }, [isDraggingSavedPanel, clamp]);
-
-
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6 lg:gap-8">
@@ -2079,6 +2130,16 @@ function IdeaGenerator({
             </div>
           ))}
         </div>
+      ) : null}
+
+      {pageBootLoading ? (
+        <FullPageLoader
+          title="Loading IdeaGen"
+          subtitle="Preparing your workspace..."
+          chips={["Saved Results", "Compare Results", "Decision Summary"]}
+          note="Please wait while we initialize your dashboard."
+          tip="Tip: this only appears on page refresh/load."
+        />
       ) : null}
 
       {isLoading ? (
@@ -2719,7 +2780,7 @@ function IdeaGenerator({
       {/* Main content */}
       <section>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-          <GlassCard className="p-2 sm:p-3">
+          <GlassCard className="p-2 sm:p-3 order-2">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Current Usage</h2>
@@ -2797,7 +2858,7 @@ function IdeaGenerator({
             </div>
           </GlassCard>
 
-          <GlassCard className="p-2 sm:p-3 relative">
+          <GlassCard className="p-2 sm:p-3 relative order-1">
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Saved Results</h2>
@@ -2872,7 +2933,7 @@ function IdeaGenerator({
                           "flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5 select-none touch-none",
                           isDraggingSavedPanel ? "cursor-grabbing" : "cursor-grab"
                         )}
-                        onPointerDown={startSavedPanelDrag}
+                        onMouseDown={startSavedPanelDrag}
                       >
                         <div className="flex items-center gap-2">
                           <div className="text-sm font-semibold text-gray-900 dark:text-white">
@@ -2913,7 +2974,7 @@ function IdeaGenerator({
                             />
                           )}
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2" data-no-drag="true">
                           <button
                             type="button"
                             onClick={() => {
@@ -2932,12 +2993,30 @@ function IdeaGenerator({
                             className={cx(
                               "rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
                               "border-black/10 dark:border-white/10",
-                              "bg-white/60 dark:bg-white/5",
+                              "bg-white/60 dark:bg-white/5 inline-flex items-center gap-1.5",
                               savedPanelLoading || savedPanelLocked
                                 ? "opacity-60 cursor-not-allowed"
                                 : "hover:bg-white/80 dark:hover:bg-white/10"
                             )}
                           >
+                            {savedPanelLoading ? (
+                              <svg
+                                viewBox="0 0 20 20"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                className="h-3.5 w-3.5 animate-spin"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="M15.5 10a5.5 5.5 0 01-9.96 3.25M4.5 10a5.5 5.5 0 019.96-3.25"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <path d="M14.5 3.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M5.5 16.5v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            ) : null}
                             {savedPanelLoading ? "Loading..." : "Refresh"}
                           </button>
                           <button
@@ -2956,9 +3035,15 @@ function IdeaGenerator({
                           </button>
                         </div>
                       </div>
+                      {savedPanelLocked ? (
+                        <div className="border-b border-white/10 bg-amber-500/10 px-4 py-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                          Processing in progress — modal is temporarily locked.
+                        </div>
+                      ) : null}
 
                       <div className="flex-1 min-h-0 flex flex-col">
                         <div
+                          aria-busy={savedPanelLoading || savedPanelLocked}
                           className={cx(
                             "flex-1 min-h-0 overflow-y-auto p-4 space-y-3 ig-scrollbar",
                             (savedPanelMode === "compare" || savedPanelMode === "decision") && "flex flex-col",
@@ -2968,7 +3053,10 @@ function IdeaGenerator({
                         >
                           {savedPanelMode === "generated" ? (
                           savedLoading ? (
-                            <div className="text-xs text-gray-500 dark:text-gray-400">Loading saved results…</div>
+                            <div className="inline-flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                              <Spinner className="h-3.5 w-3.5" />
+                              <span>Loading saved results…</span>
+                            </div>
                           ) : savedResults.length === 0 ? (
                             <div className="text-xs text-gray-500 dark:text-gray-400">No saved results yet.</div>
                           ) : (
@@ -3095,7 +3183,10 @@ function IdeaGenerator({
                               <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved comparisons</div>
                               <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
                                 {comparisonsLoading ? (
-                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading comparisons…</div>
+                                  <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                    <Spinner className="h-3.5 w-3.5" />
+                                    <span>Loading comparisons…</span>
+                                  </div>
                                 ) : savedComparisons.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No comparisons yet.</div>
                                 ) : (
@@ -3125,8 +3216,7 @@ function IdeaGenerator({
                                         onClick={() => {
                                           setCompareSelection({ runA: item.run_a_id, runB: item.run_b_id });
                                           setCompareResult(null);
-                                          setSavedPanelMode(null);
-                                          runCompare(item.run_a_id, item.run_b_id);
+                                          runCompare(item.run_a_id, item.run_b_id, true);
                                         }}
                                         disabled={isTokenLimited || compareLoading || savedPanelLocked}
                                         className={cx(
@@ -3168,7 +3258,10 @@ function IdeaGenerator({
                               </label>
                               {decisionSelectOpen ? (
                                 savedLoading ? (
-                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading saved runs…</div>
+                                  <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                    <Spinner className="h-3.5 w-3.5" />
+                                    <span>Loading saved runs…</span>
+                                  </div>
                                 ) : savedResults.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No saved runs yet.</div>
                                 ) : (
@@ -3213,7 +3306,10 @@ function IdeaGenerator({
                               <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved decision summary reports</div>
                               <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
                                 {reportsLoading ? (
-                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">Loading reports…</div>
+                                  <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                    <Spinner className="h-3.5 w-3.5" />
+                                    <span>Loading reports…</span>
+                                  </div>
                                 ) : savedReports.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No reports yet.</div>
                                 ) : (
@@ -3242,7 +3338,11 @@ function IdeaGenerator({
                                         <button
                                           type="button"
                                           onClick={async () => {
+                                            const startedAt = Date.now();
+                                            let loaded = false;
                                             try {
+                                              setSavedPanelMode(null);
+                                              setResultsHydrating(true);
                                               setReportDownloadId(item.id);
                                               const jwt = await getToken(tokenOptions());
                                               if (!jwt) throw new Error("no_token");
@@ -3251,12 +3351,17 @@ function IdeaGenerator({
                                               });
                                               if (!res.ok) throw new Error("load_report_failed");
                                               const data = await res.json();
+                                              await ensureMinLoadingTime(startedAt, 600);
                                               setDecisionReport(data);
                                               setResultsView("decision");
-                                              setSavedPanelMode(null);
+                                              loaded = true;
                                             } catch {
                                               pushNotice("Failed to load report.");
                                             } finally {
+                                              setResultsHydrating(false);
+                                              if (loaded) {
+                                                pushNotice("Decision summary report loaded.");
+                                              }
                                               setReportDownloadId(null);
                                             }
                                           }}
@@ -3336,7 +3441,7 @@ function IdeaGenerator({
                         ) : null}
                         {savedPanelMode === "decision" ? (
                           <div className="h-9 border-t border-white/10 bg-white/90 px-4 dark:bg-slate-950/90 overflow-hidden">
-                            <div className="flex h-full items-center gap-2 overflow-hidden flex-nowrap">
+                            <div className="flex h-full items-center gap-2 overflow-x-auto overflow-y-hidden flex-nowrap ig-scrollbar">
                               <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">Delivery</div>
                               <div className="flex items-center gap-2">
                                 {(["pdf", "email", "both"] as const).map((opt) => (
@@ -3344,9 +3449,11 @@ function IdeaGenerator({
                                     key={opt}
                                     type="button"
                                     onClick={() => setReportOutput(opt)}
+                                    disabled={reportLoading || savedPanelLocked}
                                     className={cx(
                                       "rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap",
                                       "border-black/10 dark:border-white/10",
+                                      reportLoading || savedPanelLocked ? "opacity-60 cursor-not-allowed" : "",
                                       reportOutput === opt
                                         ? "bg-blue-600 text-white"
                                         : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
@@ -3362,7 +3469,8 @@ function IdeaGenerator({
                                   value={reportEmail}
                                   onChange={(e) => setReportEmail(e.target.value)}
                                   placeholder="you@company.com"
-                                  className="h-8 w-44 rounded-lg border px-2.5 text-[11px] outline-none bg-white/70 dark:bg-white/5 border-black/10 dark:border-white/10 text-gray-900 dark:text-gray-100"
+                                  disabled={reportLoading || savedPanelLocked}
+                                  className="h-8 w-36 sm:w-44 rounded-lg border px-2.5 text-[11px] outline-none bg-white/70 dark:bg-white/5 border-black/10 dark:border-white/10 text-gray-900 dark:text-gray-100"
                                 />
                               ) : null}
                               <button
@@ -3400,7 +3508,7 @@ function IdeaGenerator({
                                   "Decision Summary Report"
                                 )}
                               </button>
-                              <div className="ml-auto text-[11px] leading-none text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                              <div className="ml-auto hidden md:block text-[11px] leading-none text-gray-600 dark:text-gray-300 whitespace-nowrap">
                                 {useAllRuns
                                   ? "All saved runs selected"
                                   : reportSelection.length > 0
@@ -3535,7 +3643,9 @@ function IdeaGenerator({
             </div>
           ) : null}
           <div className="mt-4">
-            {resultsView === "generated" ? (
+            {resultsHydrating ? (
+              <ResultsSkeletonCard />
+            ) : resultsView === "generated" ? (
               <div className="mt-4 space-y-5">
                 {!isLoading && Object.keys(results).length === 0 && (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
@@ -3890,9 +4000,16 @@ function IdeaGenerator({
                       <button
                         type="button"
                         onClick={() => decisionReport.id && downloadSavedReport(decisionReport.id)}
-                        className="rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                        disabled={reportDownloadId === decisionReport.id}
+                        className={cx(
+                          "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
+                          reportDownloadId === decisionReport.id
+                            ? "text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                            : "text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                        )}
                       >
-                        Download PDF
+                        {reportDownloadId === decisionReport.id ? <Spinner className="h-3.5 w-3.5" /> : null}
+                        {reportDownloadId === decisionReport.id ? "Preparing PDF..." : "Download PDF"}
                       </button>
                     </div>
                     {decisionReport.report?.summary ? (

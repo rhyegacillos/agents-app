@@ -62,7 +62,7 @@ export default function Home() {
             <SignedIn>
               <div className="flex items-center gap-3">
                 <Link
-                  href="/product"
+                  href="/product/"
                   className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
                 >
                   Go to app
@@ -103,7 +103,7 @@ export default function Home() {
               </SignedOut>
               <SignedIn>
                 <Link
-                  href="/product"
+                  href="/product/"
                   className="inline-flex w-full items-center justify-center rounded-2xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 sm:w-auto"
                 >
                   Generate ideas now
@@ -120,7 +120,7 @@ export default function Home() {
               </SignedOut>
               <SignedIn>
                 <Link
-                  href="/product"
+                  href="/product/"
                   className="inline-flex w-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white/85 hover:bg-white/10 sm:w-auto"
                 >
                   See the app
@@ -234,7 +234,7 @@ export default function Home() {
           </SignedOut>
           <SignedIn>
             <Link
-              href="/product"
+              href="/product/"
               className="hidden sm:inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white/85 hover:bg-white/10"
             >
               Open product →
@@ -359,7 +359,7 @@ export default function Home() {
                 </SignedOut>
                 <SignedIn>
                   <Link
-                    href="/product"
+                    href="/product/"
                     className="inline-flex w-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/85 hover:bg-white/10"
                   >
                     Open app
@@ -395,7 +395,7 @@ export default function Home() {
                 </SignedOut>
                 <SignedIn>
                   <Link
-                    href="/product"
+                    href="/product/"
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700"
                   >
                     Upgrade
