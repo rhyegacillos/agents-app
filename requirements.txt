@@ -1,0 +1,11 @@
+requests
+python-dotenv
+gradio
+pypdf
+openai
+openai-agents
+pydantic
+httpx
+polygon-api-client
+plotly
+uvicorn
