@@ -9,6 +9,12 @@ This repo runs a single-container web app with all backend logic under `api/`.
 - `Dockerfile` - single-container build (FastAPI + exported Next.js)
 - `docker-compose.yml` - local run helper for the single container
 
+## Project Docs
+
+- `ARCHITECTURE.md` - detailed system, API, agent, and data-flow internals
+- `ROADMAP.md` - future feature plan for holdings-only market trend chart
+- `DEPLOY_ECR_TO_EC2.md` - step-by-step ECR -> EC2 deployment guide
+
 ## API Endpoints
 
 - `GET /health`
@@ -51,11 +57,23 @@ Set these in `.env`:
 READ_ONLY_MODE=true
 AUTO_TRADE_BY_MARKET=true
 MARKET_WATCH_INTERVAL_SEC=60
+STRICT_FLAT_WHEN_NO_TRADE=true
 ```
 
 Behavior:
 - Trade controls (`start/stop/reset`) are API-blocked with `403` in read-only mode.
 - Backend watchdog auto-starts trading when market is open and auto-stops when market is closed.
+- Portfolio valuation can be frozen between trades when `STRICT_FLAT_WHEN_NO_TRADE=true`.
+
+### Valuation + UI semantics (current behavior)
+
+- `STRICT_FLAT_WHEN_NO_TRADE=true` (recommended for demo clarity):
+  - account reads do not move valuation between executions
+  - timeline snapshots are written on `buy`/`sell` and reset baseline only
+  - holdings + total cards use `Profit` / `Loss` wording based on sign
+- `STRICT_FLAT_WHEN_NO_TRADE=false`:
+  - API-derived portfolio value is live mark-to-market on read
+  - useful when you want holdings price movement reflected even without new trades
 
 ## Local Dev (without Docker)
 

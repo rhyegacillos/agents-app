@@ -744,8 +744,11 @@ export default function HomePage() {
     () => traders.reduce((acc, trader) => acc + trader.total_profit_loss, 0),
     [traders],
   );
+  const totalPnLLabel = totalPnL >= 0 ? "Profit" : "Loss";
 
   const selectedSummary = traders.find((entry) => entry.name === selectedTrader) ?? null;
+  const selectedPnl = selectedSummary?.total_profit_loss ?? 0;
+  const selectedPnlLabel = selectedPnl >= 0 ? "Profit" : "Loss";
   const visibleLogs = useMemo(
     () =>
       (detail?.logs || []).filter((log) => {
@@ -908,12 +911,12 @@ export default function HomePage() {
               <HelpTip
                 placement="down"
                 label="Total portfolio help"
-                text="Combined value and profit/loss across all traders currently loaded in the dashboard."
+                text="Combined value and net profit or loss across all traders currently loaded in the dashboard."
               />
             </span>
             <span className="statValue">${money(totalValue, 0)}</span>
             <small className={totalPnL >= 0 ? "pnlUp" : "pnlDown"}>
-              {totalPnL >= 0 ? "+" : "-"}${money(Math.abs(totalPnL), 0)} combined PnL
+              ${money(Math.abs(totalPnL), 0)} total {totalPnLLabel}
             </small>
           </article>
         </div>
@@ -1123,10 +1126,9 @@ export default function HomePage() {
                 <strong>${money(selectedSummary?.total_portfolio_value ?? 0, 0)}</strong>
               </p>
               <p>
-                <span>PnL</span>
-                <strong className={(selectedSummary?.total_profit_loss ?? 0) >= 0 ? "pnlUp" : "pnlDown"}>
-                  {(selectedSummary?.total_profit_loss ?? 0) >= 0 ? "+" : "-"}$
-                  {money(Math.abs(selectedSummary?.total_profit_loss ?? 0), 0)}
+                <span className={selectedPnl >= 0 ? "pnlUp" : "pnlDown"}>{selectedPnlLabel}</span>
+                <strong className={selectedPnl >= 0 ? "pnlUp" : "pnlDown"}>
+                  ${money(Math.abs(selectedPnl), 0)}
                 </strong>
               </p>
             </div>

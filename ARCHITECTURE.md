@@ -180,7 +180,8 @@ There are three distinct persistence domains:
    - libsql-backed DB files under `${TRADER_DATA_DIR}/memory/{name}.db`
    - provided by `mcp-memory-libsql`
 
-Important behavior: account reads through `Account.report()` append a new `(timestamp, portfolio_value)` point before returning payload, so read frequency directly affects chart time-series granularity.
+Important behavior: account reads through `Account.report()` do not append timeline points.  
+Timeline snapshots are written on execution events (`buy_shares`, `sell_shares`) plus reset baseline seeding, so dashboard read frequency does not inflate chart history.
 
 ### 0.7 Observability and Trace-to-Log Mapping
 
@@ -197,7 +198,10 @@ Implemented resiliency characteristics:
 
 - Market gate allows skip behavior when market is closed unless override is enabled
 - Researcher MCP startup failures are soft-failed and memoized in `_BROKEN_RESEARCHER_MCP`
-- Missing/broken market data falls back to random price generation in `market.get_share_price(...)` to keep simulation live
+- Market pricing fallback is layered:
+  - first reuse last known symbol price cache when available
+  - then random fallback only if no known price exists
+  - failure cooldown throttles repeated upstream calls during outage windows
 - Scheduler stop path uses terminate with kill fallback
 - API market-status endpoint preserves the last known `open|closed` status on upstream errors and includes fallback detail text
 
@@ -328,7 +332,7 @@ The full cycle is intentionally stateful and runs in the engine process (`api/tr
      - transaction rows in account blob,
      - logs (account events + trace/span events),
      - market cache records.
-   - Portfolio timeline points are updated as account reports are generated.
+   - Portfolio timeline points are updated on trade writes and reset seeding (not passive reads).
    - Trading value of this step:
      - creates reproducible state for UI, post-trade analysis, and troubleshooting,
      - preserves both outcome data (positions/transactions) and process telemetry (traces/logs).
@@ -472,7 +476,7 @@ From `docker-compose.yml`:
 3. Trades call account MCP tool endpoints (buy/sell/change strategy).
 4. Account updates are persisted into SQLite (`api/data/accounts.db`).
 5. Logs and trace events are written to `logs` table.
-6. Portfolio time-series is appended when account report is generated.
+6. Portfolio time-series is appended on trade writes (`buy_shares`/`sell_shares`) and reset baseline seeding.
 
 ## 4.4 Market status flow
 
@@ -554,6 +558,9 @@ Base host: same origin (`http://localhost:8000` by default).
   - `app_name`
   - `frontend_origin`
   - `trader_engine_dir`
+  - `read_only_mode`
+  - `auto_trade_by_market`
+  - `market_watch_interval_sec`
 - Source: environment variables with defaults
 
 ### `settings`
@@ -660,26 +667,31 @@ State fields:
 Methods:
 - `get(name)` — load/create account (initial balance 10,000)
 - `save()` — persist full account blob to SQLite
+- `_append_portfolio_snapshot()` — appends one `(timestamp, value)` point after execution changes
+- `_frozen_portfolio_value()` — returns latest stored timeline value (fallback: current balance)
 - `reset(strategy)` — restore baseline account state with new strategy
+  - seeds one initial timeline point at reset time
 - `deposit(amount)`, `withdraw(amount)` — cash operations
 - `buy_shares(symbol, quantity, rationale)`
   - gets price
   - applies spread (`+0.2%`)
   - validates funds/symbol
   - updates holdings, balance, transactions, logs
+  - appends post-trade portfolio snapshot
   - returns fresh report
 - `sell_shares(symbol, quantity, rationale)`
   - validates holdings
   - applies spread (`-0.2%`)
   - updates holdings, balance, transactions, logs
+  - appends post-trade portfolio snapshot
   - returns fresh report
-- `calculate_portfolio_value()` — cash + mark-to-market holdings
+- `calculate_portfolio_value()` — cash + mark-to-market holdings (live valuation)
 - `calculate_profit_loss(portfolio_value)` — model-specific P/L calculation
 - `get_holdings()`, `list_transactions()`
 - `report()`
-  - recalculates portfolio
-  - appends `(timestamp, value)` into time-series
-  - persists
+  - computes derived payload values without mutating timeline
+  - with `STRICT_FLAT_WHEN_NO_TRADE=true`, uses frozen valuation from latest snapshot
+  - with `STRICT_FLAT_WHEN_NO_TRADE=false`, uses live mark-to-market valuation
   - writes `"Retrieved account details"` only when runtime `run_in_progress=true`
   - returns JSON string (with `total_portfolio_value`, `total_profit_loss`)
 - `get_strategy()`, `change_strategy(strategy)` (non-trade reads/changes are no longer logged to avoid noise)
@@ -719,7 +731,9 @@ Methods:
 - `get_share_price_polygon(symbol)` — route by plan
 - `get_share_price(symbol)`
   - tries Polygon path
-  - on failure returns random fallback `1..100` (keeps simulation alive)
+  - on failure prefers last-known cached symbol price
+  - uses random fallback `1..100` only when no known price exists
+  - respects cooldown window to reduce repeated failed upstream calls
 
 ## 7.4 `api/trader_engine/accounts_server.py` (MCP)
 
@@ -915,6 +929,10 @@ Behavior:
 - Renders trader cards and detail panes:
   - chart
   - holdings table
+  - holdings summary semantics:
+    - label shows `Profit` when value is `>= 0`
+    - label shows `Loss` when value is `< 0`
+    - value color remains green/red by sign
   - logs list
   - transactions list with:
     - sortable headers (except rationale)
@@ -924,6 +942,9 @@ Behavior:
     - date range filter (default current month start -> today)
     - pagination
   - Live logs UI filters out `MCP_TOOLS` and noisy account-read entries
+  - Total Portfolio summary copy is sign-aware:
+    - `total Profit` for non-negative aggregate
+    - `total Loss` for negative aggregate
 
 ## 8.3 `web/app/layout.tsx`
 - Sets global fonts and metadata
@@ -950,9 +971,18 @@ Each account row stores serialized object containing:
 - `transactions: [{ symbol, quantity, price, timestamp, rationale }]`
 - `portfolio_value_time_series: [[timestamp, value], ...]`
 
+Timeline write semantics:
+- `reset(...)` seeds a baseline entry.
+- `buy_shares(...)` and `sell_shares(...)` append snapshots after balance/holdings updates.
+- passive read paths (`report()`, API reads, UI refresh polling) do not append timeline entries.
+
 `report()` adds derived values to API payload:
 - `total_portfolio_value`
 - `total_profit_loss`
+
+Valuation mode for `total_portfolio_value`:
+- `STRICT_FLAT_WHEN_NO_TRADE=true` -> frozen at latest stored snapshot between trades.
+- `STRICT_FLAT_WHEN_NO_TRADE=false` -> live mark-to-market valuation.
 
 ## 9.2 Logs
 
@@ -983,6 +1013,12 @@ Engine behavior:
 - `RUN_EVERY_N_MINUTES`
 - `RUN_EVEN_WHEN_MARKET_IS_CLOSED`
 - `USE_MANY_MODELS`
+- `STRICT_FLAT_WHEN_NO_TRADE`
+
+API runtime behavior:
+- `READ_ONLY_MODE`
+- `AUTO_TRADE_BY_MARKET`
+- `MARKET_WATCH_INTERVAL_SEC`
 
 Runtime paths:
 - `TRADER_ENGINE_DIR`
@@ -991,6 +1027,7 @@ Runtime paths:
 MCP toggles:
 - `ENABLE_BRAVE_MCP`
 - `ENABLE_MEMORY_MCP`
+- `ENABLE_FETCH_MCP`
 
 API/web:
 - `FRONTEND_ORIGIN`

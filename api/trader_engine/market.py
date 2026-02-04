@@ -21,6 +21,7 @@ is_realtime_polygon = polygon_plan == "realtime"
 _polygon_state_lock = threading.RLock()
 _polygon_cooldown_until_ts = 0.0
 _polygon_last_skip_log_ts = 0.0
+_last_known_prices: dict[str, float] = {}
 
 
 def is_market_open() -> bool:
@@ -70,24 +71,42 @@ def get_share_price_polygon(symbol) -> float:
 
 def get_share_price(symbol) -> float:
     global _polygon_cooldown_until_ts, _polygon_last_skip_log_ts
+    normalized_symbol = symbol.upper()
     if polygon_api_key:
         now = time.time()
         with _polygon_state_lock:
             cooldown_until = _polygon_cooldown_until_ts
             last_skip_log = _polygon_last_skip_log_ts
+            last_known_price = _last_known_prices.get(normalized_symbol)
         if now < cooldown_until:
             if now - last_skip_log >= 60:
                 with _polygon_state_lock:
                     _polygon_last_skip_log_ts = now
                 remaining = int(cooldown_until - now)
-                print(f"Polygon cooldown active ({remaining}s remaining); using a random number")
+                if last_known_price is not None and last_known_price > 0:
+                    print(f"Polygon cooldown active ({remaining}s remaining); using last known price")
+                else:
+                    print(f"Polygon cooldown active ({remaining}s remaining); using a random number")
+            if last_known_price is not None and last_known_price > 0:
+                return float(last_known_price)
             return float(random.randint(1, 100))
         try:
-            return get_share_price_polygon(symbol)
+            price = float(get_share_price_polygon(symbol))
+            if price > 0:
+                with _polygon_state_lock:
+                    _last_known_prices[normalized_symbol] = price
+            return price
         except Exception as e:
             with _polygon_state_lock:
                 _polygon_cooldown_until_ts = time.time() + polygon_failure_cooldown_seconds
                 _polygon_last_skip_log_ts = time.time()
+                last_known_price = _last_known_prices.get(normalized_symbol)
+            if last_known_price is not None and last_known_price > 0:
+                print(
+                    f"Was not able to use the polygon API due to {e}; "
+                    f"cooldown {polygon_failure_cooldown_seconds}s; using last known price"
+                )
+                return float(last_known_price)
             print(
                 f"Was not able to use the polygon API due to {e}; "
                 f"cooldown {polygon_failure_cooldown_seconds}s; using a random number"

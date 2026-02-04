@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 import json
+import os
 from dotenv import load_dotenv
 from datetime import datetime
 from market import get_share_price
@@ -10,6 +11,17 @@ load_dotenv(override=True)
 
 INITIAL_BALANCE = 10_000.0
 SPREAD = 0.002
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# When enabled, report() freezes valuation between trade executions.
+STRICT_FLAT_WHEN_NO_TRADE = _env_bool("STRICT_FLAT_WHEN_NO_TRADE", True)
 
 
 class Transaction(BaseModel):
@@ -53,12 +65,29 @@ class Account(BaseModel):
     def save(self):
         write_account(self.name.lower(), self.model_dump())
 
+    def _append_portfolio_snapshot(self) -> float:
+        """Capture one timeline point for portfolio charting."""
+        portfolio_value = self.calculate_portfolio_value()
+        self.portfolio_value_time_series.append(
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value)
+        )
+        return portfolio_value
+
+    def _frozen_portfolio_value(self) -> float:
+        """Return the last recorded valuation, falling back to current balance."""
+        if self.portfolio_value_time_series:
+            return float(self.portfolio_value_time_series[-1][1])
+        return float(self.balance)
+
     def reset(self, strategy: str):
         self.balance = INITIAL_BALANCE
         self.strategy = strategy
         self.holdings = {}
         self.transactions = []
         self.portfolio_value_time_series = []
+        self.portfolio_value_time_series.append(
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.balance)
+        )
         self.save()
 
     def deposit(self, amount: float):
@@ -97,6 +126,7 @@ class Account(BaseModel):
         
         # Update balance
         self.balance -= total_cost
+        self._append_portfolio_snapshot()
         self.save()
         write_log(self.name, "account", f"Bought {quantity} of {symbol}")
         return "Completed. Latest details:\n" + self.report()
@@ -123,6 +153,7 @@ class Account(BaseModel):
 
         # Update balance
         self.balance += total_proceeds
+        self._append_portfolio_snapshot()
         self.save()
         write_log(self.name, "account", f"Sold {quantity} of {symbol}")
         return "Completed. Latest details:\n" + self.report()
@@ -153,9 +184,11 @@ class Account(BaseModel):
     
     def report(self) -> str:
         """ Return a json string representing the account.  """
-        portfolio_value = self.calculate_portfolio_value()
-        self.portfolio_value_time_series.append((datetime.now().strftime("%Y-%m-%d %H:%M:%S"), portfolio_value))
-        self.save()
+        portfolio_value = (
+            self._frozen_portfolio_value()
+            if STRICT_FLAT_WHEN_NO_TRADE
+            else self.calculate_portfolio_value()
+        )
         pnl = self.calculate_profit_loss(portfolio_value)
         data = self.model_dump()
         data["total_portfolio_value"] = portfolio_value
