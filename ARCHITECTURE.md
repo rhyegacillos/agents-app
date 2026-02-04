@@ -1009,6 +1009,12 @@ Market/providers:
 - `POLYGON_PLAN` (`free`/`paid`/`realtime` behavior impacts market tool path)
 - `BRAVE_API_KEY`
 
+Plan and cost guidance:
+- Detailed plan ladder, cost bands, and stage-based recommendations are tracked in `ROADMAP.md` (Section 13).
+- Operational rate-limit assumption used by this architecture:
+  - free tier: 5 requests/minute
+  - paid tiers: effectively unmetered for normal app usage (with provider guidance to avoid burst abuse)
+
 Engine behavior:
 - `RUN_EVERY_N_MINUTES`
 - `RUN_EVEN_WHEN_MARKET_IS_CLOSED`

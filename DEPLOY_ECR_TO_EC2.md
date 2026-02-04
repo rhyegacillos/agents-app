@@ -1,28 +1,130 @@
-# Deploy From ECR to EC2 (Detailed)
+# Deploy to AWS ECR + EC2 (First-Time, Detailed)
 
-This guide deploys this repo as a Docker container on one EC2 instance, pulling the image from ECR.
+This guide covers a full first-time setup:
 
-## Why this guide avoids `latest`
+1) create IAM role(s)  
+2) create ECR repo  
+3) launch EC2 with correct security + role  
+4) push Docker image to ECR  
+5) pull and run on EC2  
+6) update safely with versioned tags
 
-Use a versioned tag (example: `ec2-v1`) to avoid pulling the wrong image accidentally.
-If multiple projects push `latest` to the same repo, EC2 can run unexpected code.
+It is written for this repository (`autonomous-trader`) and uses one EC2 instance + one Docker container.
 
 ---
 
-## 0) Required prerequisites
+## 0) Before You Start
 
-- You already have an ECR repository (example: `autonomous-trader`).
-- Your EC2 instance has an IAM role with:
+- AWS account/region (example: `ap-southeast-1`)
+- Local machine with:
+  - Docker
+  - AWS CLI configured (`aws configure`)
+- SSH keypair (`.pem`) for EC2 login
+
+Recommended for this app:
+- EC2 type: `t3.small` (or higher)
+- OS: **Amazon Linux 2023**
+- Storage: 20 GB gp3
+
+---
+
+## 1) One-Time AWS Setup (Roles, ECR, EC2)
+
+## 1.1 Create ECR repository
+
+### Option A: AWS Console
+- Open **ECR** -> **Repositories** -> **Create repository**
+- Name: `autonomous-trader`
+- Leave defaults (private repo)
+- Create
+
+### Option B: AWS CLI
+```bash
+aws ecr describe-repositories --repository-names autonomous-trader --region ap-southeast-1 \
+  || aws ecr create-repository --repository-name autonomous-trader --region ap-southeast-1
+```
+
+What this does:
+- `describe-repositories`: checks if repo exists
+- `create-repository`: creates it only when missing
+
+---
+
+## 1.2 Create IAM role for EC2 (pull from ECR)
+
+This role is attached to the EC2 instance so EC2 can run `aws ecr get-login-password` without static keys.
+
+### Console steps
+- Open **IAM** -> **Roles** -> **Create role**
+- Trusted entity: **AWS service**
+- Use case: **EC2**
+- Attach policy:
   - `AmazonEC2ContainerRegistryReadOnly`
-- Security group allows:
-  - `22/tcp` from your IP (SSH)
-  - `8000/tcp` from your IP (or trusted CIDR) for app access
+- Role name example: `ec2-ecr-readonly-role`
+- Create role
+
+### Attach role to EC2 later
+You attach this role during launch (or via **Actions -> Security -> Modify IAM role** on existing instance).
 
 ---
 
-## 1) Local build and push to ECR
+## 1.3 Local IAM permissions (for push from laptop)
 
-### 1.1 Set variables once (local machine)
+Your local AWS identity (user or role) needs ECR push permissions. Easiest:
+
+- `AmazonEC2ContainerRegistryPowerUser` (or admin-level equivalent)
+
+Why:
+- EC2 role above is read-only (pull).  
+- Local machine needs push access (login, upload layers, push manifests).
+
+---
+
+## 1.4 Launch EC2 instance
+
+### Required instance launch choices
+- AMI: **Amazon Linux 2023**
+- Instance type: `t3.small` (or `t3.medium` if workload is heavier)
+- Key pair: choose/create one and download `.pem`
+- Auto-assign Public IP: **Enable**
+- IAM role: `ec2-ecr-readonly-role`
+
+### Security group inbound rules (recommended)
+1. `SSH` TCP 22, Source: **My IP**  
+2. `HTTP` TCP 80, Source: `0.0.0.0/0`  
+3. (Optional debug) `Custom TCP` 8000, Source: **My IP**
+
+Why:
+- Port 80 gives URL access without `:8000`.
+- Port 8000 is only for temporary debug/testing.
+
+---
+
+## 1.5 Verify EC2 role is active
+
+SSH into the instance:
+```bash
+ssh -i /path/to/key.pem ec2-user@<EC2_PUBLIC_DNS>
+```
+
+Then verify identity:
+```bash
+aws sts get-caller-identity
+```
+
+Expected:
+- `Arn` should include `assumed-role/ec2-ecr-readonly-role/...`
+
+If this fails:
+- role not attached
+- wrong role
+- IMDS/instance profile issue
+
+---
+
+## 2) Local Build + Push to ECR
+
+## 2.1 Set deploy variables (local)
 
 ```bash
 export AWS_ACCOUNT_ID=348375262167
@@ -31,91 +133,47 @@ export ECR_REPO=autonomous-trader
 export IMAGE_TAG=ec2-v1
 ```
 
-What this does:
-- `AWS_ACCOUNT_ID` and `AWS_REGION` build the ECR registry URL.
-- `ECR_REPO` is your ECR repository name.
-- `IMAGE_TAG` is your deploy version.
+Use versioned tags (`ec2-v1`, `ec2-v2`) instead of `latest`.
 
-Optional quick check:
-```bash
-echo "$AWS_ACCOUNT_ID"
-echo "$AWS_REGION"
-echo "$ECR_REPO"
-echo "$IMAGE_TAG"
-```
+---
 
-### 1.2 Build Linux x86_64 image
+## 2.2 Build linux/amd64 image
 
 ```bash
 docker build --platform linux/amd64 -t ${ECR_REPO}:${IMAGE_TAG} .
 ```
 
 Why:
-- App Runner/EC2 here run x86_64 Linux.
-- Building with `--platform linux/amd64` avoids architecture mismatch (common on Apple Silicon).
+- avoids architecture mismatch (common when building on Apple Silicon)
+- EC2 runtime is linux/amd64
 
-### 1.3 Tag image for ECR
+---
+
+## 2.3 Tag image for ECR URL
 
 ```bash
 docker tag ${ECR_REPO}:${IMAGE_TAG} \
   ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 ```
 
-Why:
-- Docker local tags are not enough for ECR.
-- This adds the full remote ECR path.
+---
 
-### 1.4 Login to ECR
+## 2.4 Login + Push
 
 ```bash
 aws ecr get-login-password --region ${AWS_REGION} \
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-```
 
-Why:
-- ECR requires auth token for push/pull.
-- Token comes from AWS CLI using your local AWS credentials.
-
-### 1.5 Push image
-
-```bash
 docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 ```
 
-Why:
-- Uploads that exact tagged image so EC2 can pull it.
-
 ---
 
-## 2) EC2 setup (first time only)
+## 3) Prepare EC2 Runtime (First Time Only)
 
-### 2.1 Launch instance
+## 3.1 Install Docker and tools
 
-Recommended:
-- AMI: Amazon Linux 2023
-- Size: `t3.small` minimum
-- Disk: 20 GB gp3+
-- Auto-assign public IP: enabled
-
-### 2.2 Attach IAM role to instance
-
-Use role with:
-- `AmazonEC2ContainerRegistryReadOnly`
-
-Verify on EC2 later with:
-```bash
-aws sts get-caller-identity
-```
-
-### 2.3 Connect via SSH
-
-From your local machine:
-```bash
-ssh -i /path/to/key.pem ec2-user@<EC2_PUBLIC_DNS_OR_IP>
-```
-
-### 2.4 Install Docker + AWS CLI on Amazon Linux 2023
-
+On EC2:
 ```bash
 sudo dnf update -y
 sudo dnf install -y docker awscli
@@ -124,27 +182,15 @@ sudo usermod -aG docker ec2-user
 newgrp docker
 ```
 
-What each command does:
-- `dnf update/install`: installs required packages.
-- `systemctl enable --now`: starts Docker now and on reboot.
-- `usermod -aG docker`: lets `ec2-user` run Docker without `sudo`.
-- `newgrp docker`: refreshes shell group permissions immediately.
-
-### 2.5 Verify runtime tools
-
+Verify:
 ```bash
 docker --version
 aws --version
-aws sts get-caller-identity
 ```
-
-`aws sts get-caller-identity` must return your account/role ARN. If it fails, fix IAM role first.
 
 ---
 
-## 3) Pull image on EC2
-
-### 3.1 Set same variables on EC2
+## 3.2 Set deployment variables on EC2
 
 ```bash
 export AWS_ACCOUNT_ID=348375262167
@@ -153,25 +199,33 @@ export ECR_REPO=autonomous-trader
 export IMAGE_TAG=ec2-v1
 ```
 
-### 3.2 Login to ECR from EC2
+---
+
+## 3.3 Login + Pull image on EC2
 
 ```bash
 aws ecr get-login-password --region ${AWS_REGION} \
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-```
 
-### 3.3 Pull exact image tag
-
-```bash
 docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 ```
 
+---
+
+## 3.4 Create persistent data directory
+
+```bash
+sudo mkdir -p /opt/autonomous-trader/data
+sudo chown -R ec2-user:ec2-user /opt/autonomous-trader
+```
+
 Why:
-- Pulling an exact tag guarantees you run the expected build.
+- keeps SQLite and runtime files outside container
+- survives container recreation and upgrades
 
 ---
 
-## 4) Create environment file on EC2
+## 3.5 Create environment file on EC2
 
 Create `/home/ec2-user/autonomous-trader.env`:
 
@@ -184,77 +238,95 @@ AUTO_TRADE_BY_MARKET=true
 MARKET_WATCH_INTERVAL_SEC=60
 RUN_EVERY_N_MINUTES=60
 RUN_EVEN_WHEN_MARKET_IS_CLOSED=false
+STRICT_FLAT_WHEN_NO_TRADE=true
 
 OPENAI_API_KEY=YOUR_OPENAI_KEY
+DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
+GOOGLE_API_KEY=YOUR_GOOGLE_KEY
+GROK_API_KEY=YOUR_GROK_KEY
+
 POLYGON_API_KEY=YOUR_POLYGON_KEY
 POLYGON_PLAN=free
 BRAVE_API_KEY=YOUR_BRAVE_KEY
+
 ENABLE_BRAVE_MCP=true
 ENABLE_FETCH_MCP=true
 ENABLE_MEMORY_MCP=true
 ```
 
-Why:
-- Keeps secrets/config outside image.
-- Easy to rotate keys without rebuilding image.
+Notes:
+- If a provider is unused, you can leave its key blank.
+- Use `true/false` (case-insensitive in current app parser).
 
 ---
 
-## 5) Run container on EC2
+## 4) Run Container on EC2
 
-### 5.1 Create persistent host directory
-
-```bash
-sudo mkdir -p /opt/autonomous-trader/data
-sudo chown -R ec2-user:ec2-user /opt/autonomous-trader
-```
-
-Why:
-- Stores SQLite/runtime files on host disk so restarts do not wipe data.
-
-### 5.2 Run container
+## 4.1 Run on HTTP port 80 (recommended)
 
 ```bash
+docker rm -f autonomous-trader 2>/dev/null || true
+
 docker run -d --name autonomous-trader \
-  -p 8000:8000 \
+  -p 80:8000 \
   --env-file /home/ec2-user/autonomous-trader.env \
   -v /opt/autonomous-trader/data:/app/api/data \
   --restart unless-stopped \
   ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 ```
 
-What key flags do:
-- `-d`: run in background
-- `--name`: stable container name for logs/restarts
-- `-p 8000:8000`: expose app port
-- `--env-file`: load runtime config/secrets
-- `-v ...:/app/api/data`: persist app data
-- `--restart unless-stopped`: auto-restart after reboot
+What key flags mean:
+- `-p 80:8000`: public HTTP on EC2 port 80 -> app listens in container on 8000
+- `--env-file`: runtime config/secrets
+- `-v`: persistence
+- `--restart unless-stopped`: auto-start after reboot
 
 ---
 
-## 6) Verify deployment
+## 4.2 Verify service
 
 ```bash
 docker ps
 docker logs --tail 100 autonomous-trader
-curl http://localhost:8000/health
+curl http://localhost/health
 ```
 
-Expected:
-- `docker ps` shows container `Up`.
-- `curl` returns `{"status":"ok"}`.
+From browser:
+- `http://<EC2_PUBLIC_DNS>`
+- or `http://<EC2_PUBLIC_IP>`
 
-From your laptop/browser:
-```text
-http://<EC2_PUBLIC_DNS_OR_IP>:8000
+---
+
+## 5) First-Time Reset Flow (if needed)
+
+If you want to reset portfolios via API:
+- `POST /api/reset` only works when `READ_ONLY_MODE=false`
+
+Temporary flow:
+1. set `READ_ONLY_MODE=false` in env file  
+2. recreate container  
+3. call reset  
+4. set `READ_ONLY_MODE=true` again  
+5. recreate container
+
+Example:
+```bash
+sed -i 's/^READ_ONLY_MODE=.*/READ_ONLY_MODE=false/' /home/ec2-user/autonomous-trader.env
+docker rm -f autonomous-trader
+docker run -d --name autonomous-trader -p 80:8000 \
+  --env-file /home/ec2-user/autonomous-trader.env \
+  -v /opt/autonomous-trader/data:/app/api/data \
+  --restart unless-stopped \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+
+curl -X POST http://localhost/api/reset
 ```
 
 ---
 
-## 7) Update deployment (new app version)
+## 6) Update Deployment (New Image Version)
 
-### 7.1 Build and push new tag (local)
+## 6.1 Local: build/push new tag
 
 ```bash
 export IMAGE_TAG=ec2-v2
@@ -263,13 +335,13 @@ docker tag ${ECR_REPO}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amaz
 docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 ```
 
-### 7.2 Pull and switch on EC2
+## 6.2 EC2: pull + recreate
 
 ```bash
 docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
 docker rm -f autonomous-trader
 docker run -d --name autonomous-trader \
-  -p 8000:8000 \
+  -p 80:8000 \
   --env-file /home/ec2-user/autonomous-trader.env \
   -v /opt/autonomous-trader/data:/app/api/data \
   --restart unless-stopped \
@@ -278,22 +350,59 @@ docker run -d --name autonomous-trader \
 
 ---
 
-## 8) Troubleshooting
+## 7) Rollback
 
-- **Container resets immediately**
-  - Check: `docker logs --tail 200 autonomous-trader`
-  - Common cause: wrong image tag/repo.
-- **`aws sts get-caller-identity` fails**
-  - IAM role missing/not attached to EC2.
-- **Cannot access from browser**
-  - Security group missing inbound `8000/tcp`.
-- **`Permission denied` under `/opt`**
-  - Run the `sudo mkdir` + `sudo chown` commands in step 5.1.
+If `ec2-v2` fails, roll back quickly:
+
+```bash
+export IMAGE_TAG=ec2-v1
+docker pull ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+docker rm -f autonomous-trader
+docker run -d --name autonomous-trader \
+  -p 80:8000 \
+  --env-file /home/ec2-user/autonomous-trader.env \
+  -v /opt/autonomous-trader/data:/app/api/data \
+  --restart unless-stopped \
+  ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+```
 
 ---
 
-## 9) Operational notes
+## 8) Troubleshooting Checklist
 
-- Run one EC2 instance for this architecture (single trading loop).
-- Keep `READ_ONLY_MODE=true` in internet-facing deployments.
-- Keep versioned tags; avoid `latest` for production safety.
+## A) SSH timeout
+- instance not running
+- wrong public DNS/IP
+- SG missing inbound TCP 22 from your IP
+- wrong key pair / wrong `.pem` path
+
+## B) `aws sts get-caller-identity` fails on EC2
+- IAM role not attached to instance
+- metadata/instance profile issue
+
+## C) `docker: invalid reference format`
+- one of `${AWS_ACCOUNT_ID}`, `${AWS_REGION}`, `${ECR_REPO}`, `${IMAGE_TAG}` is empty
+- check with:
+```bash
+echo "$AWS_ACCOUNT_ID" "$AWS_REGION" "$ECR_REPO" "$IMAGE_TAG"
+```
+
+## D) Browser timeout
+- SG missing HTTP 80 inbound
+- container not healthy (`docker ps`, `docker logs`)
+- app mapped to 8000 but browser opened without `:8000`
+
+## E) Health works locally on EC2 but not from internet
+- verify SG uses correct source CIDR (`0.0.0.0/0` for public HTTP)
+- confirm instance has public IPv4 and route to internet gateway
+
+---
+
+## 9) Operational Recommendations
+
+- Use one EC2 instance for this single-loop architecture.
+- Keep `READ_ONLY_MODE=true` for public/read-mostly access.
+- Use versioned tags (`ec2-vX`), not `latest`.
+- Backup `/opt/autonomous-trader/data` periodically if results matter.
+- Move to ECS/Fargate + managed DB when you need horizontal scale.
+

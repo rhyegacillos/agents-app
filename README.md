@@ -14,6 +14,7 @@ This repo runs a single-container web app with all backend logic under `api/`.
 - `ARCHITECTURE.md` - detailed system, API, agent, and data-flow internals
 - `ROADMAP.md` - future feature plan for holdings-only market trend chart
 - `DEPLOY_ECR_TO_EC2.md` - step-by-step ECR -> EC2 deployment guide
+- `MVP_LIVE_TRADING_COST.md` - live-trading MVP cost model (subscriptions, premium tiers, upgrade path)
 
 ## API Endpoints
 
