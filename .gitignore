@@ -188,3 +188,19 @@ memory.db
 6_mcp/memory/*.db
 
 /mcp/
+/capstone/
+
+# Autonomous trader runtime artifacts
+/api/data/.npm-cache/
+/api/data/memory/
+/api/data/runtime_status.json
+/api/data/*.db
+/api/data/*.db-shm
+/api/data/*.db-wal
+
+# Next.js local artifacts
+/web/node_modules/
+/web/.next/
+/web/out/
+
+*.pem

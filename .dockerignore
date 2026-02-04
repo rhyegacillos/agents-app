@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.db
+node_modules
+web/.next
+capstone/__pycache__
+mcp/__pycache__
+*.pem

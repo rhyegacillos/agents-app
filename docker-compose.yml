@@ -1,0 +1,20 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: 
+        READ_ONLY_MODE: "${READ_ONLY_MODE}"
+        AUTO_TRADE_BY_MARKET: "${AUTO_TRADE_BY_MARKET}"
+    container_name: autonomous-trader
+    env_file:
+      - .env
+    environment:
+      FRONTEND_ORIGIN: http://localhost:8000
+      TRADER_ENGINE_DIR: /app/api/trader_engine
+      TRADER_DATA_DIR: /app/api/data
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api/data:/app/api/data
