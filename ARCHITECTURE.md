@@ -81,7 +81,7 @@ flowchart LR
     rset --> rres[Resources<br/>web + memory context]
 ```
 
-The system uses stdio MCP servers, assembled dynamically per run:
+The system uses stdio MCP servers, with trader/researcher sessions established once per trader lifecycle and reused across cycles:
 
 - `trader_mcp_server_params()` from `mcp_params.py`
   - always includes local `accounts_server.py`
@@ -90,9 +90,9 @@ The system uses stdio MCP servers, assembled dynamically per run:
     - otherwise -> local `market_server.py`
 
 - `researcher_mcp_server_params(name)` from `mcp_params.py`
-  - optional `mcp-server-fetch` (`uvx`)
-  - optional Brave MCP (`npx @modelcontextprotocol/server-brave-search`) when key present
-  - optional memory MCP (`npx mcp-memory-libsql`) with per-trader DB
+  - optional `mcp-server-fetch` (direct command)
+  - optional Brave MCP (`mcp-server-brave-search`) when key present
+  - optional memory MCP (`mcp-memory-libsql`) with per-trader DB
 
 Accounts MCP surface (`accounts_server.py`):
 
@@ -139,10 +139,11 @@ The concrete runtime path for one scheduled cycle:
    - then calls `run_with_mcp_servers()`
 
 5. `Trader.run_with_mcp_servers()`
-   - starts trader MCP servers with `AsyncExitStack`
-   - starts researcher MCP servers with second `AsyncExitStack`
+   - ensures trader MCP server sessions are available (`_ensure_mcp_servers()`)
+   - reuses open sessions across cycles (instead of recreating every cycle)
    - startup failures for researcher servers are cached in `_BROKEN_RESEARCHER_MCP` and skipped on future cycles
    - invokes `run_agent(...)`
+   - on trader run failure, closes MCP sessions so next cycle can re-establish clean transports
 
 6. `Trader.run_agent(...)`
    - builds agent graph via `create_agent(...)`
@@ -200,8 +201,8 @@ Implemented resiliency characteristics:
 - Researcher MCP startup failures are soft-failed and memoized in `_BROKEN_RESEARCHER_MCP`
 - Market pricing fallback is layered:
   - first reuse last known symbol price cache when available
-  - then random fallback only if no known price exists
-  - failure cooldown throttles repeated upstream calls during outage windows
+  - then Brave web lookup (`WEB`) via Brave Search API
+  - finally returns `UNAVAILABLE` (`price=0.0`) if all sources fail
 - Scheduler stop path uses terminate with kill fallback
 - API market-status endpoint preserves the last known `open|closed` status on upstream errors and includes fallback detail text
 
@@ -321,7 +322,10 @@ The full cycle is intentionally stateful and runs in the engine process (`api/tr
    - Price lookups route through market MCP (`market_server.py` -> `market.py`):
      - Polygon path when available (plan-aware behavior),
      - EOD cache path for grouped market data where applicable,
-     - fallback behavior if provider fails/rate-limits (simulation/random value path to keep engine alive).
+     - fallback behavior if provider fails/rate-limits:
+       - in-memory last-known cache (`CACHE`)
+       - Brave Search API parsing path (`WEB`)
+       - explicit unavailable result (`UNAVAILABLE`) when no source yields a valid price.
    - Trading value of this step:
      - separates execution authority (accounts tools) from market-data retrieval concerns,
      - keeps execution continuity under provider instability while preserving process uptime.
@@ -393,7 +397,7 @@ These strategy strings are persisted per account and injected into every run's p
   - Builds and exports static Next.js files
 - **Build stage 2 (`python:3.12-slim`)**
   - Installs Python deps for API + engine
-  - Installs Node/npm (needed for `npx` MCP servers used by the engine)
+  - Installs Node/npm plus preinstalled MCP CLI tools used by the engine
   - Copies `api/` code and static export
   - Runs `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 
@@ -500,7 +504,9 @@ Base host: same origin (`http://localhost:8000` by default).
 - Response model: `TraderListResponse`
 - Includes for each trader:
   - `name`, `lastname`, `model_name`
-  - `balance`, `total_portfolio_value`, `total_profit_loss`
+  - `balance` (legacy alias), `cash_balance`, `holdings_market_value`, `total_equity`
+  - `total_portfolio_value` (compatibility alias to `total_equity`)
+  - `total_profit_loss`
   - `holdings_count`, `transactions_count`
 
 ### `GET /api/traders/{name}`
@@ -508,7 +514,7 @@ Base host: same origin (`http://localhost:8000` by default).
 - Query: `logs_limit` (default 50, min 1, max 200)
 - Response model: `TraderDetail`
   - `summary`
-  - raw `account` object (includes `holdings`, `transactions`, `portfolio_value_time_series`, strategy fields, etc.)
+  - raw `account` object (includes holdings/transactions/timeline + `cash_balance`, `holdings_market_value`, `total_equity`, and strategy fields)
   - `logs`
 - Errors:
   - `404` unknown trader
@@ -673,19 +679,23 @@ Methods:
   - seeds one initial timeline point at reset time
 - `deposit(amount)`, `withdraw(amount)` — cash operations
 - `buy_shares(symbol, quantity, rationale)`
+  - enforces `quantity > 0`
   - gets price
   - applies spread (`+0.2%`)
-  - validates funds/symbol
+  - validates funds and non-zero valid price
   - updates holdings, balance, transactions, logs
   - appends post-trade portfolio snapshot
   - returns fresh report
 - `sell_shares(symbol, quantity, rationale)`
+  - enforces `quantity > 0`
   - validates holdings
+  - validates non-zero valid price
   - applies spread (`-0.2%`)
   - updates holdings, balance, transactions, logs
   - appends post-trade portfolio snapshot
   - returns fresh report
-- `calculate_portfolio_value()` — cash + mark-to-market holdings (live valuation)
+- `calculate_holdings_market_value()` — holdings-only mark-to-market value
+- `calculate_portfolio_value()` — cash + holdings market value
 - `calculate_profit_loss(portfolio_value)` — model-specific P/L calculation
 - `get_holdings()`, `list_transactions()`
 - `report()`
@@ -693,7 +703,12 @@ Methods:
   - with `STRICT_FLAT_WHEN_NO_TRADE=true`, uses frozen valuation from latest snapshot
   - with `STRICT_FLAT_WHEN_NO_TRADE=false`, uses live mark-to-market valuation
   - writes `"Retrieved account details"` only when runtime `run_in_progress=true`
-  - returns JSON string (with `total_portfolio_value`, `total_profit_loss`)
+  - returns JSON string with:
+    - `cash_balance`
+    - `holdings_market_value`
+    - `total_equity`
+    - `total_portfolio_value` (compatibility alias of `total_equity`)
+    - `total_profit_loss`
 - `get_strategy()`, `change_strategy(strategy)` (non-trade reads/changes are no longer logged to avoid noise)
 
 ## 7.2 `api/trader_engine/database.py`
@@ -721,6 +736,8 @@ Methods:
 ### Environment flags
 - `POLYGON_API_KEY`
 - `POLYGON_PLAN` (`paid`, `realtime`, fallback eod mode)
+- `BRAVE_API_KEY`
+- `BRAVE_PRICE_TIMEOUT_SECONDS`
 
 ### Functions
 - `is_market_open()` — Polygon market status API
@@ -729,11 +746,10 @@ Methods:
 - `get_share_price_polygon_eod(symbol)`
 - `get_share_price_polygon_min(symbol)` — snapshot/minute
 - `get_share_price_polygon(symbol)` — route by plan
+- `get_share_price_brave(symbol)` — Brave Search API lookup + parsed numeric extraction
+- `get_share_price_with_source(symbol)` — returns `(price, source)` with source in `POLYGON|CACHE|WEB|UNAVAILABLE`
 - `get_share_price(symbol)`
-  - tries Polygon path
-  - on failure prefers last-known cached symbol price
-  - uses random fallback `1..100` only when no known price exists
-  - respects cooldown window to reduce repeated failed upstream calls
+  - delegates to `get_share_price_with_source`
 
 ## 7.4 `api/trader_engine/accounts_server.py` (MCP)
 
@@ -745,6 +761,9 @@ MCP tools/resources exposed over stdio:
   - `buy_shares(name, symbol, quantity, rationale)`
   - `sell_shares(name, symbol, quantity, rationale)`
   - `change_strategy(name, strategy)`
+- Failed trade tool calls are logged explicitly:
+  - `BUY FAILED <SYMBOL> x<QTY>: <reason>`
+  - `SELL FAILED <SYMBOL> x<QTY>: <reason>`
 - Resources:
   - `accounts://accounts_server/{name}` -> `account.report()`
   - `accounts://strategy/{name}` -> strategy text
@@ -769,11 +788,8 @@ Uses stdio MCP client to talk to `accounts_server.py`.
 ### Flags and paths
 - `ENABLE_BRAVE_MCP` (default true)
 - `ENABLE_MEMORY_MCP` (default true)
-- `TRADER_DATA_DIR` -> memory DB and npm cache roots
-
-### `_npx_env(cache_key, extra_env)`
-- Creates isolated npm cache per trader/tool
-- Reduces npm temp/cache collision issues
+- `ENABLE_FETCH_MCP` (default true)
+- `TRADER_DATA_DIR` -> memory DB root
 
 ### `trader_mcp_server_params()`
 - Always includes local account server
@@ -782,9 +798,9 @@ Uses stdio MCP client to talk to `accounts_server.py`.
   - local `market_server.py`
 
 ### `researcher_mcp_server_params(name)`
-- Includes `mcp-server-fetch` via `uvx`
-- Optional Brave server (`npx`) if enabled and key present
-- Optional memory server (`npx`) with per-trader sqlite path
+- Includes `mcp-server-fetch` direct command if enabled
+- Optional Brave server (`mcp-server-brave-search`) if enabled and key present
+- Optional memory server (`mcp-memory-libsql`) with per-trader sqlite path
 
 ## 7.8 `api/trader_engine/traders.py`
 
@@ -801,11 +817,13 @@ Creates `AsyncOpenAI` clients for OpenAI/DeepSeek/Grok/Gemini base URLs.
 - `create_agent(...)` — constructs main trader agent
 - `get_account_report()` — resource fetch + payload trim
 - `run_agent(...)` — chooses trade vs rebalance prompt and executes `Runner.run`
-- `run_with_mcp_servers()`
-  - starts trader MCP servers + researcher MCP servers
+- `_ensure_mcp_servers()`
+  - initializes and holds trader/researcher MCP sessions
   - **startup-failure hardening:** broken researcher MCP command signatures are cached in `_BROKEN_RESEARCHER_MCP` and skipped on later runs
+- `close_mcp_servers()` — explicit MCP session teardown
+- `run_with_mcp_servers()` — reuses existing sessions, then runs agent
 - `run_with_trace()` — wraps run in trace context
-- `run()` — top-level try/catch and toggles trade/rebalance mode each run
+- `run()` — top-level try/catch, closes MCP sessions on failure, toggles trade/rebalance mode each run
 
 ## 7.9 `api/trader_engine/trading_floor.py`
 
@@ -977,6 +995,9 @@ Timeline write semantics:
 - passive read paths (`report()`, API reads, UI refresh polling) do not append timeline entries.
 
 `report()` adds derived values to API payload:
+- `cash_balance`
+- `holdings_market_value`
+- `total_equity`
 - `total_portfolio_value`
 - `total_profit_loss`
 
@@ -1008,6 +1029,7 @@ Market/providers:
 - `POLYGON_API_KEY`
 - `POLYGON_PLAN` (`free`/`paid`/`realtime` behavior impacts market tool path)
 - `BRAVE_API_KEY`
+- `BRAVE_PRICE_TIMEOUT_SECONDS` (timeout for Brave API fallback price lookup)
 
 Plan and cost guidance:
 - Detailed plan ladder, cost bands, and stage-based recommendations are tracked in `ROADMAP.md` (Section 13).
@@ -1049,13 +1071,13 @@ API/web:
 - Researcher MCP startup is fault-tolerant:
   - failed command signatures are blacklisted in-memory for current process
   - trading continues with remaining servers
-- npm `npx` cache collision mitigation is implemented with per-server cache directories.
+- Trader runtime reuses long-lived MCP sessions per trader to reduce repeated startup churn.
 - Market status endpoint returns last-known open/closed state on failure instead of surfacing `unknown`.
 
 Known constraints:
 - SQLite is local-file storage; scaling to multiple app instances requires external DB.
 - Scheduler is per-process; horizontal scaling can spawn duplicate loops.
-- Some external MCP package installs may still fail due upstream npm/module issues.
+- External MCP CLIs must exist in the runtime image/environment and be version-compatible.
 
 ---
 
@@ -1074,7 +1096,7 @@ Known constraints:
 2. Replace SQLite with managed DB (PostgreSQL/RDS) and proper migrations.
 3. Add authN/authZ to API routes.
 4. Add structured logging + metrics + tracing export.
-5. Pin or vendor MCP toolchain versions to reduce runtime `npx` volatility.
+5. Pin MCP CLI versions and add startup health checks to catch binary/version drift early.
 6. Add explicit API versioning and OpenAPI examples.
 
 ---
@@ -1110,7 +1132,7 @@ flowchart LR
     engine --> data[(SQLite + Memory DBs<br/>api/data)]
     engine --> polygon[Polygon API]
     engine --> llm[LLM Providers<br/>OpenAI / DeepSeek / Gemini / Grok]
-    engine --> mcp[MCP Tool Servers<br/>uvx / npx / stdio]
+    engine --> mcp[MCP Tool Servers<br/>stdio + preinstalled MCP CLIs]
 ```
 
 ## 2) Deployment Topology (Single Docker Image)
@@ -1292,9 +1314,9 @@ flowchart LR
     tmcp --> acc[accounts_server.py]
     tmcp --> mkt[market_server.py OR mcp_massive]
 
-    rmcp --> fetch[mcp-server-fetch via uvx]
-    rmcp --> brave[@modelcontextprotocol/server-brave-search via npx]
-    rmcp --> memory[mcp-memory-libsql via npx]
+    rmcp --> fetch[mcp-server-fetch CLI]
+    rmcp --> brave[mcp-server-brave-search CLI]
+    rmcp --> memory[mcp-memory-libsql CLI]
 
     acc --> db[(accounts.db)]
     mkt --> poly[Polygon API]

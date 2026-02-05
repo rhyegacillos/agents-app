@@ -1,5 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from accounts import Account
+from database import write_log
 
 mcp = FastMCP("accounts_server")
 
@@ -31,7 +32,11 @@ async def buy_shares(name: str, symbol: str, quantity: int, rationale: str) -> f
         quantity: The quantity of shares to buy
         rationale: The rationale for the purchase and fit with the account's strategy
     """
-    return Account.get(name).buy_shares(symbol, quantity, rationale)
+    try:
+        return Account.get(name).buy_shares(symbol, quantity, rationale)
+    except Exception as e:
+        write_log(name, "account", f"BUY FAILED {symbol.upper()} x{quantity}: {e}")
+        raise
 
 
 @mcp.tool()
@@ -44,7 +49,11 @@ async def sell_shares(name: str, symbol: str, quantity: int, rationale: str) -> 
         quantity: The quantity of shares to sell
         rationale: The rationale for the sale and fit with the account's strategy
     """
-    return Account.get(name).sell_shares(symbol, quantity, rationale)
+    try:
+        return Account.get(name).sell_shares(symbol, quantity, rationale)
+    except Exception as e:
+        write_log(name, "account", f"SELL FAILED {symbol.upper()} x{quantity}: {e}")
+        raise
 
 @mcp.tool()
 async def change_strategy(name: str, strategy: str) -> str:

@@ -3,7 +3,7 @@ import json
 import os
 from dotenv import load_dotenv
 from datetime import datetime
-from market import get_share_price
+from market import get_share_price, get_share_price_with_source
 from database import write_account, read_account, write_log
 from runtime_status import read_runtime_status
 
@@ -59,7 +59,19 @@ class Account(BaseModel):
                 "portfolio_value_time_series": []
             }
             write_account(name, fields)
-        return cls(**fields)
+        account = cls(**fields)
+
+        # Backward-compatible data migration for older persisted accounts:
+        # when strict-flat mode is enabled and no timeline exists yet, seed one
+        # baseline snapshot so portfolio reporting is stable without requiring reset.
+        if STRICT_FLAT_WHEN_NO_TRADE and not account.portfolio_value_time_series:
+            seeded_value = account.calculate_portfolio_value() if account.holdings else float(account.balance)
+            account.portfolio_value_time_series.append(
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), float(seeded_value))
+            )
+            account.save()
+
+        return account
     
     
     def save(self):
@@ -108,14 +120,16 @@ class Account(BaseModel):
 
     def buy_shares(self, symbol: str, quantity: int, rationale: str) -> str:
         """ Buy shares of a stock if sufficient funds are available. """
-        price = get_share_price(symbol)
+        if quantity <= 0:
+            raise ValueError("Quantity must be greater than 0.")
+        price, source = get_share_price_with_source(symbol)
         buy_price = price * (1 + SPREAD)
         total_cost = buy_price * quantity
         
         if total_cost > self.balance:
             raise ValueError("Insufficient funds to buy shares.")
-        elif price==0:
-            raise ValueError(f"Unrecognized symbol {symbol}")
+        elif price <= 0:
+            raise ValueError(f"Unable to find market price for {symbol}")
         
         # Update holdings
         self.holdings[symbol] = self.holdings.get(symbol, 0) + quantity
@@ -128,15 +142,20 @@ class Account(BaseModel):
         self.balance -= total_cost
         self._append_portfolio_snapshot()
         self.save()
+        write_log(self.name, "account", f"{symbol.upper()} - {price:.2f} - {source}")
         write_log(self.name, "account", f"Bought {quantity} of {symbol}")
         return "Completed. Latest details:\n" + self.report()
 
     def sell_shares(self, symbol: str, quantity: int, rationale: str) -> str:
         """ Sell shares of a stock if the user has enough shares. """
+        if quantity <= 0:
+            raise ValueError("Quantity must be greater than 0.")
         if self.holdings.get(symbol, 0) < quantity:
             raise ValueError(f"Cannot sell {quantity} shares of {symbol}. Not enough shares held.")
         
-        price = get_share_price(symbol)
+        price, source = get_share_price_with_source(symbol)
+        if price <= 0:
+            raise ValueError(f"Unable to find market price for {symbol}")
         sell_price = price * (1 - SPREAD)
         total_proceeds = sell_price * quantity
         
@@ -155,15 +174,20 @@ class Account(BaseModel):
         self.balance += total_proceeds
         self._append_portfolio_snapshot()
         self.save()
+        write_log(self.name, "account", f"{symbol.upper()} - {price:.2f} - {source}")
         write_log(self.name, "account", f"Sold {quantity} of {symbol}")
         return "Completed. Latest details:\n" + self.report()
 
     def calculate_portfolio_value(self):
         """ Calculate the total value of the user's portfolio. """
-        total_value = self.balance
+        return float(self.balance) + self.calculate_holdings_market_value()
+
+    def calculate_holdings_market_value(self) -> float:
+        """Calculate the market value of current holdings only (excludes cash)."""
+        holdings_value = 0.0
         for symbol, quantity in self.holdings.items():
-            total_value += get_share_price(symbol) * quantity
-        return total_value
+            holdings_value += get_share_price(symbol) * quantity
+        return float(holdings_value)
 
     def calculate_profit_loss(self, portfolio_value: float):
         """ Calculate profit or loss from the initial spend. """
@@ -184,14 +208,21 @@ class Account(BaseModel):
     
     def report(self) -> str:
         """ Return a json string representing the account.  """
-        portfolio_value = (
-            self._frozen_portfolio_value()
-            if STRICT_FLAT_WHEN_NO_TRADE
-            else self.calculate_portfolio_value()
-        )
-        pnl = self.calculate_profit_loss(portfolio_value)
+        cash_balance = float(self.balance)
+        if STRICT_FLAT_WHEN_NO_TRADE:
+            total_equity = float(self._frozen_portfolio_value())
+            holdings_market_value = max(0.0, total_equity - cash_balance)
+        else:
+            holdings_market_value = self.calculate_holdings_market_value()
+            total_equity = cash_balance + holdings_market_value
+
+        pnl = self.calculate_profit_loss(total_equity)
         data = self.model_dump()
-        data["total_portfolio_value"] = portfolio_value
+        data["cash_balance"] = cash_balance
+        data["holdings_market_value"] = holdings_market_value
+        data["total_equity"] = total_equity
+        # Backward-compatible key used across existing API/UI paths.
+        data["total_portfolio_value"] = total_equity
         data["total_profit_loss"] = pnl
         if bool(read_runtime_status().get("run_in_progress", False)):
             write_log(self.name, "account", "Retrieved account details")

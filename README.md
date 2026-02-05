@@ -16,6 +16,64 @@ This repo runs a single-container web app with all backend logic under `api/`.
 - `DEPLOY_ECR_TO_EC2.md` - step-by-step ECR -> EC2 deployment guide
 - `MVP_LIVE_TRADING_COST.md` - live-trading MVP cost model (subscriptions, premium tiers, upgrade path)
 
+## Recent Implementation Updates
+
+### 1) Price source fallback (no random fallback)
+
+Share-price lookup now follows this order in `api/trader_engine/market.py`:
+
+1. `POLYGON` via Polygon API (plan-aware behavior)
+2. `CACHE` via in-memory last-known symbol price
+3. `WEB` via Brave Search API (`get_share_price_brave`)
+4. `UNAVAILABLE` with numeric price `0.0` if all sources fail
+
+Important:
+- Random fallback was removed from the runtime price path.
+- Trade execution now rejects unavailable prices (`price <= 0`) instead of silently trading on synthetic values.
+
+### 2) Cash vs Market Value vs Total Equity
+
+Account reporting now separates core portfolio metrics:
+
+- `cash_balance`: available cash balance
+- `holdings_market_value`: mark-to-market value of holdings only
+- `total_equity`: `cash_balance + holdings_market_value`
+- `total_portfolio_value`: backward-compatible alias to `total_equity`
+
+UI updates:
+- Holdings panel now shows `Cash`, `Market Value`, and `Total Equity`.
+- Top portfolio card shows combined totals with a cash/market breakdown.
+
+### 3) Trading safety guardrails
+
+Execution guards are now enforced in backend:
+
+- `buy_shares` and `sell_shares` require `quantity > 0`.
+- `buy_shares` requires sufficient cash (`balance`) for total cost.
+- buy/sell both require valid positive market price.
+
+Additional visibility:
+- Failed trades are logged explicitly in live logs:
+  - `BUY FAILED <SYMBOL> x<QTY>: <reason>`
+  - `SELL FAILED <SYMBOL> x<QTY>: <reason>`
+- Successful trade logs still include source tagging:
+  - `<SYMBOL> - <PRICE> - POLYGON|CACHE|WEB`
+
+### 4) MCP runtime hardening
+
+Researcher MCP servers are now launched from preinstalled commands (not runtime `npx` in normal flow):
+
+- `mcp-server-fetch`
+- `mcp-server-brave-search`
+- `mcp-memory-libsql`
+
+Trader lifecycle now keeps MCP sessions alive per trader instance and reuses them across cycles, reducing startup churn and protocol instability.
+
+### 5) Multi-model tool-call compatibility
+
+For non-OpenAI chat-completions providers (DeepSeek/Grok/Gemini), tool output message content is normalized to string format before sending back to the model.  
+This prevents provider-side tool-response schema errors during multi-model runs.
+
 ## API Endpoints
 
 - `GET /health`
@@ -26,6 +84,16 @@ This repo runs a single-container web app with all backend logic under `api/`.
 - `POST /api/scheduler/start`
 - `POST /api/scheduler/stop`
 - `POST /api/reset`
+
+### Trader payload notes
+
+`GET /api/traders` and `GET /api/traders/{name}` summaries now include:
+
+- `cash_balance`
+- `holdings_market_value`
+- `total_equity`
+- `total_portfolio_value` (compatibility alias)
+- `total_profit_loss`
 
 ## Run with Docker
 
@@ -48,7 +116,7 @@ docker compose up --build
 - Health check: `http://localhost:8000/health`
 
 If Brave MCP fails to start, the trader runtime now skips that MCP server and continues with remaining tools.
-If fetch MCP emits noisy BrokenPipe shutdown traces, they are now suppressed by default wrapper command.
+Researcher MCP startup failures are isolated per server and soft-disabled for future cycles in-process.
 
 ### Read-only + market-auto mode (AWS-friendly)
 

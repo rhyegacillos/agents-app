@@ -43,6 +43,10 @@ def trader_instructions(name: str):
     You can use your entity tools as a persistent memory to store and recall information; you share
     this memory with other traders and can benefit from the group's knowledge.
     Use these tools to carry out research, make decisions, and execute trades.
+    IMPORTANT ORDER RULES:
+    - Never call buy_shares or sell_shares with quantity 0.
+    - Only place an order when quantity is a positive integer (1 or greater).
+    - If you decide not to trade, do not call buy_shares or sell_shares.
     Your goal is to maximize your profits according to your strategy.
     """
 #   After you've completed trading, send a push notification with a brief summary of activity, then reply with a 2-3 sentence appraisal.
@@ -56,6 +60,10 @@ def trade_message(name, strategy, account):
     Your tools only allow you to trade equities, but you are able to use ETFs to take positions in other markets.
     You do not need to rebalance your portfolio; you will be asked to do so later.
     Just make trades based on your strategy as needed.
+    Execution guardrails:
+    - Do not call buy_shares or sell_shares with quantity 0.
+    - Every trade quantity must be a positive whole number.
+    - If no trade is needed, skip trade tool calls entirely.
     Your investment strategy:
     {strategy}
     Here is your current account:
@@ -74,6 +82,10 @@ def rebalance_message(name, strategy, account):
     Finally, make you decision, then execute trades using the tools as needed.
     You do not need to identify new investment opportunities at this time; you will be asked to do so later.
     Just rebalance your portfolio based on your strategy as needed.
+    Execution guardrails:
+    - Do not call buy_shares or sell_shares with quantity 0.
+    - Every trade quantity must be a positive whole number.
+    - If no rebalance trade is needed, skip trade tool calls entirely.
     Your investment strategy:
     {strategy}
     You also have a tool to change your strategy if you wish; you can decide at any time that you would like to evolve or even switch your strategy.

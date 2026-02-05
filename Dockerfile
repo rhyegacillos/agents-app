@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     curl \
     && rm -rf /var/lib/apt/lists/*
+RUN npm install -g --no-audit --no-fund @modelcontextprotocol/server-brave-search mcp-memory-libsql
 
 COPY api/requirements.txt /app/api/requirements.txt
 RUN pip install --no-cache-dir -r /app/api/requirements.txt

@@ -736,8 +736,23 @@ export default function HomePage() {
     loading,
   ]);
 
+  const totalCashValue = useMemo(
+    () => traders.reduce((acc, trader) => acc + (trader.cash_balance ?? trader.balance), 0),
+    [traders],
+  );
+  const totalMarketValue = useMemo(
+    () =>
+      traders.reduce(
+        (acc, trader) =>
+          acc +
+          (trader.holdings_market_value ??
+            Math.max(0, (trader.total_equity ?? trader.total_portfolio_value) - (trader.cash_balance ?? trader.balance))),
+        0,
+      ),
+    [traders],
+  );
   const totalValue = useMemo(
-    () => traders.reduce((acc, trader) => acc + trader.total_portfolio_value, 0),
+    () => traders.reduce((acc, trader) => acc + (trader.total_equity ?? trader.total_portfolio_value), 0),
     [traders],
   );
   const totalPnL = useMemo(
@@ -747,6 +762,11 @@ export default function HomePage() {
   const totalPnLLabel = totalPnL >= 0 ? "Profit" : "Loss";
 
   const selectedSummary = traders.find((entry) => entry.name === selectedTrader) ?? null;
+  const selectedCash = selectedSummary?.cash_balance ?? selectedSummary?.balance ?? 0;
+  const selectedMarketValue =
+    selectedSummary?.holdings_market_value ??
+    Math.max(0, (selectedSummary?.total_equity ?? selectedSummary?.total_portfolio_value ?? 0) - selectedCash);
+  const selectedTotalEquity = selectedSummary?.total_equity ?? selectedSummary?.total_portfolio_value ?? 0;
   const selectedPnl = selectedSummary?.total_profit_loss ?? 0;
   const selectedPnlLabel = selectedPnl >= 0 ? "Profit" : "Loss";
   const visibleLogs = useMemo(
@@ -868,8 +888,14 @@ export default function HomePage() {
                 The system can use internet research tools to gather current market news and context before taking action.
               </p>
               <p className="richHelpText">
-                It uses Polygon API for market prices when available; if unavailable or rate-limited, fallback pricing keeps the cycle running.
+                Market price lookup order:
               </p>
+              <ol className="richHelpList">
+                <li>Try Polygon first (preferred source).</li>
+                <li>If Polygon fails, use the latest cached price for that symbol (if available).</li>
+                <li>If cache is empty, query Brave web search and extract a previous-close style price.</li>
+                <li>If all sources fail, mark the symbol as unavailable (price = 0.00) and skip execution for that trade.</li>
+              </ol>
               <p className="richHelpText">
                 Trades are strategy-driven per trader, and each trader can run on a different LLM model (OpenAI, DeepSeek, Gemini, Grok in multi-model mode).
               </p>
@@ -881,11 +907,20 @@ export default function HomePage() {
           <article className="statCard">
             <span className="statLabel">
               Market{" "}
-              <HelpTip
-                placement="down"
-                label="Market status help"
-                text="Shows whether US market session is currently open or closed based on backend market-hours checks."
-              />
+              <RichHelpTip label="Market status help" placement="down">
+                <p className="richHelpTitle">Market status + price lookup</p>
+                <p className="richHelpText">
+                  This card shows whether the US market session is open or closed based on backend market-hours checks.
+                </p>
+                <p className="richHelpText">When a trade needs a price, lookup runs in this order:</p>
+                <ol className="richHelpList">
+                  <li>Polygon API (preferred).</li>
+                  <li>Cached last-known price for the symbol.</li>
+                  <li>Brave web search fallback price extraction.</li>
+                  <li>If all fail: mark as unavailable (`0.00`) and skip the trade.</li>
+                </ol>
+                <p className="richHelpText">Live logs show which source was used: POLYGON, CACHE, WEB, or UNAVAILABLE.</p>
+              </RichHelpTip>
             </span>
             <span className={`statValue marketBadge ${marketClass}`} title={market.detail || undefined}>
               {marketLabel}
@@ -911,10 +946,11 @@ export default function HomePage() {
               <HelpTip
                 placement="down"
                 label="Total portfolio help"
-                text="Combined value and net profit or loss across all traders currently loaded in the dashboard."
+                text="Combined total equity across all traders, broken into cash balance and holdings market value, plus net profit or loss."
               />
             </span>
             <span className="statValue">${money(totalValue, 0)}</span>
+            <small className="statHint">Cash ${money(totalCashValue, 0)} + Market ${money(totalMarketValue, 0)}</small>
             <small className={totalPnL >= 0 ? "pnlUp" : "pnlDown"}>
               ${money(Math.abs(totalPnL), 0)} total {totalPnLLabel}
             </small>
@@ -1112,7 +1148,7 @@ export default function HomePage() {
               Holdings
               <HelpTip
                 label="Holdings help"
-                text="Position snapshot for the selected trader. It shows owner identity, current total portfolio value, net profit/loss, and current symbol-level quantities after executed trades."
+                text="Position snapshot for the selected trader. Cash is available buying power, Market Value is holdings value at current pricing, and Total Equity is Cash + Market Value."
                 placement="right"
               />
             </h2>
@@ -1122,8 +1158,16 @@ export default function HomePage() {
                 <strong>{selectedSummary?.name || "-"}</strong>
               </p>
               <p>
-                <span>Portfolio</span>
-                <strong>${money(selectedSummary?.total_portfolio_value ?? 0, 0)}</strong>
+                <span>Cash</span>
+                <strong>${money(selectedCash, 0)}</strong>
+              </p>
+              <p>
+                <span>Market Value</span>
+                <strong>${money(selectedMarketValue, 0)}</strong>
+              </p>
+              <p>
+                <span>Total Equity</span>
+                <strong>${money(selectedTotalEquity, 0)}</strong>
               </p>
               <p>
                 <span className={selectedPnl >= 0 ? "pnlUp" : "pnlDown"}>{selectedPnlLabel}</span>

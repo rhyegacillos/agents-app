@@ -7,3 +7,4 @@ openai>=2.16.0
 openai-agents>=0.7.0
 polygon-api-client>=1.16.3
 mcp>=1.9.4
+mcp-server-fetch>=0.2.0

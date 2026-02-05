@@ -2,6 +2,7 @@ from contextlib import AsyncExitStack
 from accounts_client import read_accounts_resource, read_strategy_resource
 from tracers import make_trace_id
 from agents import Agent, Tool, Runner, OpenAIChatCompletionsModel, trace
+from agents.models.chatcmpl_converter import Converter
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
@@ -31,6 +32,62 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MAX_TURNS = 30
 _BROKEN_RESEARCHER_MCP: set[str] = set()
+
+
+def _flatten_tool_message_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    chunks.append(text)
+                else:
+                    chunks.append(json.dumps(item, ensure_ascii=False))
+            else:
+                chunks.append(str(item))
+        flattened = "\n".join(chunk for chunk in chunks if chunk.strip()).strip()
+        return flattened or json.dumps(content, ensure_ascii=False)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
+def _patch_non_openai_tool_message_format() -> None:
+    """Normalize tool message content for providers that require string tool outputs."""
+    if getattr(Converter, "_autonomous_tool_content_patch_applied", False):
+        return
+
+    original_items_to_messages = Converter.items_to_messages
+
+    @classmethod
+    def patched_items_to_messages(
+        cls,
+        items,
+        model=None,
+        preserve_thinking_blocks=False,
+        preserve_tool_output_all_content=False,
+    ):
+        messages = original_items_to_messages(
+            items,
+            model=model,
+            preserve_thinking_blocks=preserve_thinking_blocks,
+            preserve_tool_output_all_content=preserve_tool_output_all_content,
+        )
+        model_name = (model or "").lower()
+        if any(provider in model_name for provider in ("deepseek", "grok", "gemini")):
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("role") == "tool":
+                    msg["content"] = _flatten_tool_message_content(msg.get("content"))
+        return messages
+
+    Converter.items_to_messages = patched_items_to_messages
+    Converter._autonomous_tool_content_patch_applied = True
+
+
+_patch_non_openai_tool_message_format()
 
 #openrouter_client = AsyncOpenAI(base_url=OPENROUTER_BASE_URL, api_key=openrouter_api_key)
 openai_client = AsyncOpenAI(api_key=openai_api_key)
@@ -74,6 +131,10 @@ class Trader:
         self.agent = None
         self.model_name = model_name
         self.do_trade = True
+        self._trader_stack: AsyncExitStack | None = None
+        self._researcher_stack: AsyncExitStack | None = None
+        self._trader_mcp_servers: list[MCPServerStdio] = []
+        self._researcher_mcp_servers: list[MCPServerStdio] = []
 
     async def create_agent(self, trader_mcp_servers, researcher_mcp_servers) -> Agent:
         tool = await get_researcher_tool(researcher_mcp_servers, self.model_name)
@@ -103,16 +164,25 @@ class Trader:
         )
         await Runner.run(self.agent, message, max_turns=MAX_TURNS)
 
-    async def run_with_mcp_servers(self):
-        async with AsyncExitStack() as stack:
-            trader_mcp_servers = [
-                await stack.enter_async_context(
-                    MCPServerStdio(params, client_session_timeout_seconds=120)
-                )
-                for params in trader_mcp_server_params()
-            ]
-            async with AsyncExitStack() as stack:
-                researcher_mcp_servers = []
+    async def _ensure_mcp_servers(self):
+        if self._trader_stack is None:
+            trader_stack = AsyncExitStack()
+            try:
+                self._trader_mcp_servers = [
+                    await trader_stack.enter_async_context(
+                        MCPServerStdio(params, client_session_timeout_seconds=120)
+                    )
+                    for params in trader_mcp_server_params()
+                ]
+                self._trader_stack = trader_stack
+            except Exception:
+                await trader_stack.aclose()
+                raise
+
+        if self._researcher_stack is None:
+            researcher_stack = AsyncExitStack()
+            researcher_mcp_servers: list[MCPServerStdio] = []
+            try:
                 for params in researcher_mcp_server_params(self.name):
                     command = params.get("command", "unknown")
                     args = params.get("args", [])
@@ -120,7 +190,7 @@ class Trader:
                     if key in _BROKEN_RESEARCHER_MCP:
                         continue
                     try:
-                        server = await stack.enter_async_context(
+                        server = await researcher_stack.enter_async_context(
                             MCPServerStdio(params, client_session_timeout_seconds=120)
                         )
                         researcher_mcp_servers.append(server)
@@ -129,7 +199,25 @@ class Trader:
                         print(
                             f"Warning: disabling researcher MCP server '{key}' due to startup error: {e}"
                         )
-                await self.run_agent(trader_mcp_servers, researcher_mcp_servers)
+                self._researcher_mcp_servers = researcher_mcp_servers
+                self._researcher_stack = researcher_stack
+            except Exception:
+                await researcher_stack.aclose()
+                raise
+
+    async def close_mcp_servers(self):
+        if self._researcher_stack is not None:
+            await self._researcher_stack.aclose()
+            self._researcher_stack = None
+            self._researcher_mcp_servers = []
+        if self._trader_stack is not None:
+            await self._trader_stack.aclose()
+            self._trader_stack = None
+            self._trader_mcp_servers = []
+
+    async def run_with_mcp_servers(self):
+        await self._ensure_mcp_servers()
+        await self.run_agent(self._trader_mcp_servers, self._researcher_mcp_servers)
 
     async def run_with_trace(self):
         trace_name = f"{self.name}-trading" if self.do_trade else f"{self.name}-rebalancing"
@@ -142,4 +230,5 @@ class Trader:
             await self.run_with_trace()
         except Exception as e:
             print(f"Error running trader {self.name}: {e}")
+            await self.close_mcp_servers()
         self.do_trade = not self.do_trade

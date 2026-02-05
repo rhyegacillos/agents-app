@@ -44,25 +44,28 @@ async def run_every_n_minutes():
     add_trace_processor(LogTracer())
     traders = create_traders()
     write_runtime_status(run_in_progress=False)
-    while True:
-        if RUN_EVEN_WHEN_MARKET_IS_CLOSED or is_market_open():
-            cycle_started_at = datetime.now(timezone.utc).isoformat()
-            write_runtime_status(
-                run_in_progress=True,
-                last_run_started_at=cycle_started_at,
-            )
-            try:
-                await asyncio.gather(*[trader.run() for trader in traders])
-            finally:
-                cycle_ended_at = datetime.now(timezone.utc).isoformat()
+    try:
+        while True:
+            if RUN_EVEN_WHEN_MARKET_IS_CLOSED or is_market_open():
+                cycle_started_at = datetime.now(timezone.utc).isoformat()
                 write_runtime_status(
-                    run_in_progress=False,
-                    last_run_ended_at=cycle_ended_at,
+                    run_in_progress=True,
+                    last_run_started_at=cycle_started_at,
                 )
-        else:
-            write_runtime_status(run_in_progress=False)
-            print("Market is closed, skipping run")
-        await asyncio.sleep(RUN_EVERY_N_MINUTES * 60)
+                try:
+                    await asyncio.gather(*[trader.run() for trader in traders])
+                finally:
+                    cycle_ended_at = datetime.now(timezone.utc).isoformat()
+                    write_runtime_status(
+                        run_in_progress=False,
+                        last_run_ended_at=cycle_ended_at,
+                    )
+            else:
+                write_runtime_status(run_in_progress=False)
+                print("Market is closed, skipping run")
+            await asyncio.sleep(RUN_EVERY_N_MINUTES * 60)
+    finally:
+        await asyncio.gather(*(trader.close_mcp_servers() for trader in traders), return_exceptions=True)
 
 
 if __name__ == "__main__":

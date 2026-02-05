@@ -13,6 +13,9 @@ class TraderSummary(BaseModel):
     lastname: str
     model_name: str
     balance: float
+    cash_balance: float
+    holdings_market_value: float
+    total_equity: float
     total_portfolio_value: float
     total_profit_loss: float
     holdings_count: int

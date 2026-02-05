@@ -13,10 +13,18 @@ from app.repositories.trader_repository import (
 def build_trader_summary(meta: dict[str, str], account: dict[str, Any]) -> dict[str, Any]:
     holdings = account.get("holdings", {}) or {}
     transactions = account.get("transactions", []) or []
+    cash_balance = float(account.get("cash_balance", account.get("balance", 0.0)))
+    total_equity = float(account.get("total_equity", account.get("total_portfolio_value", 0.0)))
+    holdings_market_value = float(
+        account.get("holdings_market_value", max(0.0, total_equity - cash_balance))
+    )
     return {
         **meta,
-        "balance": float(account.get("balance", 0.0)),
-        "total_portfolio_value": float(account.get("total_portfolio_value", 0.0)),
+        "balance": cash_balance,
+        "cash_balance": cash_balance,
+        "holdings_market_value": holdings_market_value,
+        "total_equity": total_equity,
+        "total_portfolio_value": total_equity,
         "total_profit_loss": float(account.get("total_profit_loss", 0.0)),
         "holdings_count": len(holdings),
         "transactions_count": len(transactions),
