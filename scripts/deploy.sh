@@ -29,10 +29,15 @@ fi
 terraform workspace select "$ENVIRONMENT"
 
 # Use prod.tfvars for production environment
+EXTRA_VARS=()
+if [ -f terraform.tfvars.local ]; then
+  EXTRA_VARS+=(-var-file=terraform.tfvars.local)
+fi
+
 if [ "$ENVIRONMENT" = "prod" ]; then
-  TF_APPLY_CMD=(terraform apply -var-file=prod.tfvars -var-file=terraform.tfvars.local -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
+  TF_APPLY_CMD=(terraform apply -var-file=prod.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
 else
-  TF_APPLY_CMD=(terraform apply -var-file=terraform.tfvars -var-file=terraform.tfvars.local -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
+  TF_APPLY_CMD=(terraform apply -var-file=terraform.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
 fi
 
 echo "🎯 Applying Terraform..."

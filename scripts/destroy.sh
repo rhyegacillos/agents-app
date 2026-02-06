@@ -42,27 +42,91 @@ fi
 # Select the workspace
 terraform workspace select "$ENVIRONMENT"
 
+EXTRA_VARS=()
+if [ -f terraform.tfvars.local ]; then
+    EXTRA_VARS+=(-var-file=terraform.tfvars.local)
+fi
+
+echo "🔄 Refreshing state (syncing with already-deleted resources)..."
+if [ "$ENVIRONMENT" = "prod" ] && [ -f "prod.tfvars" ]; then
+    terraform apply -refresh-only -var-file=prod.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+else
+    terraform apply -refresh-only -var-file=terraform.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+fi
+
 echo "📦 Emptying S3 buckets..."
 
 # Get bucket names with account ID (matching Day 4 naming)
 FRONTEND_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-frontend-${AWS_ACCOUNT_ID}"
 MEMORY_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-memory-${AWS_ACCOUNT_ID}"
 
-# Empty frontend bucket if it exists
-if aws s3 ls "s3://$FRONTEND_BUCKET" 2>/dev/null; then
-    echo "  Emptying $FRONTEND_BUCKET..."
-    aws s3 rm "s3://$FRONTEND_BUCKET" --recursive
-else
-    echo "  Frontend bucket not found or already empty"
-fi
+empty_bucket() {
+    local bucket="$1"
+    if ! aws s3api head-bucket --bucket "$bucket" 2>/dev/null; then
+        echo "  Bucket not found or no access: $bucket"
+        return
+    fi
 
-# Empty memory bucket if it exists
-if aws s3 ls "s3://$MEMORY_BUCKET" 2>/dev/null; then
-    echo "  Emptying $MEMORY_BUCKET..."
-    aws s3 rm "s3://$MEMORY_BUCKET" --recursive
-else
-    echo "  Memory bucket not found or already empty"
-fi
+    echo "  Emptying $bucket..."
+    aws s3 rm "s3://$bucket" --recursive
+
+    # Handle versioned objects/delete markers if bucket versioning was enabled.
+    local key_marker=""
+    local version_marker=""
+    while true; do
+        local response
+        if [ -n "$key_marker" ]; then
+            response=$(aws s3api list-object-versions \
+                --bucket "$bucket" \
+                --key-marker "$key_marker" \
+                --version-id-marker "$version_marker" \
+                --output json)
+        else
+            response=$(aws s3api list-object-versions --bucket "$bucket" --output json)
+        fi
+
+        local delete_json
+        delete_json=$(mktemp)
+        read -r has_objects is_truncated next_key next_version <<< "$(
+            printf '%s' "$response" | python3 - "$delete_json" <<'PY'
+import json
+import sys
+
+data = json.load(sys.stdin)
+objects = []
+for v in data.get("Versions", []) or []:
+    objects.append({"Key": v["Key"], "VersionId": v["VersionId"]})
+for m in data.get("DeleteMarkers", []) or []:
+    objects.append({"Key": m["Key"], "VersionId": m["VersionId"]})
+
+if objects:
+    with open(sys.argv[1], "w", encoding="utf-8") as fh:
+        json.dump({"Objects": objects, "Quiet": True}, fh)
+
+print(1 if objects else 0)
+print(1 if data.get("IsTruncated") else 0)
+print(data.get("NextKeyMarker", "") or "")
+print(data.get("NextVersionIdMarker", "") or "")
+PY
+        )"
+
+        if [ "$has_objects" = "1" ]; then
+            aws s3api delete-objects --bucket "$bucket" --delete "file://$delete_json"
+        fi
+        rm -f "$delete_json"
+
+        if [ "$is_truncated" = "1" ]; then
+            key_marker="$next_key"
+            version_marker="$next_version"
+            continue
+        fi
+
+        break
+    done
+}
+
+empty_bucket "$FRONTEND_BUCKET"
+empty_bucket "$MEMORY_BUCKET"
 
 echo "🔥 Running terraform destroy..."
 
@@ -74,9 +138,9 @@ fi
 
 # Run terraform destroy with auto-approve
 if [ "$ENVIRONMENT" = "prod" ] && [ -f "prod.tfvars" ]; then
-    terraform destroy -var-file=prod.tfvars -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+    terraform destroy -var-file=prod.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
 else
-    terraform destroy -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+    terraform destroy -var-file=terraform.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
 fi
 
 echo "✅ Infrastructure for ${ENVIRONMENT} has been destroyed!"
