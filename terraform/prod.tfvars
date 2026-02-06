@@ -1,0 +1,11 @@
+project_name             = "digital-assistant"
+environment              = "prod"
+bedrock_model_id         = "amazon.nova-micro-v1:0"
+grok_model_id            = "grok-4-1-fast"
+grok_api_url             = "https://api.x.ai/v1"
+ai_provider              = "grok"
+lambda_timeout           = 60
+api_throttle_burst_limit = 10
+api_throttle_rate_limit  = 20
+use_custom_domain        = true
+root_domain              = "agentairg.site"
