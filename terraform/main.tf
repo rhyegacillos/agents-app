@@ -10,6 +10,7 @@ locals {
 
   custom_domain_fqdn = "${var.project_name}.${var.root_domain}"
   create_www_alias   = false
+  acm_validation_options = var.use_custom_domain && length(aws_acm_certificate.site) > 0 ? aws_acm_certificate.site[0].domain_validation_options : []
 
   common_tags = {
     Project     = var.project_name
@@ -214,6 +215,7 @@ resource "aws_lambda_permission" "api_gw" {
 # CloudFront distribution
 resource "aws_cloudfront_distribution" "main" {
   aliases = local.aliases
+  depends_on = [aws_acm_certificate_validation.site]
   
   viewer_certificate {
     acm_certificate_arn            = var.use_custom_domain ? aws_acm_certificate.site[0].arn : null
@@ -288,10 +290,9 @@ resource "aws_acm_certificate" "site" {
 }
 
 resource "aws_route53_record" "site_validation" {
-  for_each = var.use_custom_domain ? {
-    for dvo in aws_acm_certificate.site[0].domain_validation_options :
-    dvo.domain_name => dvo
-  } : {}
+  for_each = {
+    for dvo in local.acm_validation_options : dvo.domain_name => dvo
+  }
 
   zone_id = data.aws_route53_zone.root[0].zone_id
   name    = each.value.resource_record_name

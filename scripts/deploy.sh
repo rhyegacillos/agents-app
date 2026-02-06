@@ -2,7 +2,7 @@
 set -e
 
 ENVIRONMENT=${1:-dev}          # dev | test | prod
-PROJECT_NAME=${2:-digital-assistant}
+PROJECT_NAME=${2:-${APP_NAME:-digital-assistant}}
 
 echo "🚀 Deploying ${PROJECT_NAME} to ${ENVIRONMENT}..."
 
@@ -15,12 +15,14 @@ echo "📦 Building Lambda package..."
 cd terraform
 # terraform init -input=false
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-AWS_REGION=${DEFAULT_AWS_REGION:-us-east-1}
-terraform init -input=false \
-  -backend-config="bucket=digital-assistant-terraform-state-${AWS_ACCOUNT_ID}" \
-  -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+AWS_REGION=${DEFAULT_AWS_REGION:-ap-southeast-1}
+BACKEND_BUCKET=${TF_BACKEND_BUCKET:-${PROJECT_NAME}-terraform-state-${AWS_ACCOUNT_ID}}
+BACKEND_DDB_TABLE=${TF_BACKEND_DDB_TABLE:-${PROJECT_NAME}-terraform-locks}
+terraform init -reconfigure -input=false \
+  -backend-config="bucket=${BACKEND_BUCKET}" \
+  -backend-config="key=terraform.tfstate" \
   -backend-config="region=${AWS_REGION}" \
-  -backend-config="dynamodb_table=digital-assistant-terraform-locks" \
+  -backend-config="dynamodb_table=${BACKEND_DDB_TABLE}" \
   -backend-config="encrypt=true"
 
 if ! terraform workspace list | grep -q "$ENVIRONMENT"; then
@@ -28,17 +30,20 @@ if ! terraform workspace list | grep -q "$ENVIRONMENT"; then
 fi
 terraform workspace select "$ENVIRONMENT"
 
-# Use prod.tfvars for production environment
+# Resolve var file per environment (prefers <env>.tfvars if present)
 EXTRA_VARS=()
 if [ -f terraform.tfvars.local ]; then
   EXTRA_VARS+=(-var-file=terraform.tfvars.local)
 fi
 
-if [ "$ENVIRONMENT" = "prod" ]; then
-  TF_APPLY_CMD=(terraform apply -var-file=prod.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
-else
-  TF_APPLY_CMD=(terraform apply -var-file=terraform.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
+VAR_FILE="terraform.tfvars"
+if [ -f "${ENVIRONMENT}.tfvars" ]; then
+  VAR_FILE="${ENVIRONMENT}.tfvars"
+elif [ "$ENVIRONMENT" = "prod" ] && [ -f "prod.tfvars" ]; then
+  VAR_FILE="prod.tfvars"
 fi
+
+TF_APPLY_CMD=(terraform apply -var-file="$VAR_FILE" "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve)
 
 echo "🎯 Applying Terraform..."
 "${TF_APPLY_CMD[@]}"

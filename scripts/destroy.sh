@@ -11,7 +11,7 @@ if [ $# -eq 0 ]; then
 fi
 
 ENVIRONMENT=$1
-PROJECT_NAME=${2:-digital-assistant}
+PROJECT_NAME=${2:-${APP_NAME:-digital-assistant}}
 
 echo "🗑️ Preparing to destroy ${PROJECT_NAME}-${ENVIRONMENT} infrastructure..."
 
@@ -20,15 +20,17 @@ cd "$(dirname "$0")/../terraform"
 
 # Get AWS Account ID and Region for backend configuration
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-AWS_REGION=${DEFAULT_AWS_REGION:-us-east-1}
+AWS_REGION=${DEFAULT_AWS_REGION:-ap-southeast-1}
+BACKEND_BUCKET=${TF_BACKEND_BUCKET:-${PROJECT_NAME}-terraform-state-${AWS_ACCOUNT_ID}}
+BACKEND_DDB_TABLE=${TF_BACKEND_DDB_TABLE:-${PROJECT_NAME}-terraform-locks}
 
 # Initialize terraform with S3 backend
 echo "🔧 Initializing Terraform with S3 backend..."
-terraform init -input=false \
-  -backend-config="bucket=digital-assistant-terraform-state-${AWS_ACCOUNT_ID}" \
-  -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+terraform init -reconfigure -input=false \
+  -backend-config="bucket=${BACKEND_BUCKET}" \
+  -backend-config="key=terraform.tfstate" \
   -backend-config="region=${AWS_REGION}" \
-  -backend-config="dynamodb_table=digital-assistant-terraform-locks" \
+  -backend-config="dynamodb_table=${BACKEND_DDB_TABLE}" \
   -backend-config="encrypt=true"
 
 # Check if workspace exists
@@ -48,10 +50,19 @@ if [ -f terraform.tfvars.local ]; then
 fi
 
 echo "🔄 Refreshing state (syncing with already-deleted resources)..."
-if [ "$ENVIRONMENT" = "prod" ] && [ -f "prod.tfvars" ]; then
-    terraform apply -refresh-only -var-file=prod.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
-else
-    terraform apply -refresh-only -var-file=terraform.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+VAR_FILE="terraform.tfvars"
+if [ -f "${ENVIRONMENT}.tfvars" ]; then
+    VAR_FILE="${ENVIRONMENT}.tfvars"
+elif [ "$ENVIRONMENT" = "prod" ] && [ -f "prod.tfvars" ]; then
+    VAR_FILE="prod.tfvars"
+fi
+
+terraform apply -refresh-only -var-file="$VAR_FILE" "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+
+echo "🔎 Checking for remaining managed resources..."
+if [ "$(terraform state list | grep -v '^data\.' | wc -l | tr -d ' ')" -eq 0 ]; then
+    echo "✅ No managed resources left in state. Skipping destroy."
+    exit 0
 fi
 
 echo "📦 Emptying S3 buckets..."
@@ -62,13 +73,14 @@ MEMORY_BUCKET="${PROJECT_NAME}-${ENVIRONMENT}-memory-${AWS_ACCOUNT_ID}"
 
 empty_bucket() {
     local bucket="$1"
-    if ! aws s3api head-bucket --bucket "$bucket" 2>/dev/null; then
+    local region_args=(--region "$AWS_REGION")
+    if ! aws s3api head-bucket --bucket "$bucket" "${region_args[@]}" 2>/dev/null; then
         echo "  Bucket not found or no access: $bucket"
         return
     fi
 
     echo "  Emptying $bucket..."
-    aws s3 rm "s3://$bucket" --recursive
+    aws s3 rm "s3://$bucket" --recursive --region "$AWS_REGION"
 
     # Handle versioned objects/delete markers if bucket versioning was enabled.
     local key_marker=""
@@ -80,9 +92,13 @@ empty_bucket() {
                 --bucket "$bucket" \
                 --key-marker "$key_marker" \
                 --version-id-marker "$version_marker" \
+                "${region_args[@]}" \
                 --output json)
         else
-            response=$(aws s3api list-object-versions --bucket "$bucket" --output json)
+            response=$(aws s3api list-object-versions --bucket "$bucket" "${region_args[@]}" --output json)
+        fi
+        if [ -z "$response" ]; then
+            break
         fi
 
         local delete_json
@@ -111,7 +127,7 @@ PY
         )"
 
         if [ "$has_objects" = "1" ]; then
-            aws s3api delete-objects --bucket "$bucket" --delete "file://$delete_json"
+            aws s3api delete-objects --bucket "$bucket" "${region_args[@]}" --delete "file://$delete_json"
         fi
         rm -f "$delete_json"
 
@@ -137,11 +153,7 @@ if [ ! -f "../backend/lambda-deployment.zip" ]; then
 fi
 
 # Run terraform destroy with auto-approve
-if [ "$ENVIRONMENT" = "prod" ] && [ -f "prod.tfvars" ]; then
-    terraform destroy -var-file=prod.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
-else
-    terraform destroy -var-file=terraform.tfvars "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
-fi
+terraform destroy -var-file="$VAR_FILE" "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
 
 echo "✅ Infrastructure for ${ENVIRONMENT} has been destroyed!"
 echo ""
