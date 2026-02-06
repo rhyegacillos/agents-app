@@ -7,7 +7,7 @@ on:
     inputs:
       environment:
         description: 'Environment to deploy'
-        required:  rue
+        required:  true
         default: 'dev'
         type: choice
         options:
