@@ -62,6 +62,10 @@ jobs:
           ./scripts/destroy.sh ${{ github.event.inputs.environment }}
         env:
           AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          TF_VAR_grok_api_key: ${{ secrets.GROK_API_KEY }}
+          TF_VAR_grok_api_url: ${{ secrets.GROK_API_URL }}
+          TF_VAR_grok_model_id: ${{ secrets.GROK_MODEL_ID }}
+          TF_VAR_ai_provider: ${{ secrets.AI_PROVIDER }}
 
       - name: Destruction Complete
         run: |
