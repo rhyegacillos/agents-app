@@ -70,9 +70,13 @@ def main():
 
     # Copy application files
     print("Copying application files...")
-    for file in ["server.py", "lambda_handler.py", "context.py", "resources.py"]:
+    for file in ["server.py", "lambda_handler.py", "context.py", "resources.py", "tools.py"]:
         if os.path.exists(file):
             shutil.copy2(file, "lambda-package/")
+
+    # Copy MCP servers
+    if os.path.exists("mcp_tools"):
+        shutil.copytree("mcp_tools", "lambda-package/mcp_tools")
     
     # Copy data directory
     if os.path.exists("data"):

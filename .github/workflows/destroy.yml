@@ -69,6 +69,13 @@ jobs:
           TF_VAR_grok_api_url: ${{ secrets.GROK_API_URL }}
           TF_VAR_grok_model_id: ${{ secrets.GROK_MODEL_ID }}
           TF_VAR_ai_provider: ${{ secrets.AI_PROVIDER }}
+          TF_VAR_bedrock_model_id: ${{ vars.BEDROCK_MODEL_ID }}
+          TF_VAR_default_aws_region: ${{ secrets.DEFAULT_AWS_REGION }}
+          TF_VAR_brave_api_key: ${{ secrets.BRAVE_API_KEY }}
+          TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
+          TF_VAR_upstash_redis_rest_url: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          TF_VAR_upstash_redis_rest_token: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          TF_VAR_async_chat_enabled: ${{ vars.ASYNC_CHAT_ENABLED }}
 
       - name: Destruction Complete
         run: |

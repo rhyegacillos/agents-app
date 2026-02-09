@@ -81,3 +81,25 @@
   margin-top: 0.25rem;
   margin-bottom: 0.25rem;
 }
+
+.memory-panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.45) rgba(255, 255, 255, 0.12);
+  margin-right: -12px;
+  padding-right: 12px;
+}
+
+.memory-panel-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.memory-panel-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+
+.memory-panel-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.25));
+  border-radius: 999px;
+  border: 2px solid rgba(12, 23, 40, 0.4);
+}

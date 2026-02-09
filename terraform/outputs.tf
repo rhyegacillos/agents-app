@@ -1,6 +1,6 @@
 output "api_gateway_url" {
   description = "URL of the API Gateway"
-  value       = aws_apigatewayv2_api.main.api_endpoint
+  value       = "https://${aws_api_gateway_rest_api.main.id}.execute-api.${data.aws_region.current.id}.amazonaws.com/${aws_api_gateway_stage.main.stage_name}"
 }
 
 output "cloudfront_url" {
@@ -23,7 +23,17 @@ output "lambda_function_name" {
   value       = aws_lambda_function.api.function_name
 }
 
+output "worker_function_name" {
+  description = "Name of the async worker Lambda function"
+  value       = aws_lambda_function.worker.function_name
+}
+
 output "custom_domain_url" {
   description = "Root URL of the production site"
   value       = var.use_custom_domain ? "https://${var.project_name}.${var.root_domain}" : ""
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL for the Lambda image"
+  value       = aws_ecr_repository.lambda.repository_url
 }

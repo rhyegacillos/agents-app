@@ -1,0 +1,59 @@
+import os
+from typing import Dict, Any
+
+import sys
+import logging
+import requests
+from mcp.server.fastmcp import FastMCP
+
+from mcp_tools.status import update_job_status
+logging.basicConfig(stream=sys.stderr, level=os.getenv("BRAVE_LOG_LEVEL", "INFO").upper())
+
+
+mcp = FastMCP("Brave-Search-Service")
+
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "").strip()
+
+if not BRAVE_API_KEY:
+    raise RuntimeError("BRAVE_API_KEY is required for Brave MCP server")
+
+
+@mcp.tool()
+async def brave_web_search(query: str, count: int = 5) -> Dict[str, Any]:
+    """
+    Search the web with Brave Search API.
+    Args:
+        query: Search query string.
+        count: Number of results (1-10).
+    """
+    update_job_status("Tool: Brave Search", 40)
+    count = max(1, min(int(count), 10))
+    logging.info("[brave] search start q=%s count=%s", query, count)
+    url = "https://api.search.brave.com/res/v1/web/search"
+    headers = {
+        "Accept": "application/json",
+        "X-Subscription-Token": BRAVE_API_KEY,
+        "User-Agent": "DigitalAssistant/1.0",
+    }
+    params = {"q": query, "count": count}
+    response = requests.get(url, headers=headers, params=params, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    results = []
+    for item in (data.get("web", {}) or {}).get("results", [])[:count]:
+        results.append(
+            {
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "description": item.get("description"),
+            }
+        )
+    logging.info("[brave] search success results=%d", len(results))
+    return {"query": query, "count": count, "results": results}
+
+
+if __name__ == "__main__":
+    try:
+        mcp.run(transport="stdio")
+    except TypeError:
+        mcp.run()

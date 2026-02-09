@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, type ChangeEvent } from 'react';
-import { Send, Bot, User, History, X, RefreshCw, Maximize2, Minimize2, Paperclip, MessageSquarePlus, Brain } from 'lucide-react';
+import { Send, Bot, User, History, X, RefreshCw, Maximize2, Minimize2, Paperclip, MessageSquarePlus, Brain, Terminal, LifeBuoy, Mail, FileDown, Plus, Minus, Search } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -39,7 +39,7 @@ export default function Twin() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [streamStatus, setStreamStatus] = useState<string | null>(null);
+    const [asyncStatus, setAsyncStatus] = useState<string | null>(null);
     const [sessionId, setSessionId] = useState<string>('');
     const [sessions, setSessions] = useState<SessionSummary[]>([]);
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -52,15 +52,16 @@ export default function Twin() {
     const [isLoadingMemory, setIsLoadingMemory] = useState(false);
     const [memoryError, setMemoryError] = useState<string | null>(null);
     const [memoryAction, setMemoryAction] = useState<{ id: string; action: 'approve' | 'reject' | 'remove' } | null>(null);
+    const [isClearingMemory, setIsClearingMemory] = useState(false);
+    const [isMemoryInfoOpen, setIsMemoryInfoOpen] = useState(false);
+    const [isApprovedMemoryOpen, setIsApprovedMemoryOpen] = useState(true);
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const statusHoldUntilRef = useRef<number>(0);
     const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
     const isValidSyncCode = (code: string) => /^[a-zA-Z0-9_-]{8,64}$/.test(code);
@@ -72,34 +73,66 @@ export default function Twin() {
     };
 
     const lastSessionKey = (uid: string) => `last_session_id:${uid}`;
-    const statusLabel =
-        streamStatus === 'searching_web'
-            ? 'Searching the web…'
-            : streamStatus === 'generating_response'
-                ? 'Generating response…'
-                : null;
+    const displayStatusLabel = asyncStatus;
 
-    const setStatusWithHold = (status: string) => {
-        if (statusTimeoutRef.current) {
-            clearTimeout(statusTimeoutRef.current);
-            statusTimeoutRef.current = null;
+    const pollJob = async (jobId: string, uid: string, initialDelayMs = 2000) => {
+        let delay = initialDelayMs;
+        const maxAttempts = 120;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+            const res = await fetch(
+                `${API_URL}/jobs/${jobId}?user_id=${encodeURIComponent(uid)}`
+            );
+            if (!res.ok) {
+                throw new Error('Failed to fetch job status');
+            }
+            const job = await res.json();
+            if (job.status === 'queued') {
+                setAsyncStatus('Queued… (5%)');
+            } else if (job.status === 'running') {
+                const progress = Number.isFinite(job.status_progress) ? Math.max(0, Math.min(100, job.status_progress)) : null;
+                const label = job.status_message || 'Working…';
+                setAsyncStatus(progress !== null ? `${label} (${progress}%)` : label);
+            } else {
+                setAsyncStatus(null);
+            }
+            if (job.status === 'completed') {
+                return job;
+            }
+            if (job.status === 'failed') {
+                setAsyncStatus(null);
+                throw new Error(job.error || 'Job failed');
+            }
+            delay = Math.min(Math.round(delay * 1.4), 8000);
         }
-        if (status === 'searching_web') {
-            statusHoldUntilRef.current = Date.now() + 800;
-            setStreamStatus(status);
-            return;
-        }
-        if (status === 'generating_response' && Date.now() < statusHoldUntilRef.current) {
-            const delay = statusHoldUntilRef.current - Date.now();
-            statusTimeoutRef.current = setTimeout(() => {
-                setStreamStatus('generating_response');
-                statusHoldUntilRef.current = 0;
-            }, delay);
-            return;
-        }
-        statusHoldUntilRef.current = 0;
-        setStreamStatus(status);
+        throw new Error('Job polling timed out');
     };
+
+    const renderPremiumAvatar = (sizeClass: string, iconClass: string, glow = true) => (
+        <div className={`relative ${sizeClass}`}>
+            {glow ? (
+                <>
+                    <div className="absolute -inset-1 rounded-full bg-gradient-to-br from-amber-200/50 via-slate-200/30 to-sky-300/40 blur-[8px]" />
+                    <div className="absolute -inset-0.5 rounded-full bg-gradient-to-br from-white/40 via-transparent to-white/10 opacity-70" />
+                </>
+            ) : null}
+            <div className="relative w-full h-full rounded-full bg-slate-900/60 p-[2px] shadow-[0_8px_18px_rgba(15,23,42,0.45)]">
+                <div className="relative w-full h-full rounded-full bg-slate-900/60 border border-white/25 overflow-hidden flex items-center justify-center">
+                    <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/20 via-transparent to-transparent" />
+                    <span className="pointer-events-none absolute -right-3 -top-3 h-8 w-8 rounded-full bg-white/10" />
+                    {hasAvatar ? (
+                        <img
+                            src="/avatar.jpg"
+                            alt="Digital Assistant Avatar"
+                            className="w-full h-full object-cover"
+                        />
+                    ) : (
+                        <Bot className={`${iconClass} text-white`} />
+                    )}
+                </div>
+            </div>
+        </div>
+    );
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -207,9 +240,12 @@ export default function Twin() {
         }
     };
 
-    const loadMemory = async (uid: string) => {
-        setIsLoadingMemory(true);
-        setMemoryError(null);
+    const loadMemory = async (uid: string, opts: { silent?: boolean } = {}) => {
+        const { silent = false } = opts;
+        if (!silent) {
+            setIsLoadingMemory(true);
+            setMemoryError(null);
+        }
         try {
             const [candidatesRes, approvedRes] = await Promise.all([
                 fetch(`${API_URL}/memory/candidates?user_id=${encodeURIComponent(uid)}`),
@@ -220,47 +256,18 @@ export default function Twin() {
             }
             const candidatesData = await candidatesRes.json();
             const approvedData = await approvedRes.json();
-            setMemoryCandidates(candidatesData.candidates || []);
-            setMemoryApproved(approvedData.memory || []);
+            const nextCandidates = candidatesData.candidates || [];
+            const nextApproved = approvedData.memory || [];
+            setMemoryCandidates(nextCandidates);
+            setMemoryApproved(nextApproved);
         } catch (error) {
             console.error('Error loading memory:', error);
+            if (!silent) {
+                setMemoryError('Unable to load memory. Please try again.');
+            }
         } finally {
-            setIsLoadingMemory(false);
-        }
-    };
-
-    const parseSseStream = async (
-        response: Response,
-        onEvent: (event: string, data: string) => void
-    ) => {
-        if (!response.body) {
-            throw new Error('No response body for stream');
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const parts = buffer.split('\n\n');
-            buffer = parts.pop() || '';
-            for (const part of parts) {
-                const lines = part.split('\n');
-                let event = 'message';
-                const dataLines: string[] = [];
-                for (const line of lines) {
-                    if (line.startsWith('event:')) {
-                        event = line.slice(6).trim();
-                    } else if (line.startsWith('data:')) {
-                        dataLines.push(line.slice(5).trim());
-                    }
-                }
-                const data = dataLines.join('\n');
-                if (data) {
-                    onEvent(event, data);
-                }
+            if (!silent) {
+                setIsLoadingMemory(false);
             }
         }
     };
@@ -295,8 +302,7 @@ export default function Twin() {
         setIsLoading(true);
 
         try {
-            setStreamStatus('generating_response');
-            const response = await fetch(`${API_URL}/chat/stream`, {
+            const response = await fetch(`${API_URL}/chat`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -313,42 +319,45 @@ export default function Twin() {
                 throw new Error('Failed to send message');
             }
 
-            await parseSseStream(response, (event, data) => {
-                if (event === 'status') {
-                    setStatusWithHold(data);
-                    return;
+            if (response.status === 202) {
+                const queued = await response.json();
+                setAsyncStatus('Queued… (5%)');
+                if (!sessionId) {
+                    setSessionId(queued.session_id);
                 }
-                if (event === 'done') {
-                    try {
-                        const payload = JSON.parse(data);
-                        if (!sessionId) {
-                            setSessionId(payload.session_id);
-                        }
-                        localStorage.setItem(lastSessionKey(userId), payload.session_id);
-                        const assistantMessage: Message = {
-                            id: (Date.now() + 1).toString(),
-                            role: 'assistant',
-                            content: payload.response,
-                            timestamp: new Date(),
-                        };
-                        setMessages(prev => [...prev, assistantMessage]);
-                        loadHistory(userId, false);
-                    } catch (err) {
-                        console.error('Failed to parse done payload:', err);
-                    }
-                    setStreamStatus(null);
-                    return;
+                localStorage.setItem(lastSessionKey(userId), queued.session_id);
+                const job = await pollJob(queued.job_id, userId, (queued.retry_after || 2) * 1000);
+                const assistantMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: job.response || 'No response returned.',
+                    timestamp: new Date(),
+                };
+                setMessages(prev => [...prev, assistantMessage]);
+                setAsyncStatus(null);
+            } else {
+                const payload = await response.json();
+                if (!sessionId) {
+                    setSessionId(payload.session_id);
                 }
-                if (event === 'error') {
-                    try {
-                        const payload = JSON.parse(data);
-                        console.error('Stream error:', payload?.detail);
-                    } catch {
-                        console.error('Stream error:', data);
-                    }
-                    setStreamStatus(null);
-                }
-            });
+                localStorage.setItem(lastSessionKey(userId), payload.session_id);
+                const assistantMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: payload.response,
+                    timestamp: new Date(),
+                };
+                setMessages(prev => [...prev, assistantMessage]);
+            }
+            loadHistory(userId, false);
+            // Memory extraction is async; do silent refreshes to catch it without UI lag.
+            loadMemory(userId, { silent: true });
+            setTimeout(() => {
+                loadMemory(userId, { silent: true });
+            }, 2500);
+            setTimeout(() => {
+                loadMemory(userId, { silent: true });
+            }, 6000);
         } catch (error) {
             console.error('Error:', error);
             const errorMessage: Message = {
@@ -359,7 +368,7 @@ export default function Twin() {
             };
             setMessages(prev => [...prev, errorMessage]);
         } finally {
-            setStreamStatus(null);
+            setAsyncStatus(null);
             setIsLoading(false);
             // Refocus the input after message is sent
             setTimeout(() => {
@@ -374,6 +383,27 @@ export default function Twin() {
             sendMessage();
         }
     };
+
+    const adjustInputHeight = () => {
+        const el = inputRef.current;
+        if (!el) return;
+        const start = el.selectionStart ?? 0;
+        const end = el.selectionEnd ?? start;
+        el.style.height = 'auto';
+        const maxHeight = 160;
+        const nextHeight = Math.min(el.scrollHeight, maxHeight);
+        el.style.height = `${nextHeight}px`;
+        el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+        try {
+            el.setSelectionRange(start, end);
+        } catch {
+            // no-op for unsupported cases
+        }
+    };
+
+    useEffect(() => {
+        adjustInputHeight();
+    }, [input]);
 
     const handleNewChat = () => {
         setMessages([]);
@@ -461,13 +491,27 @@ export default function Twin() {
         }
     };
 
-    useEffect(() => {
-        return () => {
-            if (statusTimeoutRef.current) {
-                clearTimeout(statusTimeoutRef.current);
+    const clearMemoryCandidates = async () => {
+        if (!userId || isClearingMemory) return;
+        setMemoryError(null);
+        setIsClearingMemory(true);
+        try {
+            const res = await fetch(
+                `${API_URL}/memory/candidates/clear?user_id=${encodeURIComponent(userId)}`,
+                { method: 'POST' }
+            );
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.detail || 'Unable to clear memory candidates.');
             }
-        };
-    }, []);
+            loadMemory(userId);
+        } catch (error) {
+            console.error('Error clearing memory candidates:', error);
+            setMemoryError('Unable to clear memory candidates. Please try again.');
+        } finally {
+            setIsClearingMemory(false);
+        }
+    };
 
     // Check if avatar exists
     const [hasAvatar, setHasAvatar] = useState(false);
@@ -491,6 +535,7 @@ export default function Twin() {
     useEffect(() => {
         if (!userId) return;
         loadHistory(userId, true);
+        loadMemory(userId);
     }, [userId]);
 
     useEffect(() => {
@@ -507,91 +552,151 @@ export default function Twin() {
     );
     return (
         <div
-            className="absolute bottom-0 left-0 right-0 flex flex-col rounded-3xl bg-white/80 border border-white/60 backdrop-blur overflow-hidden transition-[height] duration-300 ease-out"
+            className="absolute bottom-0 left-0 right-0 rounded-[28px] bg-gradient-to-br from-white/70 via-white/30 to-slate-200/50 p-[1px] shadow-[0_18px_45px_-30px_rgba(15,23,42,0.55)] transition-[height] duration-300 ease-out"
             style={{
                 height: `min(${panelHeight}px, calc(100vh - 64px))`,
                 maxHeight: `min(${MAX_HEIGHT}px, calc(100vh - 64px))`,
             }}
         >
+            <div className="flex h-full flex-col rounded-[26px] bg-white/80 border border-white/50 backdrop-blur overflow-visible">
             {/* Header */}
-            <div className="bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] text-white p-5 rounded-t-3xl flex items-start justify-between">
+            <div className="bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] text-white p-5 rounded-t-[26px] flex items-start justify-between">
                 <div className="flex items-start gap-4">
                     <div className="relative">
-                        {hasAvatar ? (
-                            <img
-                                src="/avatar.jpg"
-                                alt="Digital Assistant Avatar"
-                                className="w-12 h-12 rounded-2xl border border-white/30 object-cover shadow-sm"
-                            />
-                        ) : (
-                            <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center">
-                                <Bot className="w-6 h-6 text-white" />
+                        <div className="absolute -inset-1 rounded-full bg-gradient-to-br from-amber-200/50 via-slate-200/30 to-sky-300/40 blur-[8px]" />
+                        <div className="absolute -inset-0.5 rounded-full bg-gradient-to-br from-white/40 via-transparent to-white/10 opacity-70" />
+                        <div className="relative w-12 h-12 rounded-full bg-slate-900/60 p-[2px] shadow-[0_10px_22px_rgba(15,23,42,0.45)]">
+                            <div className="relative w-full h-full rounded-full bg-slate-900/60 border border-white/25 overflow-hidden flex items-center justify-center">
+                                <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/20 via-transparent to-transparent" />
+                                <span className="pointer-events-none absolute -right-3 -top-3 h-8 w-8 rounded-full bg-white/10" />
+                                {hasAvatar ? (
+                                    <img
+                                        src="/avatar.jpg"
+                                        alt="Digital Assistant Avatar"
+                                        className="w-full h-full object-cover"
+                                    />
+                                ) : (
+                                    <Bot className="w-6 h-6 text-white" />
+                                )}
                             </div>
-                        )}
-                        <span className="absolute -right-1 -bottom-1 h-3 w-3 rounded-full bg-emerald-400 border-2 border-[#123243]" />
+                        </div>
+                        <span className="absolute -right-1 -bottom-1 h-3 w-3 rounded-full bg-emerald-400 border-2 border-[#123243] shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
                     </div>
                     <div>
                         <p className="text-xs uppercase tracking-[0.3em] text-white/70">Agent</p>
-                        <h2 className="text-2xl font-semibold font-display">Digital Assistant</h2>
-                        <div className="flex flex-wrap gap-2 mt-2">
-                            <span className="px-2.5 py-1 rounded-full bg-white/10 text-xs text-white/80">
-                                Memory on
+                        <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="text-2xl font-semibold font-display">Digital Assistant</h2>
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <Terminal className="h-3 w-3 text-sky-200" />
+                                Deployment Mentor
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Hands-on guidance for deploying LLM systems, infra, and tooling.
+                                </span>
                             </span>
-                            <span className="px-2.5 py-1 rounded-full bg-white/10 text-xs text-white/80">
-                                Deployment mentor
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <LifeBuoy className="h-3 w-3 text-amber-200" />
+                                Live Troubleshooting
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Real-time troubleshooting, root-cause analysis, and incident response.
+                                </span>
                             </span>
-                            <span className="px-2.5 py-1 rounded-full bg-white/10 text-xs text-white/80">
-                                Live troubleshooting
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <Search className="h-3 w-3 text-cyan-200" />
+                                Researcher
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Investigates sources, synthesizes evidence, and validates claims.
+                                </span>
+                            </span>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 overflow-visible whitespace-nowrap">
+                            <span className="text-[10px] uppercase tracking-[0.2em] text-white/60">
+                                Tools
+                            </span>
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <Brain className="h-3 w-3 text-emerald-200" />
+                                Memory
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Remembers approved preferences and project context to personalize future replies.
+                                </span>
+                            </span>
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <FileDown className="h-3 w-3 text-indigo-200" />
+                                PDF Export
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Export chat outputs or summaries as downloadable PDFs.
+                                </span>
+                            </span>
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <Paperclip className="h-3 w-3 text-slate-200" />
+                                File Upload
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Upload PDFs, DOCX, or text files for summarization and analysis.
+                                </span>
+                            </span>
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <Mail className="h-3 w-3 text-rose-200" />
+                                Email Delivery
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Send PDFs or summaries to your email on request.
+                                </span>
+                            </span>
+                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                                <Search className="h-3 w-3 text-cyan-200" />
+                                Web Search
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                    Uses Brave to fetch current information with citations when needed.
+                                </span>
                             </span>
                         </div>
                     </div>
                 </div>
-                <div className="flex items-center gap-2 mt-1">
-                        {memoryCandidates.length > 0 && (
-                            <button
-                                onClick={() => {
-                                    setIsHistoryOpen(true);
-                                    setHistoryTab('memory');
-                                    if (userId) {
-                                        loadHistory(userId, false);
-                                        loadMemory(userId);
-                                    }
-                                }}
-                                className="inline-flex items-center gap-1 rounded-xl bg-rose-500/90 p-2 text-[11px] text-white hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
-                                title="Review memory"
-                            >
-                                <Brain className="h-4 w-4" />
-                                {memoryCandidates.length}
-                            </button>
-                        )}
-                        <button
-                            onClick={() => {
-                                setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
-                            }}
-                            className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all duration-200 ease-out active:scale-95"
-                            title={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
-                        >
-                            <Maximize2 className="w-5 h-5" />
-                        </button>
+                <div className="flex items-center gap-2 mt-1 rounded-2xl border border-white/10 bg-white/5 px-2 py-1 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)]">
+                    {memoryCandidates.length > 0 && (
                         <button
                             onClick={() => {
                                 setIsHistoryOpen(true);
+                                setHistoryTab('memory');
+                                if (userId) {
+                                    loadHistory(userId, false);
+                                    loadMemory(userId);
+                                }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 p-2 text-[11px] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
+                            title="Review memory"
+                        >
+                            <Brain className="h-4 w-4 drop-shadow-sm" />
+                            {memoryCandidates.length}
+                        </button>
+                    )}
+                    <button
+                        onClick={handleNewChat}
+                        className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                        title="New Chat"
+                    >
+                        <MessageSquarePlus className="w-5 h-5 drop-shadow-sm" />
+                    </button>
+                    <button
+                        onClick={() => {
+                            setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
+                        }}
+                        className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                        title={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
+                    >
+                        <Maximize2 className="w-5 h-5 drop-shadow-sm" />
+                    </button>
+                        <button
+                            onClick={() => {
+                                setIsHistoryOpen(true);
+                                setHistoryTab('history');
                                 if (userId) {
                                     loadHistory(userId, false);
                                 }
                             }}
-                            className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all duration-200 ease-out active:scale-95"
+                            className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
                             title="History"
                         >
-                            <History className="w-5 h-5" />
+                            <History className="w-5 h-5 drop-shadow-sm" />
                         </button>
-                    <button
-                        onClick={handleNewChat}
-                        className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all duration-200 ease-out active:scale-95"
-                        title="New Chat"
-                    >
-                        <MessageSquarePlus className="w-5 h-5" />
-                    </button>
                 </div>
             </div>
 
@@ -606,70 +711,80 @@ export default function Twin() {
                     onClick={() => setIsHistoryOpen(false)}
                 />
                 <div
-                    className={`absolute left-0 top-0 h-full w-80 bg-white/98 border border-white/60 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] p-4 flex flex-col transform transition-transform duration-200 ${
+                    className={`absolute left-0 top-0 h-full w-80 bg-gradient-to-br from-[#0f3b3e]/96 via-[#1b4a66]/96 to-[#1f2a44]/96 border border-white/10 shadow-[0_20px_45px_-28px_rgba(2,8,23,0.7)] p-4 flex flex-col transform transition-transform duration-200 text-white ${
                         isHistoryOpen ? 'translate-x-0' : '-translate-x-full'
                     }`}
                 >
                         <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                                <button
-                                    onClick={() => setHistoryTab('history')}
-                                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ease-out ${
-                                        historyTab === 'history'
-                                            ? 'bg-slate-900 text-white'
-                                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                                    }`}
-                                >
-                                    Chat History
-                                </button>
-                                <button
-                                    onClick={() => setHistoryTab('memory')}
-                                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ease-out ${
-                                        historyTab === 'memory'
-                                            ? 'bg-slate-900 text-white'
-                                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                                    }`}
-                                >
-                                    Memory
-                                    {memoryCandidates.length > 0 && (
-                                        <span className="ml-2 inline-flex items-center justify-center rounded-full bg-rose-500 text-white text-[10px] px-1.5">
-                                            {memoryCandidates.length}
-                                        </span>
-                                    )}
-                                </button>
-                            </div>
+                            <p className="text-[11px] text-white/65 uppercase tracking-[0.2em]">Workspace</p>
                             <div className="flex items-center gap-2">
                                 <button
                                     onClick={handleRefreshHistory}
-                                    className="p-1 rounded hover:bg-gray-100 transition-all duration-200 ease-out active:scale-95"
+                                    className="p-1 rounded hover:bg-white/15 transition-all duration-200 ease-out active:scale-95"
                                     title="Refresh"
                                     disabled={isLoadingHistory || isLoadingMemory}
                                 >
-                                    <RefreshCw className={`w-4 h-4 text-gray-600 ${(isLoadingHistory || isLoadingMemory) ? 'animate-spin' : ''}`} />
+                                    <RefreshCw className={`w-4 h-4 text-white/80 ${(isLoadingHistory || isLoadingMemory) ? 'animate-spin' : ''}`} />
                                 </button>
                                 <button
                                     onClick={() => setIsHistoryOpen(false)}
-                                    className="p-1 rounded hover:bg-gray-100 transition-all duration-200 ease-out active:scale-95"
+                                    className="p-1 rounded hover:bg-white/15 transition-all duration-200 ease-out active:scale-95"
                                     title="Close"
                                 >
-                                    <X className="w-5 h-5 text-gray-600" />
+                                    <X className="w-5 h-5 text-white/80" />
                                 </button>
                             </div>
                         </div>
-                        <p className="text-xs text-gray-500 mb-4">
+                        <div className="flex items-center gap-2 mb-3">
+                            <button
+                                onClick={() => setHistoryTab('history')}
+                                className={`flex-1 inline-flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all duration-200 ease-out h-9 ${
+                                    historyTab === 'history'
+                                        ? 'bg-white/20 text-white shadow-[0_6px_18px_-12px_rgba(15,23,42,0.6)]'
+                                        : 'bg-white/10 text-white/70 hover:bg-white/20'
+                                }`}
+                            >
+                                <span className="inline-flex items-center gap-2">
+                                    <History className="h-3.5 w-3.5" />
+                                    Chat History
+                                </span>
+                                <span className="text-[10px] text-white/50">5 recent</span>
+                            </button>
+                            <button
+                                onClick={() => setHistoryTab('memory')}
+                                className={`flex-1 inline-flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all duration-200 ease-out h-9 ${
+                                    historyTab === 'memory'
+                                        ? 'bg-white/20 text-white shadow-[0_6px_18px_-12px_rgba(15,23,42,0.6)]'
+                                        : 'bg-white/10 text-white/70 hover:bg-white/20'
+                                }`}
+                            >
+                                <span className="inline-flex items-center gap-2">
+                                    <Brain className="h-3.5 w-3.5 text-emerald-200" />
+                                    Memory
+                                </span>
+                                {memoryCandidates.length > 0 ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-rose-400/90 text-white text-[10px] px-1.5">
+                                        {memoryCandidates.length}
+                                    </span>
+                                ) : (
+                                    <span className="text-[10px] text-white/50">None</span>
+                                )}
+                            </button>
+                        </div>
+                        <p className="text-[11px] text-white/60 mb-4">
                             {historyTab === 'history'
                                 ? 'History shows your 5 most recent conversations.'
                                 : 'Review memory candidates before approval.'}
                         </p>
 
-                        <div className="flex-1 overflow-y-auto space-y-3 transition-opacity duration-300 ease-out">
+                        <div className="memory-panel-scroll flex-1 overflow-y-auto space-y-3 transition-opacity duration-300 ease-out">
                             {historyTab === 'history' && (
                                 <>
                                     {isLoadingHistory && (
-                                        <p className="text-sm text-gray-500">Loading history…</p>
+                                        <p className="text-sm text-white/70">Loading history…</p>
                                     )}
                                     {!isLoadingHistory && sessions.length === 0 && (
-                                        <p className="text-sm text-gray-500">No conversations yet.</p>
+                                        <p className="text-sm text-white/70">No conversations yet.</p>
                                     )}
                                     {sessions.map((session) => (
                                         <button
@@ -678,16 +793,16 @@ export default function Twin() {
                                                 loadConversation(userId, session.session_id);
                                                 setIsHistoryOpen(false);
                                             }}
-                                            className={`w-full text-left p-2 rounded border transition-all duration-300 ease-out active:scale-[0.99] hover:-translate-y-0.5 hover:shadow-sm ${
+                                            className={`w-full text-left p-3 rounded-xl border transition-all duration-300 ease-out active:scale-[0.99] hover:-translate-y-0.5 hover:shadow-md ${
                                                 session.session_id === sessionId
-                                                    ? 'border-slate-600 bg-slate-50'
-                                                    : 'border-gray-200 hover:bg-gray-50'
+                                                    ? 'border-white/40 bg-white/20 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.6)]'
+                                                    : 'border-white/15 bg-white/10 hover:bg-white/20'
                                             }`}
                                         >
-                                            <p className="text-sm font-medium text-gray-800 truncate">
+                                            <p className="text-[13px] font-semibold text-white truncate">
                                                 {session.title}
                                             </p>
-                                            <p className="text-xs text-gray-500">
+                                            <p className="text-[10px] text-white/60 mt-1">
                                                 {new Date(session.updated_at).toLocaleString()}
                                             </p>
                                         </button>
@@ -697,102 +812,153 @@ export default function Twin() {
 
                             {historyTab === 'memory' && (
                                 <>
+                                    <div className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-[10px] text-white/75 leading-relaxed">
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsMemoryInfoOpen(prev => !prev)}
+                                            className="relative w-full h-9 pr-10 flex items-center text-left leading-none"
+                                        >
+                                            <span className="font-semibold text-white/90 text-[11px]">What Memory Does</span>
+                                            <span className="absolute right-0 top-1/2 -translate-y-1/2 h-5 w-5 rounded-full bg-white/10 text-white/70 grid place-items-center">
+                                                {isMemoryInfoOpen ? (
+                                                    <Minus className="h-3 w-3" />
+                                                ) : (
+                                                    <Plus className="h-3 w-3" />
+                                                )}
+                                            </span>
+                                        </button>
+                                        {isMemoryInfoOpen && (
+                                            <ul className="list-disc pl-4 space-y-1 mt-2">
+                                                <li>Stores long‑term preferences (format, tone, defaults) you approve.</li>
+                                                <li>Feeds approved items into the assistant’s system prompt for future replies.</li>
+                                                <li>Pending items are suggestions only — nothing is stored until you approve.</li>
+                                                <li>Items expire by TTL, so temporary context won’t stick forever.</li>
+                                            </ul>
+                                        )}
+                                    </div>
                                     {memoryError && (
-                                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                                        <div className="rounded-lg border border-rose-300/40 bg-rose-500/15 px-3 py-2 text-xs text-rose-100">
                                             {memoryError}
                                         </div>
                                     )}
-                                    {isLoadingMemory && (
-                                        <p className="text-sm text-gray-500">Loading memory…</p>
+                                    {memoryCandidates.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={clearMemoryCandidates}
+                                            disabled={isClearingMemory}
+                                            className="w-full px-3 py-2 text-xs font-semibold rounded-full border border-rose-300/50 bg-rose-500/25 text-rose-100 hover:bg-rose-500/35 disabled:opacity-60 disabled:cursor-not-allowed"
+                                        >
+                                            {isClearingMemory ? 'Clearing…' : 'Clear All Pending'}
+                                        </button>
                                     )}
+                                    {isLoadingMemory && (
+                                        <p className="text-sm text-white/70">Loading memory…</p>
+                                    )}
+                                    <div className="pt-2 border-t border-white/10">
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsApprovedMemoryOpen(prev => !prev)}
+                                            className="relative w-full h-9 pr-10 flex items-center text-left text-xs font-semibold text-white/85 mb-2 leading-none"
+                                        >
+                                            <span className="inline-flex items-center gap-2">
+                                                Approved Memory
+                                                <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-white/70">
+                                                    {memoryApproved.length}
+                                                </span>
+                                            </span>
+                                            <span className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 rounded-full bg-white/10 text-white/70 grid place-items-center">
+                                                {isApprovedMemoryOpen ? (
+                                                    <Minus className="h-3 w-3" />
+                                                ) : (
+                                                    <Plus className="h-3 w-3" />
+                                                )}
+                                            </span>
+                                        </button>
+                                        {isApprovedMemoryOpen && (
+                                            <>
+                                                {memoryApproved.length === 0 && (
+                                                    <p className="text-[11px] text-white/60">No approved memory yet.</p>
+                                                )}
+                                                {memoryApproved.map((mem) => (
+                                                    <div
+                                                        key={mem.id}
+                                                        className="rounded-lg border border-white/12 bg-white/10 px-2 py-1.5 mb-2 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-sm"
+                                                    >
+                                                        <p className="text-xs text-white/90">{mem.text}</p>
+                                                        <p className="text-[10px] text-white/60 mt-0.5">
+                                                            {mem.category}
+                                                            {mem.expires_at
+                                                                ? ` • Expires ${new Date(mem.expires_at).toLocaleDateString()}`
+                                                                : ''}
+                                                        </p>
+                                                        <div className="mt-1">
+                                                            <button
+                                                                onClick={() => deleteApprovedMemory(mem.id)}
+                                                                disabled={memoryAction?.id === mem.id && memoryAction.action === 'remove'}
+                                                                className="px-2 py-0.5 text-[11px] rounded-full bg-white/15 text-white/80 hover:bg-white/25 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                                                            >
+                                                                {memoryAction?.id === mem.id && memoryAction.action === 'remove' ? (
+                                                                    <span className="inline-flex h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
+                                                                ) : null}
+                                                                Remove
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </>
+                                        )}
+                                    </div>
+
                                     {!isLoadingMemory && memoryCandidates.length === 0 && (
-                                        <p className="text-sm text-gray-500">No pending memories.</p>
+                                        <p className="text-[11px] text-white/60 mt-2">No pending memories.</p>
                                     )}
                                     {memoryCandidates.map((cand) => (
                                         <div
                                             key={cand.id}
-                                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-sm"
+                                            className="rounded-lg border border-white/15 bg-white/10 px-2 py-1.5 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-sm"
                                         >
-                                            <p className="text-sm font-medium text-slate-800">{cand.text}</p>
-                                            <p className="text-[11px] text-slate-500 mt-1">
+                                            <p className="text-xs font-medium text-white/90">{cand.text}</p>
+                                            <p className="text-[10px] text-white/60 mt-0.5">
                                                 {cand.category} • TTL {cand.ttl_days}d
                                             </p>
-                                            <div className="mt-2 flex gap-2">
+                                            <div className="mt-1 flex gap-2">
                                                 <button
                                                     onClick={() => approveCandidate(cand.id)}
                                                     disabled={memoryAction?.id === cand.id && memoryAction.action === 'approve'}
-                                                    className="px-2 py-1 text-xs rounded-full bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                                                    className="px-2 py-0.5 text-[11px] rounded-full bg-emerald-500/90 text-white hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                                                 >
                                                     {memoryAction?.id === cand.id && memoryAction.action === 'approve' ? (
-                                                        <span className="inline-flex h-3 w-3 animate-spin rounded-full border-2 border-white/60 border-t-white" />
+                                                        <span className="inline-flex h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/60 border-t-white" />
                                                     ) : null}
                                                     Approve
                                                 </button>
                                                 <button
                                                     onClick={() => rejectCandidate(cand.id)}
                                                     disabled={memoryAction?.id === cand.id && memoryAction.action === 'reject'}
-                                                    className="px-2 py-1 text-xs rounded-full bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                                                    className="px-2 py-0.5 text-[11px] rounded-full bg-white/15 text-white/80 hover:bg-white/25 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                                                 >
                                                     {memoryAction?.id === cand.id && memoryAction.action === 'reject' ? (
-                                                        <span className="inline-flex h-3 w-3 animate-spin rounded-full border-2 border-slate-400/60 border-t-slate-600" />
+                                                        <span className="inline-flex h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
                                                     ) : null}
                                                     Reject
                                                 </button>
                                             </div>
                                         </div>
                                     ))}
-
-                                    <div className="pt-2 border-t border-slate-200">
-                                        <p className="text-xs font-semibold text-slate-700 mb-2">Approved Memory</p>
-                                        {memoryApproved.length === 0 && (
-                                            <p className="text-sm text-gray-500">No approved memory yet.</p>
-                                        )}
-                                        {memoryApproved.map((mem) => (
-                                            <div
-                                                key={mem.id}
-                                                className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 mb-2 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:shadow-sm"
-                                            >
-                                                <p className="text-sm text-slate-700">{mem.text}</p>
-                                                <p className="text-[11px] text-slate-500 mt-1">
-                                                    {mem.category}
-                                                    {mem.expires_at
-                                                        ? ` • Expires ${new Date(mem.expires_at).toLocaleDateString()}`
-                                                        : ''}
-                                                </p>
-                                                <div className="mt-2">
-                                                    <button
-                                                        onClick={() => deleteApprovedMemory(mem.id)}
-                                                        disabled={memoryAction?.id === mem.id && memoryAction.action === 'remove'}
-                                                        className="px-2 py-1 text-xs rounded-full bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
-                                                    >
-                                                        {memoryAction?.id === mem.id && memoryAction.action === 'remove' ? (
-                                                            <span className="inline-flex h-3 w-3 animate-spin rounded-full border-2 border-slate-400/60 border-t-slate-600" />
-                                                        ) : null}
-                                                        Remove
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
                                 </>
                             )}
                         </div>
                     </div>
             </div>
 
+            <div className="flex-1 flex flex-col overflow-hidden rounded-b-[26px]">
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[radial-gradient(circle_at_top,_#ffffff,_#f1f5f9_55%,_#e7edf6_100%)]">
                 {messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-12">
-                        {hasAvatar ? (
-                            <img
-                                src="/avatar.jpg"
-                                alt="Digital Assitant Avatar"
-                                className="w-20 h-20 rounded-2xl mx-auto mb-4 border-2 border-white shadow-md"
-                            />
-                        ) : (
-                            <Bot className="w-12 h-12 mx-auto mb-4 text-slate-400" />
-                        )}
+                        <div className="mx-auto mb-4 w-20 h-20">
+                            {renderPremiumAvatar('w-20 h-20', 'w-10 h-10', false)}
+                        </div>
                         <p className="text-lg text-slate-700 font-medium">Hello! I&apos;m your Digital Assistant.</p>
                         <p className="text-sm mt-2">
                             Ask me about deployment strategy, tooling, or production incidents.
@@ -809,24 +975,14 @@ export default function Twin() {
                     >
                         {message.role === 'assistant' && (
                             <div className="flex-shrink-0">
-                                {hasAvatar ? (
-                                    <img 
-                                        src="/avatar.jpg" 
-                                        alt="Digital Assistant Avatar" 
-                                        className="w-8 h-8 rounded-full border border-slate-300"
-                                    />
-                                ) : (
-                                    <div className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center">
-                                        <Bot className="w-5 h-5 text-white" />
-                                    </div>
-                                )}
+                                {renderPremiumAvatar('w-9 h-9', 'w-5 h-5', false)}
                             </div>
                         )}
 
                         <div
-                            className={`max-w-[72%] rounded-2xl px-4 py-3 shadow-sm ${
+                            className={`max-w-[64%] rounded-2xl px-2.5 py-2 shadow-sm text-[13px] leading-relaxed ${
                                 message.role === 'user'
-                                    ? 'bg-gradient-to-br from-slate-800 to-slate-900 text-white'
+                                    ? 'bg-gradient-to-br from-slate-800 to-slate-900 text-white whitespace-pre-wrap'
                                     : 'bg-white/90 border border-white/60 text-slate-800'
                             }`}
                         >
@@ -937,7 +1093,7 @@ export default function Twin() {
                                 <p className="whitespace-pre-wrap">{message.content}</p>
                             )}
                             <p
-                                className={`text-xs mt-1 ${
+                                className={`text-[9px] mt-1 ${
                                     message.role === 'user' ? 'text-slate-300' : 'text-slate-500'
                                 }`}
                             >
@@ -947,8 +1103,15 @@ export default function Twin() {
 
                         {message.role === 'user' && (
                             <div className="flex-shrink-0">
-                                <div className="w-8 h-8 bg-gray-600 rounded-full flex items-center justify-center">
-                                    <User className="w-5 h-5 text-white" />
+                                <div className="relative w-9 h-9">
+                                    <div className="absolute -inset-[1px] rounded-full bg-gradient-to-br from-white/60 via-slate-200/40 to-slate-400/40" />
+                                    <div className="relative w-full h-full rounded-full bg-slate-900/40 p-[1px] shadow-[0_5px_12px_rgba(15,23,42,0.3)]">
+                                        <img
+                                            src="/user.png"
+                                            alt="User Avatar"
+                                            className="w-full h-full rounded-full border border-white/40 object-cover"
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -958,17 +1121,7 @@ export default function Twin() {
                 {isLoading && (
                     <div className="flex gap-3 justify-start">
                         <div className="flex-shrink-0">
-                            {hasAvatar ? (
-                                <img 
-                                    src="/avatar.jpg" 
-                                    alt="Digital Assistant Avatar" 
-                                    className="w-8 h-8 rounded-full border border-slate-300"
-                                />
-                            ) : (
-                                <div className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center">
-                                    <Bot className="w-5 h-5 text-white" />
-                                </div>
-                            )}
+                            {renderPremiumAvatar('w-9 h-9', 'w-5 h-5', false)}
                         </div>
                         <div className="bg-white/90 border border-white/60 rounded-2xl p-3 shadow-sm">
                             <div className="flex space-x-2">
@@ -984,31 +1137,24 @@ export default function Twin() {
             </div>
 
             {/* Input */}
-            <div className="border-t border-white/60 p-4 bg-white/90 rounded-b-3xl">
-                {statusLabel && (
+            <div className="border-t border-white/60 p-4 bg-white/90 rounded-b-[26px]">
+                {displayStatusLabel && (
                     <div className="mb-2 flex items-center gap-2 text-xs text-slate-500">
                         <span className="inline-flex h-2 w-2 rounded-full bg-slate-400 animate-pulse" />
                         <span className="flex items-center gap-1">
-                            {statusLabel}
-                            {streamStatus === 'generating_response' && (
-                                <span className="inline-flex items-center gap-1">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-slate-400 animate-bounce" />
-                                    <span className="h-1.5 w-1.5 rounded-full bg-slate-400 animate-bounce delay-100" />
-                                    <span className="h-1.5 w-1.5 rounded-full bg-slate-400 animate-bounce delay-200" />
-                                </span>
-                            )}
+                            {displayStatusLabel}
                         </span>
                     </div>
                 )}
                 <div className="flex gap-3">
-                    <input
+                    <textarea
                         ref={inputRef}
-                        type="text"
+                        rows={1}
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyPress}
                         placeholder="Ask about deployment, infrastructure, or troubleshooting..."
-                        className="flex-1 px-4 py-3 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-slate-600/40 focus:border-transparent text-slate-800 bg-white shadow-sm"
+                        className="flex-1 px-4 py-3 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-slate-600/40 focus:border-transparent text-slate-800 bg-white shadow-sm resize-none leading-relaxed min-h-[48px] scrollbar-gutter-stable"
                         disabled={isLoading}
                         autoFocus
                     />
@@ -1022,10 +1168,14 @@ export default function Twin() {
                     <button
                         type="button"
                         onClick={triggerFileSelect}
-                        className="px-3 py-3 bg-white text-slate-700 rounded-2xl border border-slate-200 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-600/40 transition-all duration-200 ease-out active:scale-[0.98]"
+                        className="group relative px-3.5 py-3 bg-white text-slate-700 rounded-2xl border border-slate-200 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-600/40 transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_8px_18px_-12px_rgba(15,23,42,0.35)]"
                         aria-label="Upload file"
                     >
-                        <Paperclip className="w-5 h-5" />
+                        <span className="absolute inset-0 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-slate-100 opacity-80" />
+                        <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.35),_transparent_60%)]" />
+                        <span className="relative flex items-center justify-center">
+                            <Paperclip className="w-5 h-5 drop-shadow-sm" />
+                        </span>
                     </button>
                     <button
                         onClick={sendMessage}
@@ -1035,15 +1185,21 @@ export default function Twin() {
                             uploadStatus === 'uploading' ||
                             uploadStatus === 'error'
                         }
-                        className="px-4 py-3 bg-slate-900 text-white rounded-2xl hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-600/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 ease-out active:scale-[0.98]"
+                        className="group relative px-4 py-3 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-slate-600/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 hover:from-slate-800 hover:via-slate-900 hover:to-slate-800"
                     >
-                        <Send className="w-5 h-5" />
+                        <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.35),_transparent_65%)]" />
+                        <span className="relative flex items-center justify-center gap-2">
+                            <Send className="w-5 h-5 drop-shadow-sm" />
+                        </span>
                     </button>
                 </div>
                 {(selectedFile || uploadError) && (
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
                         {selectedFile && (
-                            <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 border border-slate-200">
+                            <span className="group relative inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 border border-slate-200">
+                                <span className="pointer-events-none absolute left-1/2 -top-2 z-30 w-[260px] -translate-x-1/2 -translate-y-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] text-slate-700 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100 whitespace-normal">
+                                    {selectedFile.name}
+                                </span>
                                 <span className="font-medium text-slate-700">{selectedFile.name}</span>
                                 {uploadStatus === 'uploading' && <span className="text-slate-500">Uploading…</span>}
                                 {uploadStatus === 'uploaded' && <span className="text-emerald-600">Uploaded</span>}
@@ -1061,6 +1217,8 @@ export default function Twin() {
                         {uploadError && <span className="text-rose-600">{uploadError}</span>}
                     </div>
                 )}
+            </div>
+            </div>
             </div>
         </div>
     );

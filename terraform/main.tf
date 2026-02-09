@@ -9,6 +9,7 @@ locals {
   name_prefix = "${var.project_name}-${var.environment}"
 
   custom_domain_fqdn = "${var.project_name}.${var.root_domain}"
+  api_cors_origin    = var.use_custom_domain && var.root_domain != "" ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
   create_www_alias   = false
   acm_validation_options = var.use_custom_domain && length(aws_acm_certificate.site) > 0 ? aws_acm_certificate.site[0].domain_validation_options : []
 
@@ -122,28 +123,100 @@ resource "aws_iam_role_policy_attachment" "lambda_s3" {
   role       = aws_iam_role.lambda_role.name
 }
 
+# ECR repository for Lambda container image
+resource "aws_ecr_repository" "lambda" {
+  name                 = "${local.name_prefix}-lambda"
+  image_tag_mutability = "MUTABLE"
+  tags                 = local.common_tags
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+# Allow Lambda service to pull images from this repository
+resource "aws_ecr_repository_policy" "lambda" {
+  repository = aws_ecr_repository.lambda.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaECRImageRetrievalPolicy"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability"
+        ]
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Cleanup untagged images to avoid ECR bloat when reusing a stable tag
+resource "aws_ecr_lifecycle_policy" "lambda" {
+  repository = aws_ecr_repository.lambda.name
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 1 day"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
+}
+
 # Lambda function
 resource "aws_lambda_function" "api" {
-  filename         = "${path.module}/../backend/lambda-deployment.zip"
+  package_type     = "Image"
+  image_uri        = "${aws_ecr_repository.lambda.repository_url}:${var.lambda_image_tag}"
   function_name    = "${local.name_prefix}-api"
   role             = aws_iam_role.lambda_role.arn
-  handler          = "lambda_handler.handler"
-  source_code_hash = filebase64sha256("${path.module}/../backend/lambda-deployment.zip")
-  runtime          = "python3.12"
   architectures    = ["x86_64"]
+  memory_size      = var.lambda_memory_mb
   timeout          = var.lambda_timeout
   tags             = local.common_tags
 
   environment {
     variables = {
-      CORS_ORIGINS     = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
-      S3_BUCKET        = aws_s3_bucket.memory.id
-      USE_S3           = "true"
-      BEDROCK_MODEL_ID = var.bedrock_model_id
-      AI_PROVIDER      = var.ai_provider
-      GROK_MODEL_ID    = var.grok_model_id
-      GROK_API_URL     = var.grok_api_url
-      GROK_API_KEY     = var.grok_api_key
+      CORS_ORIGINS        = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+      S3_BUCKET           = aws_s3_bucket.memory.id
+      USE_S3              = "true"
+      DEFAULT_AWS_REGION  = var.default_aws_region
+      ENABLE_MCP_SEARCH   = var.enable_mcp_search ? "true" : "false"
+      BEDROCK_MODEL_ID    = var.bedrock_model_id
+      AI_PROVIDER         = var.ai_provider
+      GROK_MODEL_ID       = var.grok_model_id
+      GROK_API_URL        = var.grok_api_url
+      GROK_API_KEY        = var.grok_api_key
+      BRAVE_API_KEY       = var.brave_api_key
+      RESEND_API_KEY      = var.resend_api_key
+      UPSTASH_REDIS_REST_URL   = var.upstash_redis_rest_url
+      UPSTASH_REDIS_REST_TOKEN = var.upstash_redis_rest_token
+      ASYNC_CHAT_ENABLED       = var.async_chat_enabled ? "true" : "false"
+      ASYNC_JOB_TTL_SECONDS    = tostring(var.async_job_ttl_seconds)
+      ASYNC_WORKER_FUNCTION_NAME = aws_lambda_function.worker.function_name
+      MEMORY_EXTRACT_SYNC   = "false"
+      UPLOADS_DIR         = var.uploads_dir
+      MAX_UPLOAD_MB       = tostring(var.max_upload_mb)
+      UPLOAD_ALLOWED_EXTS = var.upload_allowed_exts
     }
   }
 
@@ -151,56 +224,157 @@ resource "aws_lambda_function" "api" {
   depends_on = [aws_cloudfront_distribution.main]
 }
 
-# API Gateway HTTP API
-resource "aws_apigatewayv2_api" "main" {
-  name          = "${local.name_prefix}-api-gateway"
-  protocol_type = "HTTP"
-  tags          = local.common_tags
+# Async worker Lambda (same image, different handler)
+resource "aws_lambda_function" "worker" {
+  package_type     = "Image"
+  image_uri        = "${aws_ecr_repository.lambda.repository_url}:${var.lambda_image_tag}"
+  function_name    = "${local.name_prefix}-worker"
+  role             = aws_iam_role.lambda_role.arn
+  architectures    = ["x86_64"]
+  memory_size      = var.worker_lambda_memory_mb
+  timeout          = var.worker_lambda_timeout
+  tags             = local.common_tags
 
-  cors_configuration {
-    allow_credentials = false
-    allow_headers     = ["*"]
-    allow_methods     = ["GET", "POST", "OPTIONS"]
-    allow_origins     = ["*"]
-    max_age           = 300
+  image_config {
+    command = ["worker_handler.handler"]
   }
+
+  environment {
+    variables = {
+      CORS_ORIGINS        = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+      S3_BUCKET           = aws_s3_bucket.memory.id
+      USE_S3              = "true"
+      DEFAULT_AWS_REGION  = var.default_aws_region
+      ENABLE_MCP_SEARCH   = var.enable_mcp_search ? "true" : "false"
+      BEDROCK_MODEL_ID    = var.bedrock_model_id
+      AI_PROVIDER         = var.ai_provider
+      GROK_MODEL_ID       = var.grok_model_id
+      GROK_API_URL        = var.grok_api_url
+      GROK_API_KEY        = var.grok_api_key
+      BRAVE_API_KEY       = var.brave_api_key
+      RESEND_API_KEY      = var.resend_api_key
+      UPSTASH_REDIS_REST_URL   = var.upstash_redis_rest_url
+      UPSTASH_REDIS_REST_TOKEN = var.upstash_redis_rest_token
+      ASYNC_CHAT_ENABLED       = "false"
+      ASYNC_JOB_TTL_SECONDS    = tostring(var.async_job_ttl_seconds)
+      WORKER_MAX_SECONDS       = tostring(var.worker_max_seconds)
+      LLM_TIMEOUT_SECONDS           = tostring(var.worker_llm_timeout_seconds)
+      MCP_STARTUP_TIMEOUT_SECONDS   = tostring(var.worker_mcp_startup_timeout_seconds)
+      RUNNER_TIMEOUT_SECONDS        = tostring(var.worker_runner_timeout_seconds)
+      MEMORY_EXTRACT_SYNC           = "true"
+      UPLOADS_DIR         = var.uploads_dir
+      MAX_UPLOAD_MB       = tostring(var.max_upload_mb)
+      UPLOAD_ALLOWED_EXTS = var.upload_allowed_exts
+    }
+  }
+
+  depends_on = [aws_cloudfront_distribution.main]
 }
 
-resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.main.id
-  name        = "$default"
-  auto_deploy = true
-  tags        = local.common_tags
+resource "aws_iam_role_policy" "lambda_invoke_worker" {
+  name = "${local.name_prefix}-invoke-worker"
+  role = aws_iam_role.lambda_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction"]
+        Resource = [
+          aws_lambda_function.worker.arn,
+          "${aws_lambda_function.worker.arn}:*"
+        ]
+      }
+    ]
+  })
+}
 
-  default_route_settings {
+# API Gateway REST API
+data "aws_region" "current" {}
+
+resource "aws_api_gateway_rest_api" "main" {
+  name = "${local.name_prefix}-api-gateway"
+  tags = local.common_tags
+}
+
+# Root ANY method -> Lambda proxy
+resource "aws_api_gateway_method" "root_any" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_rest_api.main.root_resource_id
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "root_lambda" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_rest_api.main.root_resource_id
+  http_method             = aws_api_gateway_method.root_any.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  timeout_milliseconds    = var.api_integration_timeout_ms
+  uri                     = aws_lambda_function.api.invoke_arn
+}
+
+# Proxy resource to handle all paths
+resource "aws_api_gateway_resource" "proxy" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "{proxy+}"
+}
+
+resource "aws_api_gateway_method" "proxy_any" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "proxy_lambda" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.proxy.id
+  http_method             = aws_api_gateway_method.proxy_any.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  timeout_milliseconds    = var.api_integration_timeout_ms
+  uri                     = aws_lambda_function.api.invoke_arn
+}
+
+resource "aws_api_gateway_deployment" "main" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  triggers = {
+    redeploy = sha1(jsonencode([
+      aws_api_gateway_integration.root_lambda.id,
+      aws_api_gateway_integration.proxy_lambda.id,
+      aws_api_gateway_integration.root_options.id,
+      aws_api_gateway_integration.proxy_options.id,
+    ]))
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+  depends_on = [
+    aws_api_gateway_integration.root_lambda,
+    aws_api_gateway_integration.proxy_lambda,
+  ]
+}
+
+resource "aws_api_gateway_stage" "main" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  deployment_id = aws_api_gateway_deployment.main.id
+  stage_name    = var.environment
+  tags          = local.common_tags
+}
+
+resource "aws_api_gateway_method_settings" "main" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  stage_name  = aws_api_gateway_stage.main.stage_name
+  method_path = "*/*"
+
+  settings {
+    metrics_enabled        = true
     throttling_burst_limit = var.api_throttle_burst_limit
     throttling_rate_limit  = var.api_throttle_rate_limit
   }
-}
-
-resource "aws_apigatewayv2_integration" "lambda" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.api.invoke_arn
-}
-
-# API Gateway Routes
-resource "aws_apigatewayv2_route" "get_root" {
-  api_id    = aws_apigatewayv2_api.main.id
-  route_key = "GET /"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
-}
-
-resource "aws_apigatewayv2_route" "post_chat" {
-  api_id    = aws_apigatewayv2_api.main.id
-  route_key = "POST /chat"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
-}
-
-resource "aws_apigatewayv2_route" "get_health" {
-  api_id    = aws_apigatewayv2_api.main.id
-  route_key = "GET /health"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
 # Lambda permission for API Gateway
@@ -209,13 +383,106 @@ resource "aws_lambda_permission" "api_gw" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.api.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# CORS: OPTIONS for root
+resource "aws_api_gateway_method" "root_options" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_rest_api.main.root_resource_id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "root_options" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_rest_api.main.root_resource_id
+  http_method             = aws_api_gateway_method.root_options.http_method
+  type                    = "MOCK"
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "root_options" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_rest_api.main.root_resource_id
+  http_method = aws_api_gateway_method.root_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin"  = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Headers" = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "root_options" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_rest_api.main.root_resource_id
+  http_method = aws_api_gateway_method.root_options.http_method
+  status_code = aws_api_gateway_method_response.root_options.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin"  = "'${local.api_cors_origin}'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Headers" = "'*'"
+  }
+}
+
+# CORS: OPTIONS for proxy
+resource "aws_api_gateway_method" "proxy_options" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.proxy.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "proxy_options" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.proxy.id
+  http_method             = aws_api_gateway_method.proxy_options.http_method
+  type                    = "MOCK"
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "proxy_options" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.proxy.id
+  http_method = aws_api_gateway_method.proxy_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin"  = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Headers" = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "proxy_options" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.proxy.id
+  http_method = aws_api_gateway_method.proxy_options.http_method
+  status_code = aws_api_gateway_method_response.proxy_options.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin"  = "'${local.api_cors_origin}'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Headers" = "'*'"
+  }
 }
 
 # CloudFront distribution
 resource "aws_cloudfront_distribution" "main" {
   aliases = local.aliases
-  depends_on = [aws_acm_certificate_validation.site]
+  wait_for_deployment = false
+  depends_on = [
+    aws_acm_certificate_validation.site,
+    aws_s3_bucket_website_configuration.frontend,
+    aws_s3_bucket_policy.frontend
+  ]
   
   viewer_certificate {
     acm_certificate_arn            = var.use_custom_domain ? aws_acm_certificate.site[0].arn : null

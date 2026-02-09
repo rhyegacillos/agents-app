@@ -2,7 +2,14 @@ fastapi
 uvicorn
 openai
 python-dotenv
+python-docx
+pypdf
 python-multipart
 boto3
-pypdf
 mangum
+openai-agents
+weasyprint
+markdown
+mcp
+resend
+requests
