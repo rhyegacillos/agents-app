@@ -189,6 +189,7 @@ The fastest path is AWS managed policies:
 ```bash
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AWSLambda_FullAccess
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
+aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/CloudFrontFullAccess
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/IAMFullAccess
@@ -201,6 +202,7 @@ Windows PowerShell equivalent:
 ```powershell
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AWSLambda_FullAccess
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
+aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/CloudFrontFullAccess
 aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy --policy-arn arn:aws:iam::aws:policy/IAMFullAccess
@@ -461,6 +463,11 @@ What to test (minimum set):
   - Actions: `s3:CreateBucket`, `s3:PutObject`, `s3:ListBucket`
 - Service: **Lambda**
   - Actions: `lambda:CreateFunction`, `lambda:UpdateFunctionCode`
+- Service: **ECR**
+  - Actions: `ecr:DescribeRepositories`, `ecr:CreateRepository`, `ecr:PutLifecyclePolicy`,
+    `ecr:SetRepositoryPolicy`, `ecr:GetAuthorizationToken`, `ecr:BatchGetImage`,
+    `ecr:GetDownloadUrlForLayer`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`,
+    `ecr:CompleteLayerUpload`, `ecr:PutImage`, `ecr:ListImages`
 - Service: **API Gateway**
   - Actions: `apigateway:POST`, `apigateway:GET`
 - Service: **CloudFront**
@@ -490,6 +497,7 @@ Use this table to map a denied action to the missing policy or permission.
 |---|---|---|
 | `s3:CreateBucket`, `s3:PutObject` | AmazonS3FullAccess | Attach AmazonS3FullAccess or add S3 permissions in custom policy |
 | `lambda:CreateFunction` | AWSLambda_FullAccess | Attach AWSLambda_FullAccess or add Lambda permissions |
+| `ecr:DescribeRepositories` | AmazonEC2ContainerRegistryPowerUser | Attach AmazonEC2ContainerRegistryPowerUser or add ECR permissions |
 | `apigateway:POST` | AmazonAPIGatewayAdministrator | Attach AmazonAPIGatewayAdministrator |
 | `cloudfront:CreateDistribution` | CloudFrontFullAccess | Attach CloudFrontFullAccess |
 | `iam:CreateRole`, `iam:PassRole` | IAMFullAccess | Attach IAMFullAccess or add specific IAM actions |
@@ -523,6 +531,27 @@ when a specific action is denied. These are intentionally minimal.
 }
 ```
 
+#### ECR (build + push image)
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "ecr:DescribeRepositories",
+    "ecr:CreateRepository",
+    "ecr:PutLifecyclePolicy",
+    "ecr:SetRepositoryPolicy",
+    "ecr:GetAuthorizationToken",
+    "ecr:BatchGetImage",
+    "ecr:GetDownloadUrlForLayer",
+    "ecr:InitiateLayerUpload",
+    "ecr:UploadLayerPart",
+    "ecr:CompleteLayerUpload",
+    "ecr:PutImage",
+    "ecr:ListImages"
+  ],
+  "Resource": "*"
+}
+```
 #### API Gateway (create + read)
 ```json
 {
