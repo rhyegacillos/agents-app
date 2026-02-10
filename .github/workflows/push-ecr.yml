@@ -2,8 +2,8 @@ name: Push Image To ECR
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["autonomous-trader-agent-aws"]
+  # Intentionally not triggered on push.
+  # The deploy workflow builds+pushes as part of a single sequential pipeline.
 
 permissions:
   id-token: write

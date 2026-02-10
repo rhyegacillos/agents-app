@@ -18,6 +18,10 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: deploy-ec2-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     name: Deploy (${{ github.event.inputs.environment || 'dev' }})
@@ -52,6 +56,36 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_API_URL=
+
+      - name: Smoke Test Image (From ECR)
+        run: |
+          set -euo pipefail
+          image="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}"
+
+          docker pull "${image}"
+          docker run -d --name autonomous-trader-smoke \
+            -p 8000:8000 \
+            -e READ_ONLY_MODE=true \
+            -e AUTO_TRADE_BY_MARKET=false \
+            -e FRONTEND_ORIGIN=http://localhost:8000 \
+            -e TRADER_ENGINE_DIR=/app/api/trader_engine \
+            -e TRADER_DATA_DIR=/app/api/data \
+            "${image}"
+
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8000/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          curl -fsS http://localhost:8000/health
+          curl -fsSI http://localhost:8000/ | head -n 20
+
+      - name: Smoke Cleanup
+        if: always()
+        run: |
+          docker rm -f autonomous-trader-smoke >/dev/null 2>&1 || true
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3

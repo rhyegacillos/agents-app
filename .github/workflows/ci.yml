@@ -3,8 +3,7 @@ name: CI
 on:
   pull_request:
     branches: ["autonomous-trader-agent-aws"]
-  push:
-    branches: ["autonomous-trader-agent-aws"]
+  # Keep CI on PRs. Deploy workflow does build+push+deploy sequentially on push.
 
 jobs:
   docker-build-and-smoke:
