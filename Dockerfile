@@ -1,5 +1,6 @@
 # Stage 1: build exported Next.js frontend
-FROM node:22-alpine AS web-builder
+# Use Node 20 for Next.js build compatibility (SWC musl binaries are most reliable here).
+FROM node:20-alpine AS web-builder
 
 WORKDIR /app/web
 
