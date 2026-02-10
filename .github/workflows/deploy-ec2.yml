@@ -1,0 +1,142 @@
+name: Deploy To EC2 (Terraform + ECR)
+
+on:
+  push:
+    branches: ["autonomous-trader-agent-aws"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-deploy
+          aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
+
+      - name: Login To ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build And Push Image (latest + sha)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Write terraform.tfvars (CI)
+        working-directory: ./terraform
+        run: |
+          set -euo pipefail
+          cat > terraform.tfvars <<EOF
+          aws_region              = "${{ secrets.DEFAULT_AWS_REGION }}"
+          project_name            = "${{ vars.PROJECT_NAME || 'autonomous-trader' }}"
+          key_name                = "${{ vars.EC2_KEY_NAME }}"
+          existing_instance_id    = "${{ secrets.EC2_INSTANCE_ID }}"
+          manage_existing         = true
+          manage_existing_sg_rules = false
+
+          # Domain (optional): Terraform only creates Route53 record here.
+          enable_route53_dns      = ${{ vars.ENABLE_ROUTE53_DNS || 'false' }}
+          route53_zone_name       = "${{ vars.ROUTE53_ZONE_NAME }}"
+          domain_name             = "${{ vars.APP_DOMAIN_NAME }}"
+
+          # Image tag used by EC2 pull-based redeploy step below.
+          ecr_repo                = "${{ secrets.ECR_REPOSITORY }}"
+          image_tag               = "latest"
+          EOF
+
+      - name: Terraform Import Existing Instance (Ephemeral CI State)
+        working-directory: ./terraform
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+          if ! terraform state list | grep -Fqx 'aws_instance.app[0]'; then
+            terraform import -input=false aws_instance.app[0] "${{ secrets.EC2_INSTANCE_ID }}"
+          fi
+
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: |
+          set -euo pipefail
+          terraform apply -auto-approve -input=false
+
+      - name: Redeploy On EC2 (SSM)
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${EC2_INSTANCE_ID}" ]]; then
+            echo "EC2_INSTANCE_ID is required." >&2
+            exit 1
+          fi
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          image_uri="${registry}/${ECR_REPOSITORY}:latest"
+
+          # Assumes the instance is SSM-managed and already has /home/ec2-user/autonomous-trader.env configured.
+          aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "autonomous-trader redeploy" \
+            --parameters commands="[
+              \"set -euo pipefail\",
+              \"aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${registry}\",
+              \"sudo docker pull ${image_uri}\",
+              \"sudo docker stop autonomous-trader >/dev/null 2>&1 || true\",
+              \"sudo docker rm autonomous-trader >/dev/null 2>&1 || true\",
+              \"sudo mkdir -p /opt/autonomous-trader/data\",
+              \"sudo chown -R ec2-user:ec2-user /opt/autonomous-trader\",
+              \"sudo docker run -d --name autonomous-trader -p 8000:8000 --env-file /home/ec2-user/autonomous-trader.env -v /opt/autonomous-trader/data:/app/api/data --restart unless-stopped ${image_uri}\"
+            ]" \
+            >/dev/null
+
+      - name: Deployment Link
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${APP_DOMAIN_NAME}" ]]; then
+            echo "URL: https://${APP_DOMAIN_NAME}"
+          else
+            echo "URL: (set vars.APP_DOMAIN_NAME to print your domain URL)"
+          fi
+        env:
+          APP_DOMAIN_NAME: ${{ vars.APP_DOMAIN_NAME }}
+    env:
+      AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}

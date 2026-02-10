@@ -115,6 +115,19 @@ docker compose up --build
 - Web UI + API host: `http://localhost:8000`
 - Health check: `http://localhost:8000/health`
 
+## GitHub Actions
+
+This repo includes 2 workflows:
+
+- `CI` (`.github/workflows/ci.yml`): builds the Docker image and runs a smoke test against `/health`.
+- `Push Image To ECR` (`.github/workflows/push-ecr.yml`): builds and pushes the Docker image to ECR using AWS OIDC.
+
+ECR workflow required secrets (GitHub repo settings -> Secrets and variables -> Actions):
+
+- `AWS_ROLE_ARN`: IAM role ARN that GitHub OIDC can assume (must allow ECR push).
+- `AWS_REGION`: AWS region (example: `ap-southeast-1`).
+- `ECR_REPOSITORY`: ECR repository name (example: `autonomous-trader`).
+
 If Brave MCP fails to start, the trader runtime now skips that MCP server and continues with remaining tools.
 Researcher MCP startup failures are isolated per server and soft-disabled for future cycles in-process.
 

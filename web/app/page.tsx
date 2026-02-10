@@ -875,7 +875,7 @@ export default function HomePage() {
       <header className="topHero">
         <div className="brandBlock">
           <p className="brandKicker">
-            Autonomous Agentic Trader{" "}
+            <span className="brandTitleText">Autonomous Agentic Trader</span>
             <RichHelpTip label="How autonomous trading works" placement="down" className="heroPillSup">
               <p className="richHelpTitle">How autonomous trading works</p>
               <p className="richHelpText">Key components:</p>
@@ -904,7 +904,7 @@ export default function HomePage() {
           <p className="brandSubtitle">Live portfolio intelligence, trading control, and strategy execution in one view.</p>
         </div>
         <div className="heroStats">
-          <article className="statCard">
+          <article className="statCard statCardCentered">
             <span className="statLabel">
               Market{" "}
               <RichHelpTip label="Market status help" placement="down">
@@ -925,8 +925,9 @@ export default function HomePage() {
             <span className={`statValue marketBadge ${marketClass}`} title={market.detail || undefined}>
               {marketLabel}
             </span>
+            <small className="statHint marketHours">US Market 9:30 AM – 4:00 PM ET</small>
           </article>
-          <article className="statCard">
+          <article className="statCard statCardCentered">
             <span className="statLabel">
               Trading{" "}
               <HelpTip
@@ -940,7 +941,7 @@ export default function HomePage() {
             </span>
             <small className="statHint">{scheduler.pid ? `PID ${scheduler.pid}` : "No active trading process"}</small>
           </article>
-          <article className="statCard">
+          <article className="statCard statCardCentered">
             <span className="statLabel">
               Total Portfolio{" "}
               <HelpTip
@@ -949,11 +950,16 @@ export default function HomePage() {
                 text="Combined total equity across all traders, broken into cash balance and holdings market value, plus net profit or loss."
               />
             </span>
-            <span className="statValue">${money(totalValue, 0)}</span>
+            <span className="statValue">
+              <span className={`totalValuePill ${totalPnL >= 0 ? "totalValuePillUp" : "totalValuePillDown"}`}>
+                <span className="pillPrimary">${money(totalValue, 0)}</span>
+                <span className="pillDivider">|</span>
+                <span className={`pillSecondary ${totalPnL >= 0 ? "pnlUp" : "pnlDown"}`}>
+                  {totalPnL >= 0 ? "+" : "-"}${money(Math.abs(totalPnL), 0)}
+                </span>
+              </span>
+            </span>
             <small className="statHint">Cash ${money(totalCashValue, 0)} + Market ${money(totalMarketValue, 0)}</small>
-            <small className={totalPnL >= 0 ? "pnlUp" : "pnlDown"}>
-              ${money(Math.abs(totalPnL), 0)} total {totalPnLLabel}
-            </small>
           </article>
         </div>
       </header>

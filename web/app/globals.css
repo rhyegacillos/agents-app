@@ -23,6 +23,7 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -32,6 +33,48 @@ body {
     radial-gradient(circle at 85% 8%, #c7ddff, transparent 35%),
     linear-gradient(150deg, var(--bg-base), var(--bg-deep));
   font-family: var(--font-display), sans-serif;
+}
+
+.appFootnote {
+  display: block !important;
+  max-width: 1500px;
+  margin: 10px auto 18px;
+  padding: 0 14px;
+  text-align: center;
+  color: var(--ink-2);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+.controlDesk,
+.panel,
+.portfolioTimeline,
+.timelineChartPanel,
+.timelineLedgerPanel,
+.tableWrap,
+.transactionsTableWrap,
+.traderStrip {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.appFootnoteSep {
+  display: inline-block;
+  margin: 0 8px;
+  opacity: 0.7;
+}
+
+.appFootnoteEmail {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(66, 82, 107, 0.4);
+}
+
+.appFootnoteEmail:hover,
+.appFootnoteEmail:focus-visible {
+  border-bottom-color: rgba(2, 79, 131, 0.7);
+  color: var(--accent-strong);
 }
 
 .controlDesk {
@@ -63,9 +106,13 @@ body {
 
 .topHero {
   display: grid;
-  grid-template-columns: 1.45fr 1fr;
+  grid-template-columns: 1.18fr 1fr;
   gap: 8px;
   align-items: stretch;
+}
+
+.topHero > * {
+  min-width: 0;
 }
 
 .brandBlock {
@@ -81,10 +128,23 @@ body {
   color: var(--ink-0);
   text-transform: none;
   letter-spacing: -0.02em;
-  font-size: clamp(1.45rem, 2.7vw, 2.2rem);
+  font-size: clamp(1.25rem, 2.2vw, 1.95rem);
   font-weight: 700;
   line-height: 1.05;
   font-family: var(--font-display), sans-serif;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: visible;
+}
+
+.brandTitleText {
+  flex: 0 1 auto;
+  max-width: calc(100% - 84px);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brandTitle {
@@ -97,12 +157,11 @@ body {
 .brandSubtitle {
   margin: 4px 0 0;
   color: var(--ink-1);
-  max-width: 64ch;
   line-height: 1.2;
-  font-size: 0.88rem;
-  white-space: normal;
-  overflow: visible;
-  text-overflow: unset;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .heroStats {
@@ -111,6 +170,10 @@ body {
   gap: 6px;
   height: 100%;
   align-items: start;
+}
+
+.heroStats > * {
+  min-width: 0;
 }
 
 .statCard {
@@ -126,6 +189,31 @@ body {
   min-height: 86px;
   height: 100%;
   box-shadow: var(--shadow);
+}
+
+.statCardCentered {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr auto;
+  align-items: center;
+  justify-items: center;
+  text-align: center;
+}
+
+.statCardCentered .statLabel {
+  justify-self: start;
+}
+
+.statCardCentered .statValue {
+  margin: 0;
+  justify-self: center;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.statCardCentered .statHint {
+  margin-top: 0;
 }
 
 .statLabel {
@@ -150,6 +238,10 @@ body {
   color: var(--ink-2);
   font-size: 0.66rem;
   font-family: var(--font-mono), monospace;
+}
+
+.statHint.marketHours {
+  margin-top: 4px;
 }
 
 .traderStrip {
@@ -220,6 +312,10 @@ body {
   gap: 12px;
 }
 
+.deskGrid > * {
+  min-width: 0;
+}
+
 .leftRail {
   display: grid;
   align-content: start;
@@ -261,6 +357,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  contain: layout paint;
   width: 16px;
   height: 16px;
   border-radius: 999px;
@@ -343,6 +440,7 @@ body {
   text-transform: uppercase;
   font-weight: 700;
   line-height: 1.2;
+  contain: layout paint;
 }
 
 .heroPillSup {
@@ -992,6 +1090,7 @@ body {
 .detailWorkspace {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .txTableControls {
@@ -999,6 +1098,10 @@ body {
   grid-template-columns: minmax(220px, 1fr) auto auto;
   gap: 8px;
   align-items: center;
+}
+
+.txTableControls > * {
+  min-width: 0;
 }
 
 .txSearchInput {
@@ -1083,7 +1186,6 @@ body {
 .transactionsTableWrap table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 960px;
   font-family: var(--font-mono), monospace;
   font-size: 0.8rem;
   table-layout: fixed;
@@ -1267,6 +1369,45 @@ body {
 .statCard .tradingStatusPill {
   align-self: center;
 }
+
+.totalValuePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid #d7dde7;
+  background: #f6f7fb;
+  padding: 7px 12px;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  margin: 0 auto;
+  width: 100%;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.totalValuePillUp {
+  background: #ebfff2;
+  border-color: #bfe5ca;
+}
+
+.totalValuePillDown {
+  background: #fff1ef;
+  border-color: #f0bcb6;
+}
+
+.pillPrimary {
+  color: var(--ink-0);
+}
+
+.pillDivider {
+  color: var(--ink-2);
+  opacity: 0.7;
+}
+
 
 .tradingRunning {
   background: #ebfff2;

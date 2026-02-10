@@ -11,3 +11,11 @@ web/.next
 capstone/__pycache__
 mcp/__pycache__
 *.pem
+terraform/terraform.tfvars
+terraform/terraform.tfvars.local
+terraform/*.backup
+terraform/.terraform
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform/crash.log
+terraform/crash.*.log

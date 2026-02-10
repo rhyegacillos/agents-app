@@ -1,0 +1,28 @@
+aws_region = "ap-southeast-1"
+project_name = "autonomous-trader"
+instance_type = "t3.small"
+key_name = "YOUR_EC2_KEYPAIR_NAME"
+existing_instance_id = ""
+existing_instance_tag_name = "autonomous-trader-app"
+manage_existing = false
+manage_existing_sg_rules = false
+existing_security_group_id = ""
+enable_https = false
+domain_name = "autonomous-trader.agentairg.site"
+certbot_email = "you@example.com"
+enable_route53_dns = false
+route53_zone_name = "agentairg.site"
+route53_zone_id = ""
+allowed_ssh_cidr = "YOUR_IP/32"
+ecr_repo = "autonomous-trader"
+image_tag = "latest"
+
+env_vars = {
+  POLYGON_API_KEY               = "REPLACE_ME"
+  POLYGON_PLAN                  = "free"
+  BRAVE_API_KEY                 = "REPLACE_ME"
+  ENABLE_BRAVE_MCP              = "true"
+  READ_ONLY_MODE                = "true"
+  AUTO_TRADE_BY_MARKET          = "true"
+  RUN_EVEN_WHEN_MARKET_IS_CLOSED = "false"
+}

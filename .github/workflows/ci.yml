@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["autonomous-trader-agent-aws"]
+  push:
+    branches: ["autonomous-trader-agent-aws"]
+
+jobs:
+  docker-build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: autonomous-trader:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=
+
+      - name: Run Container
+        run: |
+          docker run -d --name autonomous-trader-ci \
+            -p 8000:8000 \
+            -e READ_ONLY_MODE=true \
+            -e AUTO_TRADE_BY_MARKET=false \
+            -e FRONTEND_ORIGIN=http://localhost:8000 \
+            -e TRADER_ENGINE_DIR=/app/api/trader_engine \
+            -e TRADER_DATA_DIR=/app/api/data \
+            autonomous-trader:${{ github.sha }}
+
+      - name: Smoke Test
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8000/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          curl -fsS http://localhost:8000/health
+          # Ensure the UI bundle is present and served.
+          curl -fsSI http://localhost:8000/ | head -n 20
+
+      - name: Logs (Failure)
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs --tail 200 autonomous-trader-ci || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f autonomous-trader-ci >/dev/null 2>&1 || true
