@@ -44,7 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           aws sts get-caller-identity
-          aws configure get region
+          echo "DEFAULT_AWS_REGION=${DEFAULT_AWS_REGION:-}"
+          echo "AWS_REGION=${AWS_REGION:-}"
+          echo "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}"
+          aws configure list || true
 
       - name: Login To ECR
         id: login-ecr
@@ -157,7 +160,7 @@ jobs:
           fi
 
           account_id="$(aws sts get-caller-identity --query Account --output text)"
-          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          registry="${account_id}.dkr.ecr.${DEFAULT_AWS_REGION}.amazonaws.com"
           image_uri="${registry}/${ECR_REPOSITORY}:latest"
 
           # Assumes the instance is SSM-managed and already has /home/ec2-user/autonomous-trader.env configured.
@@ -167,7 +170,7 @@ jobs:
             --comment "autonomous-trader redeploy" \
             --parameters commands="[
               \"set -euo pipefail\",
-              \"aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${registry}\",
+              \"aws ecr get-login-password --region ${DEFAULT_AWS_REGION} | sudo docker login --username AWS --password-stdin ${registry}\",
               \"sudo docker pull ${image_uri}\",
               \"sudo docker stop autonomous-trader >/dev/null 2>&1 || true\",
               \"sudo docker rm autonomous-trader >/dev/null 2>&1 || true\",
@@ -189,6 +192,7 @@ jobs:
         env:
           APP_DOMAIN_NAME: ${{ vars.APP_DOMAIN_NAME }}
     env:
-      AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
+      DEFAULT_AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
+      AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }} # for AWS SDK/CLI compatibility
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}

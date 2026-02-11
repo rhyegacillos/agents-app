@@ -27,7 +27,10 @@ jobs:
         run: |
           set -euo pipefail
           aws sts get-caller-identity
-          aws configure get region
+          echo "DEFAULT_AWS_REGION=${DEFAULT_AWS_REGION:-}"
+          echo "AWS_REGION=${AWS_REGION:-}"
+          echo "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}"
+          aws configure list || true
 
       - name: Login To ECR
         id: login-ecr
@@ -46,3 +49,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_API_URL=
+
+    env:
+      DEFAULT_AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
+      AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }} # for AWS SDK/CLI compatibility
