@@ -95,11 +95,11 @@ def _normalize_host(value: str) -> str:
 
 
 def _extract_request_host(request: Request) -> str:
-    forwarded_host = request.headers.get("x-forwarded-host", "")
-    if forwarded_host:
-        host_value = forwarded_host.split(",", 1)[0].strip()
-    else:
-        host_value = request.headers.get("host", "")
+    host_value = (request.headers.get("host", "") or "").strip()
+    if not host_value:
+        forwarded_host = request.headers.get("x-forwarded-host", "")
+        if forwarded_host:
+            host_value = forwarded_host.split(",", 1)[0].strip()
     return _normalize_host(host_value)
 
 
