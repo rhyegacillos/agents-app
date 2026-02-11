@@ -17,7 +17,8 @@ set -euo pipefail
 #   GITHUB_OWNER=rhyegacillos
 #   GITHUB_REPO=agents-app
 #   GITHUB_BRANCH=autonomous-trader-agent-aws
-#   GITHUB_SUBJECT=repo:<owner>/<repo>:ref:refs/heads/<branch>   (overrides owner/repo/branch)
+#   GITHUB_ENVIRONMENTS=dev,prod   (recommended if your workflow uses `environment:`)
+#   GITHUB_SUBJECTS=<comma-separated "sub" patterns>  (advanced override)
 
 if ! command -v aws >/dev/null 2>&1; then
   echo "ERROR: aws CLI is required." >&2
@@ -45,7 +46,26 @@ POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
 GITHUB_OWNER="${GITHUB_OWNER:-rhyegacillos}"
 GITHUB_REPO="${GITHUB_REPO:-agents-app}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-autonomous-trader-agent-aws}"
-GITHUB_SUBJECT="${GITHUB_SUBJECT:-repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/${GITHUB_BRANCH}}"
+
+# GitHub OIDC `sub` depends on workflow context:
+# - branch push: repo:OWNER/REPO:ref:refs/heads/BRANCH
+# - if job uses `environment: <name>`: repo:OWNER/REPO:environment:<name>
+#
+# Our deploy workflow uses environments, so allow both patterns by default.
+GITHUB_ENVIRONMENTS="${GITHUB_ENVIRONMENTS:-dev,prod}"
+
+default_subjects="repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/${GITHUB_BRANCH}"
+if [[ -n "${GITHUB_ENVIRONMENTS}" ]]; then
+  IFS=',' read -r -a _envs <<<"${GITHUB_ENVIRONMENTS}"
+  for e in "${_envs[@]}"; do
+    e="${e#"${e%%[![:space:]]*}"}"
+    e="${e%"${e##*[![:space:]]}"}"
+    [[ -z "${e}" ]] && continue
+    default_subjects+=",repo:${GITHUB_OWNER}/${GITHUB_REPO}:environment:${e}"
+  done
+fi
+
+GITHUB_SUBJECTS="${GITHUB_SUBJECTS:-${default_subjects}}"
 
 OIDC_PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
 
@@ -66,6 +86,14 @@ ensure_oidc_provider() {
 ensure_role_with_trust() {
   local tmp_trust
   tmp_trust="$(mktemp)"
+
+  # Convert comma-separated subject patterns into a JSON array for the trust policy.
+  local sub_json
+  sub_json="$(python3 -c 'import json,sys
+vals=[s.strip() for s in sys.argv[1].split(",") if s.strip()]
+print(json.dumps(vals))
+' "${GITHUB_SUBJECTS}")"
+
   cat > "${tmp_trust}" <<JSON
 {
   "Version": "2012-10-17",
@@ -81,7 +109,7 @@ ensure_role_with_trust() {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "${GITHUB_SUBJECT}"
+          "token.actions.githubusercontent.com:sub": ${sub_json}
         }
       }
     }
