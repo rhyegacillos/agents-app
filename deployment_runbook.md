@@ -43,6 +43,7 @@
 - `GROK_API_URL`
 - `RESEND_API_KEY`
 - `EMAIL_FROM` (optional; default is no-reply)
+- `ALLOWED_HOSTS` (recommended in production; example: `ideagen.agentairg.site`)
 
 ## Optional / Limits
 - `TOKEN_LIMIT_FREE` (default: 50000)
@@ -72,3 +73,38 @@ docker cp ./usage.db.backup <container_id>:/app/data/usage.db
 - Validate env vars are set before starting.
 - Ensure `/app/data` is mounted to persist usage/saved results.
 - Check `/health` after deploy.
+
+## App Runner Custom Domain (Route 53)
+Use this when serving the app from a subdomain such as `ideagen.agentairg.site`.
+
+1. In App Runner service -> `Custom domains` -> `Associate domain`.
+2. Set:
+   - Domain: `agentairg.site`
+   - Subdomain: `ideagen`
+   - Record type: `CNAME` (for subdomains)
+3. If registrar is Route 53, choose `Amazon Route 53` and the hosted zone.
+4. Confirm generated DNS records exist in Route 53.
+5. Wait for domain status to become `Active`.
+
+Verification:
+```bash
+dig ideagen.agentairg.site +short
+curl -I https://ideagen.agentairg.site
+```
+
+## Host Allowlist Behavior (`ALLOWED_HOSTS`)
+The backend enforces allowed request hosts to prevent access from unintended domains.
+
+- Default allowed host includes `ideagen.agentairg.site` plus local dev hosts.
+- Non-allowed hosts return `403` (`Host not allowed`).
+- `/health` is exempt so App Runner health checks still succeed.
+
+Recommended production setting:
+```bash
+ALLOWED_HOSTS=ideagen.agentairg.site
+```
+
+If you need multiple allowed domains:
+```bash
+ALLOWED_HOSTS=ideagen.agentairg.site,staging-ideagen.agentairg.site
+```

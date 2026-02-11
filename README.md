@@ -74,6 +74,7 @@ uvicorn index:app --reload --port 8000
 ```bash
 export $(cat .env | grep -v '^#' | xargs)
 docker build --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" -t ideagen-app .
+
 docker run -p 8000:8000 \
   -v ideagen_data:/app/data \
   -e CLERK_SECRET_KEY="$CLERK_SECRET_KEY" \
@@ -133,3 +134,32 @@ docker tag ideagen-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazon
 
 # 4. Push to ECR
 docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/ideagen-app:latest
+
+## AWS APP RUNNER CUSTOM DOMAIN
+
+Target domain:
+
+- `ideagen.agentairg.site`
+
+Setup steps:
+
+1. In App Runner service, open `Custom domains` -> `Link custom domain`.
+2. Select Route 53 hosted zone `agentairg.site`.
+3. Set subdomain to `ideagen`.
+4. Choose `CNAME` record type for subdomain mapping.
+5. Wait until domain status is `Active`.
+
+Verify:
+
+```bash
+dig ideagen.agentairg.site +short
+curl -I https://ideagen.agentairg.site
+```
+
+## HOST RESTRICTION (`ALLOWED_HOSTS`)
+
+Backend middleware enforces allowed hosts for app traffic.
+
+- Set `ALLOWED_HOSTS=ideagen.agentairg.site` in App Runner env vars.
+- Non-allowed hosts (including default `*.awsapprunner.com`) return `403`.
+- `/health` remains allowed for App Runner health checks.

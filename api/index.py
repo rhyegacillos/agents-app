@@ -72,6 +72,53 @@ logger = logging.getLogger(__name__)
 # Initialize PyJWKClient
 jwks_client = PyJWKClient(os.getenv("CLERK_JWKS_URL"))
 
+DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "testserver"}
+_allowed_hosts_raw = os.getenv("ALLOWED_HOSTS", "ideagen.agentairg.site")
+ALLOWED_HOSTS = {
+    host.strip().lower()
+    for host in _allowed_hosts_raw.split(",")
+    if host.strip()
+}
+if ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ALLOWED_HOSTS.union(DEFAULT_ALLOWED_HOSTS)
+
+
+def _normalize_host(value: str) -> str:
+    host = (value or "").strip().lower()
+    if not host:
+        return ""
+    if host.startswith("[") and "]" in host:
+        host = host[1 : host.index("]")]
+    elif ":" in host:
+        host = host.split(":", 1)[0]
+    return host
+
+
+def _extract_request_host(request: Request) -> str:
+    forwarded_host = request.headers.get("x-forwarded-host", "")
+    if forwarded_host:
+        host_value = forwarded_host.split(",", 1)[0].strip()
+    else:
+        host_value = request.headers.get("host", "")
+    return _normalize_host(host_value)
+
+
+@app.middleware("http")
+async def enforce_allowed_hosts(request: Request, call_next):
+    # Keep health probe reachable for App Runner health checks.
+    if request.url.path == "/health" or not ALLOWED_HOSTS:
+        return await call_next(request)
+
+    incoming_host = _extract_request_host(request)
+    if incoming_host not in ALLOWED_HOSTS:
+        logger.warning(
+            "blocked_request.invalid_host host=%s path=%s",
+            incoming_host,
+            request.url.path,
+        )
+        return JSONResponse(status_code=403, content={"detail": "Host not allowed."})
+    return await call_next(request)
+
 class CustomClerkHTTPBearer(ClerkHTTPBearer):
     async def __call__(self, request: Request):
         auth = request.headers.get("Authorization")

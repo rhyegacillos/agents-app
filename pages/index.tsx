@@ -409,10 +409,19 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="border-t border-white/10 bg-black/20">
-        <div className="mx-auto max-w-6xl px-4 py-8">
+        <div className="mx-auto max-w-6xl px-4 py-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-white/70">© {new Date().getFullYear()} IdeaGen</div>
-            <div className="text-sm text-white/70">RG</div>
+            <div className="flex items-center gap-2 text-sm text-white/70">
+              <span>RG</span>
+              <span aria-hidden="true">•</span>
+              <a
+                href="mailto:gacillos.rhye@gmail.com"
+                className="hover:text-white transition-colors"
+              >
+                gacillos.rhye@gmail.com
+              </a>
+            </div>
           </div>
         </div>
       </footer>
