@@ -189,6 +189,29 @@ See:
 
 ---
 
+## What “Serverless” Means Here
+
+In this capstone, “serverless” means there are **no long-lived servers/VMs** that you provision, patch, or scale manually. Compute and edge delivery scale on demand, and you pay per use.
+
+AWS services used to make it serverless:
+
+- **AWS Lambda (API + Worker)**: runs the backend and background jobs without managing instances.
+- **API Gateway (REST API)**: HTTP entrypoint and routing to Lambda.
+- **Amazon S3**: durable object storage for uploads/downloads and conversation state.
+- **CloudFront**: CDN for the frontend, globally distributed without running a web server.
+- **ECR**: container image registry for Lambda deployment artifacts.
+- **IAM**: least-privilege roles/policies for runtime access (S3, Lambda invoke, etc.).
+- **Amazon Bedrock**: managed model runtime for LLM inference (no model hosting/serving infrastructure to manage).
+- Optional: **Route53 + ACM** for custom domain + TLS.
+
+Operationally, scaling is handled by AWS:
+
+- traffic spikes increase Lambda concurrency automatically (within configured limits)
+- CloudFront caches and serves static assets at the edge
+- S3 scales storage and request throughput
+
+---
+
 ## Local Development
 
 Typical workflow:
