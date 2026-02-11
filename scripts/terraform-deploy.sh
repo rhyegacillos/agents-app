@@ -52,7 +52,7 @@ docker_platform="${DOCKER_PLATFORM:-linux/amd64}"
 
 if [[ -z "${existing_instance_id}" && -n "${existing_instance_tag_name}" ]]; then
   if command -v aws >/dev/null 2>&1; then
-    detected_id="$(aws ec2 describe-instances \
+    detected_id="$(aws ec2 describe-instances --region "${aws_region}" \
       --filters "Name=tag:Name,Values=${existing_instance_tag_name}" \
                 "Name=instance-state-name,Values=pending,running,stopping,stopped" \
       --query "Reservations[].Instances[].InstanceId" --output text 2>/dev/null | awk '{print $1}')"
@@ -102,7 +102,7 @@ fi
 if [[ -n "${deploy_key}" ]]; then
   deploy_host="$(terraform output -raw public_dns 2>/dev/null || true)"
   if [[ -z "${deploy_host}" && -n "${existing_instance_id}" && $(command -v aws) ]]; then
-    deploy_host="$(aws ec2 describe-instances --instance-ids "${existing_instance_id}" \
+    deploy_host="$(aws ec2 describe-instances --region "${aws_region}" --instance-ids "${existing_instance_id}" \
       --query "Reservations[].Instances[].PublicDnsName" --output text 2>/dev/null)"
   fi
 

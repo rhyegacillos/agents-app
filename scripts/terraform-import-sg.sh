@@ -35,6 +35,14 @@ read_tfvar() {
   echo "$raw"
 }
 
+aws_region="$(read_tfvar aws_region)"
+if [[ -z "${aws_region}" ]]; then
+  aws_region="${AWS_REGION:-${DEFAULT_AWS_REGION:-}}"
+fi
+if [[ -z "${aws_region}" ]]; then
+  echo "ERROR: aws_region is not set in terraform.tfvars (and no AWS_REGION/DEFAULT_AWS_REGION env found)." >&2
+  exit 1
+fi
 sg_id="$(read_tfvar existing_security_group_id)"
 instance_id="$(read_tfvar existing_instance_id)"
 ssh_cidr="$(read_tfvar allowed_ssh_cidr)"
@@ -45,7 +53,7 @@ fi
 
 if [[ -z "${sg_id}" ]]; then
   if [[ -n "${instance_id}" ]] && command -v aws >/dev/null 2>&1; then
-    sg_id="$(aws ec2 describe-instances --instance-ids "${instance_id}" \
+    sg_id="$(aws ec2 describe-instances --region "${aws_region}" --instance-ids "${instance_id}" \
       --query "Reservations[].Instances[].SecurityGroups[0].GroupId" --output text 2>/dev/null)"
   fi
 fi
@@ -60,21 +68,37 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
+aws_ec2_sg_rules() {
+  # Region mismatch is the #1 cause of "rule not found" followed by Terraform duplicate errors.
+  # Always force the region from terraform.tfvars.
+  local out rc
+  set +e
+  out="$(aws ec2 describe-security-group-rules --region "${aws_region}" "$@" 2>&1)"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: aws ec2 describe-security-group-rules failed (region=${aws_region})." >&2
+    echo "${out}" | sed 's/^/  /' >&2
+    exit $rc
+  fi
+  printf "%s" "${out}"
+}
+
 get_rule_id() {
   local port="$1"
   local cidr="$2"
-  aws ec2 describe-security-group-rules \
+  aws_ec2_sg_rules \
     --filters Name=group-id,Values="${sg_id}" \
     --query "SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`${port}\` && ToPort==\`${port}\` && IpProtocol=='tcp' && CidrIpv4=='${cidr}'].SecurityGroupRuleId | [0]" \
-    --output text 2>/dev/null
+    --output text
 }
 
 get_any_rule_cidrs_for_port() {
   local port="$1"
-  aws ec2 describe-security-group-rules \
+  aws_ec2_sg_rules \
     --filters Name=group-id,Values="${sg_id}" \
     --query "SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`${port}\` && ToPort==\`${port}\` && IpProtocol=='tcp'].CidrIpv4" \
-    --output text 2>/dev/null | tr '\t' '\n' | sed '/^None$/d' | sort -u
+    --output text | tr '\t' '\n' | sed '/^None$/d' | sort -u
 }
 
 import_rule() {

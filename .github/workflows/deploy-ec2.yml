@@ -35,7 +35,7 @@ jobs:
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_TRADER }}
           role-session-name: github-actions-deploy
           aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
 
@@ -102,7 +102,11 @@ jobs:
           key_name                = "${{ vars.EC2_KEY_NAME }}"
           existing_instance_id    = "${{ secrets.EC2_INSTANCE_ID }}"
           manage_existing         = true
-          manage_existing_sg_rules = false
+          manage_existing_sg_rules = ${{ vars.MANAGE_EXISTING_SG_RULES || 'false' }}
+
+          # Optional SG management (only used when MANAGE_EXISTING_SG_RULES=true)
+          existing_security_group_id = "${{ vars.EXISTING_SECURITY_GROUP_ID }}"
+          allowed_ssh_cidr            = "${{ vars.ALLOWED_SSH_CIDR }}"
 
           # Domain (optional): Terraform only creates Route53 record here.
           enable_route53_dns      = ${{ vars.ENABLE_ROUTE53_DNS || 'false' }}
@@ -119,9 +123,16 @@ jobs:
         run: |
           set -euo pipefail
           terraform init -input=false
-          if ! terraform state list | grep -Fqx 'aws_instance.app[0]'; then
+          state_list="$(terraform state list 2>/dev/null || true)"
+          if ! printf '%s\n' "${state_list}" | grep -Fqx 'aws_instance.app[0]'; then
             terraform import -input=false aws_instance.app[0] "${{ secrets.EC2_INSTANCE_ID }}"
           fi
+
+      - name: Terraform Import Existing SG Rules (Avoid Duplicates)
+        if: ${{ vars.MANAGE_EXISTING_SG_RULES == 'true' }}
+        run: |
+          set -euo pipefail
+          ./scripts/terraform-import-sg.sh
 
       - name: Terraform Apply
         working-directory: ./terraform

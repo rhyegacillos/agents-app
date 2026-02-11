@@ -20,9 +20,9 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
-ROLE_INPUT="${1:-${ROLE_NAME_OR_ARN:-${AWS_ROLE_ARN:-}}}"
+ROLE_INPUT="${1:-${ROLE_NAME_OR_ARN:-${AWS_ROLE_ARN_TRADER:-${AWS_ROLE_ARN:-}}}}"
 if [[ -z "${ROLE_INPUT}" ]]; then
-  echo "ERROR: Provide ROLE_NAME or ROLE_ARN as arg 1 (or set AWS_ROLE_ARN)." >&2
+  echo "ERROR: Provide ROLE_NAME or ROLE_ARN as arg 1 (or set AWS_ROLE_ARN_TRADER / AWS_ROLE_ARN)." >&2
   exit 1
 fi
 
@@ -50,10 +50,26 @@ cat > "${tmp_policy}" <<'JSON'
         "ec2:DescribeImages",
         "ec2:DescribeInstanceTypes",
         "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeRouteTables",
         "ec2:DescribeVpcs",
         "ec2:DescribeSubnets",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeSecurityGroupRules"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "TerraformEC2SecurityGroupWrite",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress"
       ],
       "Resource": "*"
     },
@@ -70,6 +86,18 @@ cat > "${tmp_policy}" <<'JSON'
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
         "ecr:UploadLayerPart"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53Optional",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets",
+        "route53:GetHostedZone",
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName",
+        "route53:ListResourceRecordSets"
       ],
       "Resource": "*"
     },

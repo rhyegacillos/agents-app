@@ -124,8 +124,8 @@ This repo includes 2 workflows:
 
 ECR workflow required secrets (GitHub repo settings -> Secrets and variables -> Actions):
 
-- `AWS_ROLE_ARN`: IAM role ARN that GitHub OIDC can assume (must allow ECR push).
-- `AWS_REGION`: AWS region (example: `ap-southeast-1`).
+- `AWS_ROLE_ARN_TRADER`: IAM role ARN that GitHub OIDC can assume (must allow ECR push + EC2 deploy actions).
+- `DEFAULT_AWS_REGION`: AWS region (example: `ap-southeast-1`).
 - `ECR_REPOSITORY`: ECR repository name (example: `autonomous-trader`).
 
 If Brave MCP fails to start, the trader runtime now skips that MCP server and continues with remaining tools.
