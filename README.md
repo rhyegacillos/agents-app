@@ -314,3 +314,11 @@ docker tag consultation-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.a
 
 # 4. Push to ECR
 docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/consultation-app:latest
+
+
+
+docker build --platform linux/amd64 -t autonomous-trader:latest .
+docker tag consultation-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/autonomous-trader:latest
+
+
+docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/autonomous-trader:latest

@@ -5,6 +5,7 @@ import { SignInButton, SignedIn, SignedOut, UserButton } from '@clerk/nextjs';
 import ThemeToggle from '../components/ThemeToggle';
 
 export default function Home() {
+  const year = new Date().getFullYear();
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#f6fbfb] text-slate-900 dark:bg-[#0b1217] dark:text-slate-100">
       <div className="pointer-events-none absolute inset-0">
@@ -14,7 +15,7 @@ export default function Home() {
         <div className="absolute top-40 left-[-6%] h-80 w-80 rounded-full bg-gradient-to-br from-sky-200/50 to-teal-200/30 blur-3xl dark:from-sky-900/40 dark:to-teal-900/20" />
       </div>
 
-      <div className="relative mx-auto max-w-6xl px-6 pt-16 pb-10">
+      <div className="relative mx-auto max-w-6xl px-6 pt-16 pb-1">
         <nav className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
@@ -259,6 +260,11 @@ export default function Home() {
         <div className="text-center text-xs uppercase tracking-[0.3em] text-slate-500 dark:text-slate-400">
           HIPAA ready • Secure • Professional
         </div>
+        <footer className="mt-2 border-t border-slate-200/70 pt-1 flex min-h-[24px] items-center text-[10px] text-slate-500 dark:border-slate-700/70 dark:text-slate-400">
+          <span className="flex-1 text-left">{year}</span>
+          <span className="flex-1 text-center font-semibold">RG</span>
+          <span className="flex-1 text-right">gacillos.rhye@gmail.com</span>
+        </footer>
       </div>
     </main>
   );
