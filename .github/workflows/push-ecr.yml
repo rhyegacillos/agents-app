@@ -23,6 +23,12 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_TRADER }}
           aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
 
+      - name: Verify Assumed AWS Identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+          aws configure get region
+
       - name: Login To ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2

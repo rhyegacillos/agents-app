@@ -40,6 +40,12 @@ jobs:
           role-session-name: github-actions-deploy
           aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
 
+      - name: Verify Assumed AWS Identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+          aws configure get region
+
       - name: Login To ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2

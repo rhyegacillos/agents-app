@@ -14,6 +14,10 @@ set -euo pipefail
 #
 # Optional env:
 #   POLICY_NAME=autonomous-trader-gha-deploy
+#   GITHUB_OWNER=rhyegacillos
+#   GITHUB_REPO=agents-app
+#   GITHUB_BRANCH=autonomous-trader-agent-aws
+#   GITHUB_SUBJECT=repo:<owner>/<repo>:ref:refs/heads/<branch>   (overrides owner/repo/branch)
 
 if ! command -v aws >/dev/null 2>&1; then
   echo "ERROR: aws CLI is required." >&2
@@ -35,6 +39,75 @@ INLINE_POLICY_NAME="${INLINE_POLICY_NAME:-${POLICY_NAME}-inline}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
 
+# Ensure the role exists and has a GitHub OIDC trust policy.
+# This keeps setup portable: you can point it at a new role name and it will
+# be created correctly for this repo/branch.
+GITHUB_OWNER="${GITHUB_OWNER:-rhyegacillos}"
+GITHUB_REPO="${GITHUB_REPO:-agents-app}"
+GITHUB_BRANCH="${GITHUB_BRANCH:-autonomous-trader-agent-aws}"
+GITHUB_SUBJECT="${GITHUB_SUBJECT:-repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/${GITHUB_BRANCH}}"
+
+OIDC_PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
+
+ensure_oidc_provider() {
+  if aws iam get-open-id-connect-provider --open-id-connect-provider-arn "${OIDC_PROVIDER_ARN}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "GitHub OIDC provider not found; creating: ${OIDC_PROVIDER_ARN}"
+  # GitHub's current root CA thumbprint commonly used for the Actions OIDC provider.
+  # If AWS rejects this in the future, create it once in the console and rerun this script.
+  aws iam create-open-id-connect-provider \
+    --url "https://token.actions.githubusercontent.com" \
+    --client-id-list "sts.amazonaws.com" \
+    --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" \
+    >/dev/null
+}
+
+ensure_role_with_trust() {
+  local tmp_trust
+  tmp_trust="$(mktemp)"
+  cat > "${tmp_trust}" <<JSON
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "${OIDC_PROVIDER_ARN}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "${GITHUB_SUBJECT}"
+        }
+      }
+    }
+  ]
+}
+JSON
+
+  if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+    # Keep trust aligned (safe idempotent update).
+    aws iam update-assume-role-policy \
+      --role-name "${ROLE_NAME}" \
+      --policy-document "file://${tmp_trust}" \
+      >/dev/null
+  else
+    aws iam create-role \
+      --role-name "${ROLE_NAME}" \
+      --assume-role-policy-document "file://${tmp_trust}" \
+      --description "GitHub Actions OIDC deploy role for autonomous-trader" \
+      >/dev/null
+  fi
+  rm -f "${tmp_trust}"
+}
+
+ensure_oidc_provider
+ensure_role_with_trust
+
 tmp_policy="$(mktemp)"
 cleanup() { rm -f "${tmp_policy}"; }
 trap cleanup EXIT
@@ -47,18 +120,7 @@ cat > "${tmp_policy}" <<'JSON'
       "Sid": "TerraformEC2Read",
       "Effect": "Allow",
       "Action": [
-        "ec2:DescribeImages",
-        "ec2:DescribeInstanceTypes",
-        "ec2:DescribeInstances",
-        "ec2:DescribeVolumes",
-        "ec2:DescribeNetworkInterfaces",
-        "ec2:DescribeVpcAttribute",
-        "ec2:DescribeAvailabilityZones",
-        "ec2:DescribeRouteTables",
-        "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeSecurityGroupRules"
+        "ec2:Describe*"
       ],
       "Resource": "*"
     },
@@ -94,6 +156,7 @@ cat > "${tmp_policy}" <<'JSON'
       "Effect": "Allow",
       "Action": [
         "route53:ChangeResourceRecordSets",
+        "route53:GetChange",
         "route53:GetHostedZone",
         "route53:ListHostedZones",
         "route53:ListHostedZonesByName",
@@ -132,10 +195,8 @@ if aws iam get-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1; then
   versions_count="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('Versions',[])))" <<<"${versions_json}")"
   if [[ "${versions_count}" -ge 5 ]]; then
     # Delete oldest non-default versions until under the limit.
-    python3 - <<'PY' "${POLICY_ARN}" <<<"${versions_json}"
-import json
-import subprocess
-import sys
+    # IMPORTANT: don't use `python3 -` here (stdin is the code). We need stdin for JSON.
+    python3 -c 'import json,subprocess,sys
 from datetime import datetime, timezone
 
 policy_arn = sys.argv[1]
@@ -144,7 +205,6 @@ versions = data.get("Versions", [])
 non_default = [v for v in versions if not v.get("IsDefaultVersion")]
 
 def parse_dt(s: str) -> datetime:
-    # AWS returns ISO8601 with timezone, but python can parse via fromisoformat in many cases.
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
@@ -158,7 +218,7 @@ while len(versions) >= 5 and non_default:
         continue
     subprocess.check_call(["aws", "iam", "delete-policy-version", "--policy-arn", policy_arn, "--version-id", vid])
     versions.pop()
-PY
+' "${POLICY_ARN}" <<<"${versions_json}"
   fi
 
   aws iam create-policy-version \
