@@ -418,6 +418,7 @@ Key points:
 - bucket name includes project, environment, and account id
 - block all public access
 - enforce bucket ownership
+- configure CORS for **direct-to-S3 browser uploads** (presigned `PUT`) when using `POST /uploads/presign`
 
 Example pattern:
 ```hcl
@@ -431,6 +432,22 @@ resource "aws_s3_bucket_public_access_block" "memory" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+# Required for direct-to-S3 uploads from the frontend (browser PUT to presigned URL).
+# allowed_origins should match your CloudFront URL (and custom domain if used).
+resource "aws_s3_bucket_cors_configuration" "memory" {
+  bucket = aws_s3_bucket.memory.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "POST", "HEAD"]
+    allowed_origins = [
+      "https://${aws_cloudfront_distribution.main.domain_name}",
+    ]
+    expose_headers  = ["ETag", "x-amz-request-id", "x-amz-id-2"]
+    max_age_seconds = 3000
+  }
 }
 ```
 

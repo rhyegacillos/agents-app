@@ -103,7 +103,8 @@ Endpoints:
 - `POST /memory/candidates/{id}/reject` – reject memory candidate
 - `GET /memory` – approved memory list
 - `POST /memory/approved/{id}/delete` – remove approved memory
-- `POST /uploads` – upload file (local or S3)
+- `POST /uploads` – upload file via API (legacy; local dev or fallback)
+- `POST /uploads/presign` – get a presigned S3 URL for direct browser upload (recommended in AWS)
 - `GET /downloads/{filename}` – download generated PDFs (local)
 
 ### 2.2 Backend endpoints → handlers (code map)
@@ -124,6 +125,7 @@ All handlers live in `backend/server.py` unless stated otherwise.
 | `GET /memory` | `get_memory()` | List approved memory |
 | `POST /memory/approved/{id}/delete` | `delete_approved_memory()` | Remove approved memory item |
 | `POST /uploads` | `upload_file()` | Upload file (local or S3) |
+| `POST /uploads/presign` | `presign_upload()` | Presign direct-to-S3 upload (avoids binary corruption through API Gateway/Lambda) |
 | `GET /downloads/{filename}` | `download_file()` | Download generated PDF |
 
 ### 2.3 Prompt assembly and persona context
@@ -277,7 +279,8 @@ Provisioned by Terraform:
   - both use container images from ECR
 
 - **API Gateway (REST API)**
-  - routes `/`, `/chat`, `/health`, `/jobs/{job_id}`, `/memory/*`, `/uploads`, `/downloads/*`
+  - routes `/`, `/chat`, `/health`, `/jobs/{job_id}`, `/memory/*`, `/uploads*`, `/downloads/*`
+  - direct-to-S3 uploads use `POST /uploads/presign` then browser `PUT` to S3
 
 - **CloudFront distribution**
   - serves frontend globally
@@ -324,6 +327,9 @@ Memory:
 
 CORS:
 - `CORS_ORIGINS` (comma-separated)
+
+Uploads (direct-to-S3):
+- `UPLOAD_PRESIGN_EXPIRES_SECONDS` (default `900`): presigned `PUT` URL validity window for browser uploads
 
 ### 5.2 Frontend environment variables
 
