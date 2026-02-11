@@ -189,6 +189,7 @@ body {
   min-height: 86px;
   height: 100%;
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .statCardCentered {
@@ -198,6 +199,10 @@ body {
   align-items: center;
   justify-items: center;
   text-align: center;
+}
+
+.statCardCentered > * {
+  min-width: 0;
 }
 
 .statCardCentered .statLabel {
@@ -214,6 +219,11 @@ body {
 
 .statCardCentered .statHint {
   margin-top: 0;
+  width: 100%;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 .statLabel {
@@ -1379,7 +1389,7 @@ body {
   background: #f6f7fb;
   padding: 7px 12px;
   font-family: var(--font-mono), monospace;
-  font-size: 0.84rem;
+  font-size: clamp(0.66rem, 1vw, 0.84rem);
   font-weight: 700;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -1387,6 +1397,7 @@ body {
   width: 100%;
   justify-content: center;
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .totalValuePillUp {
@@ -1401,6 +1412,12 @@ body {
 
 .pillPrimary {
   color: var(--ink-0);
+  font-size: clamp(0.68rem, 1.2vw, 0.9rem);
+  line-height: 1.2;
+}
+
+.pillSecondary {
+  font-size: clamp(0.64rem, 1.05vw, 0.82rem);
 }
 
 .pillDivider {
@@ -1423,6 +1440,12 @@ body {
 
 .pnlUp { color: var(--buy); }
 .pnlDown { color: var(--sell); }
+
+@media (max-width: 1320px) {
+  .heroStats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
 .txBuy { color: var(--buy); font-weight: 700; }
 .txSell { color: var(--sell); font-weight: 700; }
 
@@ -1464,7 +1487,7 @@ body {
   }
 
   .heroStats {
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
   }
 
   .deskGrid {
@@ -1490,7 +1513,7 @@ body {
   }
 
   .heroStats {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
 
   .chartToolbar {
@@ -1537,4 +1560,16 @@ body {
     max-width: min(320px, 90vw);
   }
 
+}
+
+@media (max-width: 980px) {
+  .totalValuePill {
+    flex-wrap: wrap;
+    white-space: normal;
+    gap: 6px;
+  }
+
+  .totalValuePill .pillDivider {
+    display: none;
+  }
 }
