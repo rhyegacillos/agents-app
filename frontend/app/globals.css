@@ -4,6 +4,9 @@
   --surface: #ffffff;
   --ink: #0f172a;
   --ink-soft: #64748b;
+  /* Network-free font stack (avoid next/font/google build-time fetch). */
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-display: ui-serif, Georgia, Cambria, "Times New Roman", serif;
  }
 
  .font-body {

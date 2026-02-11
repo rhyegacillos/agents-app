@@ -1,0 +1,3 @@
+{"id":"health_plain_qa","message":"Explain the difference between HTTP API and REST API in API Gateway in 5 bullet points.","assert_regex":["HTTP API","REST API"],"timeout_s":120}
+{"id":"tool_pdf_intent","message":"Generate a PDF summary of what you just explained and give me a download link.","assert_regex":["Download","pdf"],"timeout_s":180}
+{"id":"tool_search_intent","message":"Latest news on large language models in 2026. Use web search and cite sources.","assert_regex":["http","source|Sources|cit"],"timeout_s":240}

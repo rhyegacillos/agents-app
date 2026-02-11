@@ -1,16 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Sora } from "next/font/google";
 import "./globals.css";
-
-const sora = Sora({
-  variable: "--font-body",
-  subsets: ["latin"],
-});
-
-const fraunces = Fraunces({
-  variable: "--font-display",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Digital Assistant",
@@ -24,9 +13,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${sora.variable} ${fraunces.variable} font-body antialiased`}
-      >
+      <body className="font-body antialiased">
         {children}
       </body>
     </html>

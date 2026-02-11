@@ -94,6 +94,22 @@ jobs:
           echo "api_url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
           echo "frontend_bucket=$(terraform output -raw s3_frontend_bucket)" >> $GITHUB_OUTPUT
 
+      - name: Run E2E Evals (Golden Set)
+        timeout-minutes: 10
+        run: |
+          python3 backend/evals/run_evals.py \
+            --api-url "${{ steps.deploy_outputs.outputs.api_url }}" \
+            --user-id "evaluser1234" \
+            --golden "backend/evals/golden.jsonl" \
+            --out "eval_results.json"
+
+      - name: Upload Eval Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.event.inputs.environment || 'dev' }}
+          path: eval_results.json
+
       - name: Invalidate CloudFront
         run: |
           DISTRIBUTION_ID=$(aws cloudfront list-distributions \

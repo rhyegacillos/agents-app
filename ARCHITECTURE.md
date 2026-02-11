@@ -4,6 +4,10 @@ This document describes the **current implemented architecture** of this
 repository. It focuses on the runtime behavior, data flow, storage, and
 infrastructure of the Digital Assistant app.
 
+Ops and QA artifacts:
+- Objectives and KPIs: `OPERATIONS.md`
+- Golden-set regression harness: `backend/evals/`
+
 -------------------------------------------------------------------------------
 
 ## 0) Summary (what this system is)

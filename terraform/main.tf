@@ -8,9 +8,9 @@ locals {
 
   name_prefix = "${var.project_name}-${var.environment}"
 
-  custom_domain_fqdn = "${var.project_name}.${var.root_domain}"
-  api_cors_origin    = var.use_custom_domain && var.root_domain != "" ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
-  create_www_alias   = false
+  custom_domain_fqdn     = "${var.project_name}.${var.root_domain}"
+  api_cors_origin        = var.use_custom_domain && var.root_domain != "" ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+  create_www_alias       = false
   acm_validation_options = var.use_custom_domain && length(aws_acm_certificate.site) > 0 ? aws_acm_certificate.site[0].domain_validation_options : []
 
   common_tags = {
@@ -40,6 +40,25 @@ resource "aws_s3_bucket_ownership_controls" "memory" {
 
   rule {
     object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+locals {
+  memory_cors_allowed_origins = distinct(compact([
+    "https://${aws_cloudfront_distribution.main.domain_name}",
+    var.use_custom_domain && var.root_domain != "" ? "https://${local.custom_domain_fqdn}" : null,
+  ]))
+}
+
+resource "aws_s3_bucket_cors_configuration" "memory" {
+  bucket = aws_s3_bucket.memory.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "POST", "HEAD"]
+    allowed_origins = local.memory_cors_allowed_origins
+    expose_headers  = ["ETag", "x-amz-request-id", "x-amz-id-2"]
+    max_age_seconds = 3000
   }
 }
 
@@ -185,38 +204,38 @@ resource "aws_ecr_lifecycle_policy" "lambda" {
 
 # Lambda function
 resource "aws_lambda_function" "api" {
-  package_type     = "Image"
-  image_uri        = "${aws_ecr_repository.lambda.repository_url}:${var.lambda_image_tag}"
-  function_name    = "${local.name_prefix}-api"
-  role             = aws_iam_role.lambda_role.arn
-  architectures    = ["x86_64"]
-  memory_size      = var.lambda_memory_mb
-  timeout          = var.lambda_timeout
-  tags             = local.common_tags
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda.repository_url}:${var.lambda_image_tag}"
+  function_name = "${local.name_prefix}-api"
+  role          = aws_iam_role.lambda_role.arn
+  architectures = ["x86_64"]
+  memory_size   = var.lambda_memory_mb
+  timeout       = var.lambda_timeout
+  tags          = local.common_tags
 
   environment {
     variables = {
-      CORS_ORIGINS        = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
-      S3_BUCKET           = aws_s3_bucket.memory.id
-      USE_S3              = "true"
-      DEFAULT_AWS_REGION  = var.default_aws_region
-      ENABLE_MCP_SEARCH   = var.enable_mcp_search ? "true" : "false"
-      BEDROCK_MODEL_ID    = var.bedrock_model_id
-      AI_PROVIDER         = var.ai_provider
-      GROK_MODEL_ID       = var.grok_model_id
-      GROK_API_URL        = var.grok_api_url
-      GROK_API_KEY        = var.grok_api_key
-      BRAVE_API_KEY       = var.brave_api_key
-      RESEND_API_KEY      = var.resend_api_key
-      UPSTASH_REDIS_REST_URL   = var.upstash_redis_rest_url
-      UPSTASH_REDIS_REST_TOKEN = var.upstash_redis_rest_token
-      ASYNC_CHAT_ENABLED       = var.async_chat_enabled ? "true" : "false"
-      ASYNC_JOB_TTL_SECONDS    = tostring(var.async_job_ttl_seconds)
+      CORS_ORIGINS               = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+      S3_BUCKET                  = aws_s3_bucket.memory.id
+      USE_S3                     = "true"
+      DEFAULT_AWS_REGION         = var.default_aws_region
+      ENABLE_MCP_SEARCH          = var.enable_mcp_search ? "true" : "false"
+      BEDROCK_MODEL_ID           = var.bedrock_model_id
+      AI_PROVIDER                = var.ai_provider
+      GROK_MODEL_ID              = var.grok_model_id
+      GROK_API_URL               = var.grok_api_url
+      GROK_API_KEY               = var.grok_api_key
+      BRAVE_API_KEY              = var.brave_api_key
+      RESEND_API_KEY             = var.resend_api_key
+      UPSTASH_REDIS_REST_URL     = var.upstash_redis_rest_url
+      UPSTASH_REDIS_REST_TOKEN   = var.upstash_redis_rest_token
+      ASYNC_CHAT_ENABLED         = var.async_chat_enabled ? "true" : "false"
+      ASYNC_JOB_TTL_SECONDS      = tostring(var.async_job_ttl_seconds)
       ASYNC_WORKER_FUNCTION_NAME = aws_lambda_function.worker.function_name
-      MEMORY_EXTRACT_SYNC   = "false"
-      UPLOADS_DIR         = var.uploads_dir
-      MAX_UPLOAD_MB       = tostring(var.max_upload_mb)
-      UPLOAD_ALLOWED_EXTS = var.upload_allowed_exts
+      MEMORY_EXTRACT_SYNC        = "false"
+      UPLOADS_DIR                = var.uploads_dir
+      MAX_UPLOAD_MB              = tostring(var.max_upload_mb)
+      UPLOAD_ALLOWED_EXTS        = var.upload_allowed_exts
     }
   }
 
@@ -226,14 +245,14 @@ resource "aws_lambda_function" "api" {
 
 # Async worker Lambda (same image, different handler)
 resource "aws_lambda_function" "worker" {
-  package_type     = "Image"
-  image_uri        = "${aws_ecr_repository.lambda.repository_url}:${var.lambda_image_tag}"
-  function_name    = "${local.name_prefix}-worker"
-  role             = aws_iam_role.lambda_role.arn
-  architectures    = ["x86_64"]
-  memory_size      = var.worker_lambda_memory_mb
-  timeout          = var.worker_lambda_timeout
-  tags             = local.common_tags
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda.repository_url}:${var.lambda_image_tag}"
+  function_name = "${local.name_prefix}-worker"
+  role          = aws_iam_role.lambda_role.arn
+  architectures = ["x86_64"]
+  memory_size   = var.worker_lambda_memory_mb
+  timeout       = var.worker_lambda_timeout
+  tags          = local.common_tags
 
   image_config {
     command = ["worker_handler.handler"]
@@ -241,30 +260,30 @@ resource "aws_lambda_function" "worker" {
 
   environment {
     variables = {
-      CORS_ORIGINS        = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
-      S3_BUCKET           = aws_s3_bucket.memory.id
-      USE_S3              = "true"
-      DEFAULT_AWS_REGION  = var.default_aws_region
-      ENABLE_MCP_SEARCH   = var.enable_mcp_search ? "true" : "false"
-      BEDROCK_MODEL_ID    = var.bedrock_model_id
-      AI_PROVIDER         = var.ai_provider
-      GROK_MODEL_ID       = var.grok_model_id
-      GROK_API_URL        = var.grok_api_url
-      GROK_API_KEY        = var.grok_api_key
-      BRAVE_API_KEY       = var.brave_api_key
-      RESEND_API_KEY      = var.resend_api_key
-      UPSTASH_REDIS_REST_URL   = var.upstash_redis_rest_url
-      UPSTASH_REDIS_REST_TOKEN = var.upstash_redis_rest_token
-      ASYNC_CHAT_ENABLED       = "false"
-      ASYNC_JOB_TTL_SECONDS    = tostring(var.async_job_ttl_seconds)
-      WORKER_MAX_SECONDS       = tostring(var.worker_max_seconds)
-      LLM_TIMEOUT_SECONDS           = tostring(var.worker_llm_timeout_seconds)
-      MCP_STARTUP_TIMEOUT_SECONDS   = tostring(var.worker_mcp_startup_timeout_seconds)
-      RUNNER_TIMEOUT_SECONDS        = tostring(var.worker_runner_timeout_seconds)
-      MEMORY_EXTRACT_SYNC           = "true"
-      UPLOADS_DIR         = var.uploads_dir
-      MAX_UPLOAD_MB       = tostring(var.max_upload_mb)
-      UPLOAD_ALLOWED_EXTS = var.upload_allowed_exts
+      CORS_ORIGINS                = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+      S3_BUCKET                   = aws_s3_bucket.memory.id
+      USE_S3                      = "true"
+      DEFAULT_AWS_REGION          = var.default_aws_region
+      ENABLE_MCP_SEARCH           = var.enable_mcp_search ? "true" : "false"
+      BEDROCK_MODEL_ID            = var.bedrock_model_id
+      AI_PROVIDER                 = var.ai_provider
+      GROK_MODEL_ID               = var.grok_model_id
+      GROK_API_URL                = var.grok_api_url
+      GROK_API_KEY                = var.grok_api_key
+      BRAVE_API_KEY               = var.brave_api_key
+      RESEND_API_KEY              = var.resend_api_key
+      UPSTASH_REDIS_REST_URL      = var.upstash_redis_rest_url
+      UPSTASH_REDIS_REST_TOKEN    = var.upstash_redis_rest_token
+      ASYNC_CHAT_ENABLED          = "false"
+      ASYNC_JOB_TTL_SECONDS       = tostring(var.async_job_ttl_seconds)
+      WORKER_MAX_SECONDS          = tostring(var.worker_max_seconds)
+      LLM_TIMEOUT_SECONDS         = tostring(var.worker_llm_timeout_seconds)
+      MCP_STARTUP_TIMEOUT_SECONDS = tostring(var.worker_mcp_startup_timeout_seconds)
+      RUNNER_TIMEOUT_SECONDS      = tostring(var.worker_runner_timeout_seconds)
+      MEMORY_EXTRACT_SYNC         = "true"
+      UPLOADS_DIR                 = var.uploads_dir
+      MAX_UPLOAD_MB               = tostring(var.max_upload_mb)
+      UPLOAD_ALLOWED_EXTS         = var.upload_allowed_exts
     }
   }
 
@@ -395,10 +414,10 @@ resource "aws_api_gateway_method" "root_options" {
 }
 
 resource "aws_api_gateway_integration" "root_options" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_rest_api.main.root_resource_id
-  http_method             = aws_api_gateway_method.root_options.http_method
-  type                    = "MOCK"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_rest_api.main.root_resource_id
+  http_method = aws_api_gateway_method.root_options.http_method
+  type        = "MOCK"
   request_templates = {
     "application/json" = "{\"statusCode\": 200}"
   }
@@ -439,10 +458,10 @@ resource "aws_api_gateway_method" "proxy_options" {
 }
 
 resource "aws_api_gateway_integration" "proxy_options" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.proxy.id
-  http_method             = aws_api_gateway_method.proxy_options.http_method
-  type                    = "MOCK"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.proxy.id
+  http_method = aws_api_gateway_method.proxy_options.http_method
+  type        = "MOCK"
   request_templates = {
     "application/json" = "{\"statusCode\": 200}"
   }
@@ -476,14 +495,14 @@ resource "aws_api_gateway_integration_response" "proxy_options" {
 
 # CloudFront distribution
 resource "aws_cloudfront_distribution" "main" {
-  aliases = local.aliases
+  aliases             = local.aliases
   wait_for_deployment = false
   depends_on = [
     aws_acm_certificate_validation.site,
     aws_s3_bucket_website_configuration.frontend,
     aws_s3_bucket_policy.frontend
   ]
-  
+
   viewer_certificate {
     acm_certificate_arn            = var.use_custom_domain ? aws_acm_certificate.site[0].arn : null
     cloudfront_default_certificate = var.use_custom_domain ? false : true

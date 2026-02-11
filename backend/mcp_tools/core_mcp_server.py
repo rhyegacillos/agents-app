@@ -4,6 +4,7 @@ import uuid
 import logging
 import tempfile
 import urllib.request
+import html
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
@@ -442,33 +443,75 @@ async def send_resend_email(to: str, subject: str, body: str) -> str:
     Sends an email using Resend.
     """
     update_job_status("Tool: Send Email", 70)
+    logging.info(
+        "[core/resend] invoked to=%s subject=%s body_chars=%d",
+        to,
+        subject,
+        len(body or ""),
+    )
     if not RESEND_API_KEY:
+        logging.error("[core/resend] RESEND_API_KEY not configured")
         return "Email failed: RESEND_API_KEY not configured"
-    raw_body = body or ""
-    if "<" not in raw_body and "&lt;" in raw_body and "&gt;" in raw_body:
-        raw_body = html.unescape(raw_body)
+    try:
+        raw_body = body or ""
+        # If the model passed HTML entities (common for long presigned URLs), decode them first.
+        if "&lt;" in raw_body or "&gt;" in raw_body or "&amp;" in raw_body:
+            raw_body = html.unescape(raw_body)
 
-    body = raw_body
-    body_lower = body.lower()
-    is_html = any(tag in body_lower for tag in ("<html", "<body", "<p", "<div", "<br", "<a "))
-    if not is_html:
-        safe = html.escape(body)
-        body = (
-            "<div style=\"font-family: Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #111;\">"
-            + safe.replace("\n", "<br/>")
-            + "</div>"
-        )
+        body = raw_body
+        body_lower = body.lower()
+        is_html = any(tag in body_lower for tag in ("<html", "<body", "<p", "<div", "<br", "<a "))
+        if not is_html:
+            # Build a simple HTML email body and ensure URLs are clickable.
+            # Do not render raw presigned URLs as plain text, otherwise clients may show &amp; and break copying.
+            url_re = re.compile(r"(https?://[^\s<]+)")
 
-    logging.info("[core/resend] sending email to=%s subject=%s", to, subject)
-    params = {
-        "from": f"Digital Assistant <{RESEND_FROM}>",
-        "to": [to],
-        "subject": subject,
-        "html": body,
-    }
-    email = resend.Emails.send(params)
-    logging.info("[core/resend] sent email id=%s", email.get("id"))
-    return f"Email sent successfully. ID: {email['id']}"
+            def linkify(text: str) -> str:
+                out: list[str] = []
+                last = 0
+                for m in url_re.finditer(text):
+                    start, end = m.span(1)
+                    if start > last:
+                        out.append(html.escape(text[last:start]).replace("\n", "<br/>"))
+                    url_raw = m.group(1).rstrip(").,;")
+                    href = html.escape(url_raw, quote=True)
+                    label = "Download PDF" if ".pdf" in url_raw.lower() else url_raw
+                    out.append(f'<a href="{href}" target="_blank" rel="noreferrer">{html.escape(label)}</a>')
+                    last = end
+                if last < len(text):
+                    out.append(html.escape(text[last:]).replace("\n", "<br/>"))
+                return "".join(out)
+
+            body = (
+                "<div style=\"font-family: Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #111;\">"
+                + linkify(body)
+                + "</div>"
+            )
+
+        logging.info("[core/resend] sending email to=%s subject=%s", to, subject)
+        params = {
+            "from": f"Digital Assistant <{RESEND_FROM}>",
+            "to": [to],
+            "subject": subject,
+            "html": body,
+        }
+        email = resend.Emails.send(params)
+    except Exception as exc:
+        # Resend errors can be transport, auth, domain verification, etc.
+        logging.exception("[core/resend] send failed to=%s subject=%s", to, subject)
+        return f"Email failed: {type(exc).__name__}: {exc}"
+
+    if not isinstance(email, dict):
+        logging.error("[core/resend] unexpected response type: %s value=%r", type(email), email)
+        return "Email failed: unexpected response from Resend"
+
+    email_id = email.get("id")
+    if not email_id:
+        logging.error("[core/resend] missing id in response: %r", email)
+        return f"Email failed: unexpected response from Resend: {email}"
+
+    logging.info("[core/resend] sent email id=%s", email_id)
+    return f"Email sent successfully. ID: {email_id}"
 
 
 if __name__ == "__main__":

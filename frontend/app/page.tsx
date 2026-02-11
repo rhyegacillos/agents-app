@@ -3,7 +3,7 @@ import Twin from '@/components/twin';
 export default function Home() {
   return (
     <main className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_#f8fafc,_#eef2f7_35%,_#e6ecf4_70%,_#e0e7f0_100%)]">
-      <div className="container mx-auto px-4 py-8 h-full">
+      <div className="container mx-auto px-4 pt-8 pb-4 h-full">
         <div className="max-w-5xl mx-auto h-full flex flex-col">
           <div className="flex flex-col items-center text-center gap-2 mb-6 shrink-0">
             <span className="inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-[10px] uppercase tracking-[0.28em] text-slate-500 shadow-sm">
@@ -29,6 +29,16 @@ export default function Home() {
           </div>
         </div>
       </div>
+      <footer className="fixed bottom-3 left-1/2 z-50 -translate-x-1/2 text-[11px] text-slate-600/90">
+        <span className="font-medium text-slate-700/90">Rhye Gacillos</span>
+        <span className="mx-2 text-slate-400/90">·</span>
+        <a
+          href="mailto:gacillos.rhye@gmail.com"
+          className="text-slate-700/90 underline decoration-slate-300/90 underline-offset-2 hover:text-slate-900"
+        >
+          gacillos.rhye@gmail.com
+        </a>
+      </footer>
     </main>
   );
 }

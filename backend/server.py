@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+import mimetypes
 import os
 from typing import Optional, List, Dict, Any
 import json
@@ -46,6 +47,7 @@ from config import (
     UPLOADS_DIR,
     USE_S3,
     MAX_UPLOAD_BYTES,
+    UPLOAD_ALLOWED_EXTS,
     bedrock_client,
     s3_client,
     MEMORY_TTL_MAP,
@@ -70,6 +72,7 @@ from services.storage import (
     validate_upload_file,
     validate_user_id,
 )
+from observability import new_trace_id, reset_job_id, reset_trace_id, set_job_id, set_trace_id
 
 # Disable openai-agents tracing to avoid noisy log errors
 set_tracing_disabled(disabled=True)
@@ -88,6 +91,18 @@ app.add_middleware(
 
 # Job status context for async worker updates
 _CURRENT_JOB_ID: ContextVar[Optional[str]] = ContextVar("current_job_id", default=None)
+
+@app.middleware("http")
+async def trace_id_middleware(request, call_next):
+    incoming = (request.headers.get("x-request-id") or "").strip()
+    trace_id = incoming or new_trace_id()
+    _, token = set_trace_id(trace_id)
+    try:
+        response = await call_next(request)
+        response.headers["x-request-id"] = trace_id
+        return response
+    finally:
+        reset_trace_id(token)
 
 
 # Request/Response models
@@ -109,6 +124,12 @@ class Message(BaseModel):
     timestamp: str
 
 
+class UploadPresignRequest(BaseModel):
+    filename: str
+    size_bytes: int
+    content_type: Optional[str] = None
+
+
 def _parse_timeout(value: str) -> Optional[float]:
     if not value:
         return None
@@ -119,10 +140,17 @@ def _parse_timeout(value: str) -> Optional[float]:
 
 
 def _set_current_job_id(job_id: Optional[str]):
-    return _CURRENT_JOB_ID.set(job_id)
+    token1 = _CURRENT_JOB_ID.set(job_id)
+    _, token2 = set_job_id(job_id)
+    return (token1, token2)
 
 
 def _reset_current_job_id(token) -> None:
+    if isinstance(token, tuple) and len(token) == 2:
+        token1, token2 = token
+        _CURRENT_JOB_ID.reset(token1)
+        reset_job_id(token2)
+        return
     _CURRENT_JOB_ID.reset(token)
 
 
@@ -193,16 +221,41 @@ def build_tool_instructions() -> str:
 
 You have access to tools. Use them when the user asks for these actions:
 - **Read attached files**: if the user asks to summarize/inspect an uploaded file, call `read_uploaded_file` using the provided `file_id`.
-- **Send email**: if the user asks to send an email or deliver a PDF by email, call `send_resend_email`.
+- **Send email**: if the user asks to send an email or deliver a PDF by email, you MUST call `send_resend_email`.
 - **Generate PDF**: if the user asks for a PDF, call `generate_pdf_from_text` with the content.
 - **Download PDF**: if the user provides a PDF URL to fetch, call `download_pdf`.
 - **Web search**: if the user asks for current information and web search is enabled, use the search tool.
+
+Tool failure rules:
+- If a tool returns an error (for example `{"status":"error","error":"..."}`), do not invent explanations.
+- Report the exact tool error message and ask for the next input needed to proceed.
+- For `read_uploaded_file` errors like "Invalid or corrupted PDF file", treat it as a malformed file (not "scanned") and ask the user to re-upload or provide another format.
+
+PDF reuse rules:
+- If the conversation already contains a **PDF download link** or a tool result indicating a PDF was generated, **reuse that existing PDF** and do not call `generate_pdf_from_text` again.
+- Only regenerate a PDF if the user explicitly asks to **regenerate/recreate** it, if the content has materially changed, or if the existing link is expired/broken.
+
+Link correctness rules:
+- Never fabricate S3/presigned URLs or placeholders. Do not output template strings like `downloads/[FILENAME_PLACEHOLDER]/...?[URL_PARAMS_PLACEHOLDER]`.
+- If you need a PDF link, you must use the exact URL returned by the PDF tool result (e.g. `download_url` or `public_url`).
+- Only claim a link is “presigned” if the tool result actually returned a presigned URL.
+
+Email delivery rules:
+- The `send_resend_email` tool requires a recipient email address (`to`).
+- If the user did not include an email address in their latest message, look for the most recently mentioned email address in the conversation history and use it.
+- If no email address exists anywhere in the conversation, ask the user to provide it.
+- Never claim you tried or sent an email unless `send_resend_email` actually ran.
+- When calling `send_resend_email`, format `body` as **HTML** (not Markdown) and use clickable links:
+  - Prefer: `<a href="PRESIGNED_URL">Download PDF</a>` rather than pasting the full URL text.
+  - Do not include long presigned query strings as visible text (they will contain `&` which email HTML renders as `&amp;`).
+  - If you include a URL anywhere, it must be the exact tool-returned URL (no placeholders).
 
 Tool-call formatting rules:
 - If you decide to call a tool, respond with **only** tool calls in that turn (no extra text).
 - After tool results return, produce the final user-facing response.
 
 Do not claim you cannot access files or send email when these tools are available.
+Never claim an email was sent unless the `send_resend_email` tool returns success.
 If a tool fails, explain the failure briefly and ask the user for the next best option.
 """
 
@@ -602,11 +655,13 @@ async def chat(request: ChatRequest):
 
             job_id = str(uuid.uuid4())
             created_at = datetime.now().isoformat()
+            trace_id = new_trace_id()
             job_record = {
                 "job_id": job_id,
                 "user_id": user_id,
                 "session_id": session_id,
                 "status": "queued",
+                "trace_id": trace_id,
                 "created_at": created_at,
                 "updated_at": created_at,
             }
@@ -618,6 +673,7 @@ async def chat(request: ChatRequest):
                 "session_id": session_id,
                 "message": request.message,
                 "file_id": request.file_id,
+                "trace_id": trace_id,
             }
             try:
                 lambda_client = boto3.client("lambda", region_name=DEFAULT_AWS_REGION)
@@ -846,6 +902,63 @@ async def upload_file(file: UploadFile = File(...)):
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+@app.post("/uploads/presign")
+async def presign_upload(req: UploadPresignRequest):
+    """
+    Direct-to-S3 upload path to avoid API Gateway/Lambda binary transforms.
+    The client uploads to the returned URL and then uses file_id in /chat.
+    """
+    if not USE_S3:
+        raise HTTPException(status_code=400, detail="S3 uploads are not enabled")
+    if not UPLOADS_BUCKET:
+        raise HTTPException(status_code=500, detail="UPLOADS_BUCKET not configured")
+    if not s3_client:
+        raise HTTPException(status_code=500, detail="S3 client is not configured")
+
+    filename = (req.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename required")
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    if ext not in UPLOAD_ALLOWED_EXTS:
+        raise HTTPException(status_code=400, detail="file type not allowed")
+
+    if req.size_bytes <= 0:
+        raise HTTPException(status_code=400, detail="size_bytes must be > 0")
+    if req.size_bytes > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="file too large")
+
+    file_id = uuid.uuid4().hex
+    safe_name = sanitize_filename(filename)
+    key = f"uploads/{file_id}/{safe_name}"
+
+    content_type = (req.content_type or "").strip() or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    expires_seconds = int(os.getenv("UPLOAD_PRESIGN_EXPIRES_SECONDS", "900"))
+
+    try:
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": UPLOADS_BUCKET,
+                "Key": key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=expires_seconds,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to presign upload: {exc}") from exc
+
+    return {
+        "file_id": file_id,
+        "key": key,
+        "bucket": UPLOADS_BUCKET,
+        "expires_seconds": expires_seconds,
+        "upload_url": upload_url,
+        "headers": {
+            "Content-Type": content_type,
+        },
+    }
 
 
 if __name__ == "__main__":

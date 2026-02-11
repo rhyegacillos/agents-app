@@ -37,7 +37,7 @@ variable "grok_api_url" {
 variable "grok_api_key" {
   description = "Grok API Key"
   type        = string
-  sensitive = true
+  sensitive   = true
 }
 
 variable "brave_api_key" {
@@ -194,6 +194,18 @@ variable "use_custom_domain" {
 
 variable "root_domain" {
   description = "Apex domain name, e.g. mydomain.com"
+  type        = string
+  default     = ""
+}
+
+variable "manage_github_actions_role_policies" {
+  description = "If true, Terraform will attach required AWS managed policies to an existing GitHub Actions role."
+  type        = bool
+  default     = false
+}
+
+variable "github_actions_role_name" {
+  description = "Name of the GitHub Actions IAM role to attach policies to (e.g. github-actions-digital-assistant-deploy)."
   type        = string
   default     = ""
 }

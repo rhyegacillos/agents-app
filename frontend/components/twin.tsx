@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useRef, useEffect, type ChangeEvent } from 'react';
-import { Send, Bot, User, History, X, RefreshCw, Maximize2, Minimize2, Paperclip, MessageSquarePlus, Brain, Terminal, LifeBuoy, Mail, FileDown, Plus, Minus, Search } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import { useState, useRef, useEffect, isValidElement, type ChangeEvent } from 'react';
+import { Send, Bot, History, X, RefreshCw, Maximize2, Paperclip, MessageSquarePlus, Brain, Terminal, LifeBuoy, Mail, FileDown, Plus, Minus, Search } from 'lucide-react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 interface Message {
@@ -17,6 +17,12 @@ interface SessionSummary {
     title: string;
     updated_at: string;
     message_count: number;
+}
+
+interface ApiConversationMessage {
+    role?: 'user' | 'assistant';
+    content?: string;
+    timestamp?: string;
 }
 
 interface MemoryCandidate {
@@ -63,6 +69,114 @@ export default function Twin() {
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const markdownComponents: Components = {
+        p: ({ children }) => {
+            const parts = Array.isArray(children) ? children : [children];
+            const meaningful = parts.filter((c) => c !== null && c !== undefined && c !== false);
+            const first = meaningful[0];
+            const isLinkOnly =
+                meaningful.length === 1 &&
+                isValidElement(first) &&
+                first.type === 'a';
+            return (
+                <p
+                    className={`last:mb-0 ${
+                        isLinkOnly ? 'mb-1' : 'mb-2'
+                    }`}
+                    style={{ whiteSpace: 'normal' }}
+                >
+                    {children}
+                </p>
+            );
+        },
+        h1: ({ children }) => (
+            <h1 className="mb-3 mt-4 text-[21px] font-semibold text-slate-900">
+                {children}
+            </h1>
+        ),
+        h2: ({ children }) => (
+            <h2 className="mb-3 mt-4 text-[19px] font-semibold text-slate-900">
+                {children}
+            </h2>
+        ),
+        h3: ({ children }) => (
+            <h3 className="mb-2 mt-3 text-[17px] font-semibold text-slate-900">
+                {children}
+            </h3>
+        ),
+        h4: ({ children }) => (
+            <h4 className="mb-2 mt-3 text-[15px] font-semibold text-slate-900">
+                {children}
+            </h4>
+        ),
+        ul: ({ children }) => (
+            <ul className="mb-3 list-disc pl-5">
+                {children}
+            </ul>
+        ),
+        ol: ({ children }) => (
+            <ol className="mb-3 list-decimal pl-5">
+                {children}
+            </ol>
+        ),
+        table: ({ children }) => (
+            <div className="mb-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table className="w-full text-left text-xs">{children}</table>
+            </div>
+        ),
+        thead: ({ children }) => (
+            <thead className="bg-slate-50 text-slate-700">{children}</thead>
+        ),
+        tbody: ({ children }) => (
+            <tbody className="text-slate-700">{children}</tbody>
+        ),
+        tr: ({ children }) => (
+            <tr className="border-t border-slate-100">{children}</tr>
+        ),
+        th: ({ children }) => (
+            <th className="px-3 py-2 font-semibold">{children}</th>
+        ),
+        td: ({ children }) => (
+            <td className="px-3 py-2 align-top">{children}</td>
+        ),
+        li: ({ children }) => (
+            <li className="leading-snug">
+                {children}
+            </li>
+        ),
+        a: ({ href, children }) => {
+            const safeHref = href
+                ? /^(https?:)?\/\//i.test(href)
+                    ? href
+                    : `https://${href}`
+                : '#';
+            return (
+            <a
+                href={safeHref}
+                target="_blank"
+                rel="noreferrer"
+                className="break-all text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
+            >
+                {children}
+            </a>
+            );
+        },
+        code: ({ children }) => (
+            <code className="rounded bg-slate-100 px-1 py-0.5 text-[0.85em]">
+                {children}
+            </code>
+        ),
+        blockquote: ({ children }) => (
+            <blockquote className="mb-3 border-l-2 border-slate-200 pl-3 text-slate-600">
+                {children}
+            </blockquote>
+        ),
+        pre: ({ children }) => (
+            <pre className="mb-3 overflow-x-auto rounded-lg bg-slate-100 p-3 text-xs leading-relaxed">
+                {children}
+            </pre>
+        ),
+    };
 
     const isValidSyncCode = (code: string) => /^[a-zA-Z0-9_-]{8,64}$/.test(code);
 
@@ -168,15 +282,36 @@ export default function Twin() {
         }
 
         try {
+            // Prefer direct-to-S3 upload when running against a deployed API.
+            // This avoids API Gateway/Lambda binary transforms that can corrupt PDFs.
+            const presignResp = await fetch(`${API_URL}/uploads/presign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename: file.name,
+                    size_bytes: file.size,
+                    content_type: file.type || undefined,
+                }),
+            });
+
+            if (presignResp.ok) {
+                const presign = await presignResp.json();
+                const putResp = await fetch(presign.upload_url, {
+                    method: 'PUT',
+                    headers: presign.headers || {},
+                    body: file,
+                });
+                if (!putResp.ok) throw new Error('Failed to upload file to S3');
+                setUploadedFileId(presign.file_id);
+                setUploadStatus('uploaded');
+                return;
+            }
+
+            // Fallback to legacy multipart upload (useful for local/dev without S3).
             const formData = new FormData();
             formData.append('file', file);
-            const response = await fetch(`${API_URL}/uploads`, {
-                method: 'POST',
-                body: formData,
-            });
-            if (!response.ok) {
-                throw new Error('Failed to upload file');
-            }
+            const response = await fetch(`${API_URL}/uploads`, { method: 'POST', body: formData });
+            if (!response.ok) throw new Error('Failed to upload file');
             const data = await response.json();
             setUploadedFileId(data.file_id);
             setUploadStatus('uploaded');
@@ -196,12 +331,16 @@ export default function Twin() {
             const response = await fetch(`${API_URL}/conversation/${sid}?user_id=${encodeURIComponent(uid)}`);
             if (!response.ok) throw new Error('Failed to load conversation');
             const data = await response.json();
-            const restored: Message[] = (data.messages || []).map((msg: any, index: number) => ({
-                id: `${sid}-${index}`,
-                role: msg.role,
-                content: msg.content,
-                timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
-            }));
+            const restored: Message[] = (data.messages || []).map((msg: ApiConversationMessage, index: number) => {
+                const role: Message['role'] = msg.role === 'assistant' ? 'assistant' : 'user';
+                const content = typeof msg.content === 'string' ? msg.content : '';
+                return {
+                    id: `${sid}-${index}`,
+                    role,
+                    content,
+                    timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+                };
+            });
             setMessages(restored);
             setSessionId(sid);
             localStorage.setItem(lastSessionKey(uid), sid);
@@ -552,7 +691,7 @@ export default function Twin() {
     );
     return (
         <div
-            className="absolute bottom-0 left-0 right-0 rounded-[28px] bg-gradient-to-br from-white/70 via-white/30 to-slate-200/50 p-[1px] shadow-[0_18px_45px_-30px_rgba(15,23,42,0.55)] transition-[height] duration-300 ease-out"
+            className="absolute bottom-4 left-0 right-0 rounded-[28px] bg-gradient-to-br from-white/70 via-white/30 to-slate-200/50 p-[1px] shadow-[0_18px_45px_-30px_rgba(15,23,42,0.55)] transition-[height] duration-300 ease-out"
             style={{
                 height: `min(${panelHeight}px, calc(100vh - 64px))`,
                 maxHeight: `min(${MAX_HEIGHT}px, calc(100vh - 64px))`,
@@ -833,6 +972,18 @@ export default function Twin() {
                                                 <li>Feeds approved items into the assistant’s system prompt for future replies.</li>
                                                 <li>Pending items are suggestions only — nothing is stored until you approve.</li>
                                                 <li>Items expire by TTL, so temporary context won’t stick forever.</li>
+                                                <li className="pt-1 text-white/70">
+                                                    Example phrases:
+                                                    <span className="block mt-1 text-white/75">
+                                                        “From now on, always include a download link when you email a PDF.”
+                                                    </span>
+                                                    <span className="block text-white/75">
+                                                        “Always answer in strict JSON.”
+                                                    </span>
+                                                    <span className="block text-white/75">
+                                                        “Remember my preferred tools and defaults for this project.”
+                                                    </span>
+                                                </li>
                                             </ul>
                                         )}
                                     </div>
@@ -986,110 +1137,16 @@ export default function Twin() {
                                     : 'bg-white/90 border border-white/60 text-slate-800'
                             }`}
                         >
-                            {message.role === 'assistant' ? (
-                                <div className="text-sm leading-relaxed chat-markdown">
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        components={{
-                                            p: ({ children }) => {
-                                                const isLinkOnly = Array.isArray(children)
-                                                    ? children.length === 1 &&
-                                                      typeof children[0] === 'object' &&
-                                                      (children[0] as any)?.type === 'a'
-                                                    : typeof children === 'object' &&
-                                                      (children as any)?.type === 'a';
-                                                return (
-                                                    <p
-                                                        className={`last:mb-0 ${
-                                                            isLinkOnly ? 'mb-1' : 'mb-2'
-                                                        }`}
-                                                        style={{ whiteSpace: 'normal' }}
-                                                    >
-                                                        {children}
-                                                    </p>
-                                                );
-                                            },
-                                            h1: ({ children }) => (
-                                                <h1 className="mb-3 mt-4 text-[21px] font-semibold text-slate-900">
-                                                    {children}
-                                                </h1>
-                                            ),
-                                            h2: ({ children }) => (
-                                                <h2 className="mb-3 mt-4 text-[19px] font-semibold text-slate-900">
-                                                    {children}
-                                                </h2>
-                                            ),
-                                            h3: ({ children }) => (
-                                                <h3 className="mb-2 mt-3 text-[17px] font-semibold text-slate-900">
-                                                    {children}
-                                                </h3>
-                                            ),
-                                            h4: ({ children }) => (
-                                                <h4 className="mb-2 mt-3 text-[15px] font-semibold text-slate-900">
-                                                    {children}
-                                                </h4>
-                                            ),
-                                            ul: ({ children }) => <ul>{children}</ul>,
-                                            ol: ({ children }) => <ol>{children}</ol>,
-                                            table: ({ children }) => (
-                                                <div className="mb-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                                                    <table className="w-full text-left text-xs">{children}</table>
-                                                </div>
-                                            ),
-                                            thead: ({ children }) => (
-                                                <thead className="bg-slate-50 text-slate-700">{children}</thead>
-                                            ),
-                                            tbody: ({ children }) => <tbody className="text-slate-700">{children}</tbody>,
-                                            tr: ({ children }) => (
-                                                <tr className="border-t border-slate-100">{children}</tr>
-                                            ),
-                                            th: ({ children }) => (
-                                                <th className="px-3 py-2 font-semibold">{children}</th>
-                                            ),
-                                            td: ({ children }) => (
-                                                <td className="px-3 py-2 align-top">{children}</td>
-                                            ),
-                                            li: ({ children }) => (
-                                                <li className="leading-snug">{children}</li>
-                                            ),
-                                            a: ({ href, children }) => {
-                                                const safeHref = href
-                                                    ? /^(https?:)?\/\//i.test(href)
-                                                        ? href
-                                                        : `https://${href}`
-                                                    : '#';
-                                                return (
-                                                <a
-                                                    href={safeHref}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="break-all text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
-                                                >
-                                                    {children}
-                                                </a>
-                                                );
-                                            },
-                                            code: ({ children }) => (
-                                                <code className="rounded bg-slate-100 px-1 py-0.5 text-[0.85em]">
-                                                    {children}
-                                                </code>
-                                            ),
-                                            blockquote: ({ children }) => (
-                                                <blockquote className="mb-3 border-l-2 border-slate-200 pl-3 text-slate-600">
-                                                    {children}
-                                                </blockquote>
-                                            ),
-                                            pre: ({ children }) => (
-                                                <pre className="mb-3 overflow-x-auto rounded-lg bg-slate-100 p-3 text-xs leading-relaxed">
-                                                    {children}
-                                                </pre>
-                                            ),
-                                        }}
-                                    >
-                                        {message.content}
-                                    </ReactMarkdown>
-                                </div>
-                            ) : (
+	                            {message.role === 'assistant' ? (
+	                                <div className="text-sm leading-relaxed chat-markdown">
+	                                    <ReactMarkdown
+	                                        remarkPlugins={[remarkGfm]}
+	                                        components={markdownComponents}
+	                                    >
+	                                        {message.content}
+	                                    </ReactMarkdown>
+	                                </div>
+	                            ) : (
                                 <p className="whitespace-pre-wrap">{message.content}</p>
                             )}
                             <p

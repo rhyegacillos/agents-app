@@ -508,6 +508,27 @@ Use this table to map a denied action to the missing policy or permission.
 If you are using a custom least‑privilege policy, ensure the exact action
 names are included in the `Action` list, or widen the resource scope.
 
+### 8.8.1 One-time Fix for CI: Attach ECR Policy via Terraform (Local Apply)
+
+If your workflow fails with an error like:
+`AccessDeniedException: ... not authorized to perform: ecr:DescribeRepositories ...`
+
+You can attach the required ECR managed policy to the existing GitHub Actions role via Terraform.
+
+Run locally (with IAM admin permissions):
+
+```bash
+cd terraform
+terraform workspace select dev
+terraform apply \
+  -var-file=terraform.tfvars \
+  -var-file=terraform.tfvars.local \
+  -var='manage_github_actions_role_policies=true' \
+  -var='github_actions_role_name=github-actions-digital-assistant-deploy'
+```
+
+This attaches `AmazonEC2ContainerRegistryPowerUser` so CI can read/create ECR repos and push images.
+
 ### 8.9 Minimal policy snippets (non-redundant, add only what is missing)
 
 Use these as single‑purpose statements to add to your custom policy JSON

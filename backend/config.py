@@ -6,13 +6,19 @@ import boto3
 from dotenv import load_dotenv
 
 from resources import facts
+from observability import install_logging
 
 
 load_dotenv()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL)
+LOG_FORMAT = os.getenv(
+    "LOG_FORMAT",
+    "%(asctime)s %(levelname)s [trace=%(trace_id)s job=%(job_id)s] %(message)s",
+)
+logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logging.getLogger().setLevel(LOG_LEVEL)
+install_logging()
 
 # AI provider selection
 AI_PROVIDER = os.getenv("AI_PROVIDER", "bedrock").strip().lower()
