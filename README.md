@@ -12,9 +12,13 @@ This repo runs a single-container web app with all backend logic under `api/`.
 ## Project Docs
 
 - `ARCHITECTURE.md` - detailed system, API, agent, and data-flow internals
+- `DEPLOY_TERRAFORM.md` - full local Terraform deployment guide (existing/new EC2, SG rules, HTTPS, rollout controls)
+- `DEPLOY_GITHUB_ACTIONS.md` - full GitHub Actions CI/CD deployment guide (OIDC role, secrets/vars, workflow sequence, troubleshooting)
 - `ROADMAP.md` - future feature plan for holdings-only market trend chart
 - `DEPLOY_ECR_TO_EC2.md` - step-by-step ECR -> EC2 deployment guide
 - `MVP_LIVE_TRADING_COST.md` - live-trading MVP cost model (subscriptions, premium tiers, upgrade path)
+- `CAPSTONE_ONE_PAGE.md` - one-page capstone summary for applications
+- `CAPSTONE_RESUME_BULLETS.md` - resume bullet variants for LLM/Software roles
 
 ## Recent Implementation Updates
 
