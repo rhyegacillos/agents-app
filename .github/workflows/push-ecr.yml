@@ -16,9 +16,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (OIDC)
+      - name: Configure AWS Credentials (OIDC, Trader Role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          # Dedicated role for this app (do not reuse global AWS_ROLE_ARN from other repos/apps).
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_TRADER }}
           aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
 
