@@ -171,6 +171,7 @@ cat > "${tmp_policy}" <<'JSON'
         "ecr:CreateRepository",
         "ecr:DescribeRepositories",
         "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
         "ecr:BatchGetImage",
         "ecr:CompleteLayerUpload",
         "ecr:InitiateLayerUpload",
