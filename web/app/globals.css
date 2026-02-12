@@ -367,7 +367,6 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  contain: layout paint;
   width: 16px;
   height: 16px;
   border-radius: 999px;
@@ -450,7 +449,6 @@ body {
   text-transform: uppercase;
   font-weight: 700;
   line-height: 1.2;
-  contain: layout paint;
 }
 
 .heroPillSup {

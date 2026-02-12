@@ -587,13 +587,17 @@ export default function HomePage() {
   const [loading, setLoading] = useState<boolean>(true);
 
   const syncLeftRailHeight = useCallback(() => {
+    if (stackedDeskLayout) {
+      setLeftRailHeight((prev) => (prev === null ? prev : null));
+      return;
+    }
     const node = leftRailRef.current;
     if (!node) {
       return;
     }
     const nextHeight = Math.round(node.getBoundingClientRect().height);
     setLeftRailHeight((prev) => (prev === nextHeight ? prev : nextHeight));
-  }, []);
+  }, [stackedDeskLayout]);
 
   async function refreshDashboard() {
     try {
@@ -694,24 +698,53 @@ export default function HomePage() {
     const media = window.matchMedia("(max-width: 1320px)");
     const applyLayout = () => setStackedDeskLayout(media.matches);
     applyLayout();
-    media.addEventListener("change", applyLayout);
-    return () => media.removeEventListener("change", applyLayout);
-  }, []);
+    const onChange = () => {
+      applyLayout();
+      window.requestAnimationFrame(syncLeftRailHeight);
+    };
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", onChange);
+      return () => media.removeEventListener("change", onChange);
+    }
+    media.addListener(onChange);
+    return () => media.removeListener(onChange);
+  }, [syncLeftRailHeight]);
+
+  useEffect(() => {
+    const rafId = window.requestAnimationFrame(syncLeftRailHeight);
+    const timeoutId = window.setTimeout(syncLeftRailHeight, 140);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [syncLeftRailHeight]);
 
   useEffect(() => {
     const node = leftRailRef.current;
     if (!node) {
       return;
     }
+    let timeoutId: number | null = null;
+    const handleResize = () => {
+      syncLeftRailHeight();
+      window.requestAnimationFrame(syncLeftRailHeight);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      timeoutId = window.setTimeout(syncLeftRailHeight, 140);
+    };
     syncLeftRailHeight();
     const observer = new ResizeObserver(syncLeftRailHeight);
     observer.observe(node);
-    window.addEventListener("resize", syncLeftRailHeight);
-    window.addEventListener("load", syncLeftRailHeight);
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("load", handleResize);
     return () => {
       observer.disconnect();
-      window.removeEventListener("resize", syncLeftRailHeight);
-      window.removeEventListener("load", syncLeftRailHeight);
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("load", handleResize);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [syncLeftRailHeight]);
 
@@ -734,6 +767,7 @@ export default function HomePage() {
     allowClosedMarketTrading,
     actionBusy,
     loading,
+    stackedDeskLayout,
   ]);
 
   const totalCashValue = useMemo(
