@@ -18,4 +18,7 @@ dependencies = [
     "uvicorn>=0.40.0",
     "weasyprint>=62.3",
     "markdown>=3.7",
+    "graphviz>=0.20.3",
+    "pandas>=3.0.0",
+    "vl-convert-python>=1.8.0",
 ]

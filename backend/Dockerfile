@@ -2,18 +2,15 @@ FROM public.ecr.aws/lambda/python:3.12
 
 WORKDIR /var/task
 
+# Minimal native deps:
+# - graphviz: provides `dot` for Graphviz rendering
+# - fontconfig + freetype: font discovery/rasterization
+# - cairo: reliable SVG/PNG rendering path (safe baseline)
 RUN dnf install -y \
-    cairo \
-    pango \
-    gdk-pixbuf2 \
-    libffi \
-    libjpeg-turbo \
-    libxml2 \
-    libxslt \
-    freetype \
+    graphviz \
     fontconfig \
-    harfbuzz \
-    glib2 \
+    freetype \
+    cairo \
     && dnf clean all
 
 COPY requirements.txt ./

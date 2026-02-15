@@ -7,7 +7,7 @@ import os
 from typing import Optional, List, Dict, Any
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from contextvars import ContextVar
 import re
 import tempfile
@@ -19,6 +19,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from context import prompt
+from tool_instructions import build_tool_instructions
 from mcp_tools.mcp_servers import build_mcp_server_specs
 from validator_agent import (
     validate_memory_compliance_bedrock,
@@ -54,6 +55,24 @@ from config import (
 )
 from services.memory import extract_and_store_memory
 from services.bedrock_tools import run_bedrock_with_tools
+from services.canonical_renderer import render_high_risk_output
+from services.output_truth_gate import (
+    apply_truth_gate,
+    extract_tool_events,
+    find_pdf_input_invalid_error,
+    normalize_truth_context,
+    persist_truth_context,
+    persist_truth_gate_verdict,
+)
+from services.prose_guard import apply_low_risk_prose_guard
+from services.risk_router import classify_risk
+from services.truth_fix_loop import build_auto_fix_instructions, should_attempt_auto_fix
+from services.quota import (
+    consume_daily_quota,
+    count_quota_actions_from_truth_context,
+    get_daily_quota,
+    quota_exceeded_message,
+)
 from services.storage import (
     _job_key,
     _upstash_enabled,
@@ -72,12 +91,16 @@ from services.storage import (
     validate_upload_file,
     validate_user_id,
 )
-from observability import new_trace_id, reset_job_id, reset_trace_id, set_job_id, set_trace_id
+from observability import TRACE_ID, new_trace_id, reset_job_id, reset_trace_id, set_job_id, set_trace_id
 
 # Disable openai-agents tracing to avoid noisy log errors
 set_tracing_disabled(disabled=True)
 
 app = FastAPI()
+_SEARCH_CITATION_INTENT_RE = re.compile(
+    r"\b(search|web|news|latest|current|trend|trends|research|report|cite|citation|source|sources)\b",
+    re.IGNORECASE,
+)
 
 # Configure CORS
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -170,6 +193,56 @@ def _update_job_status_message(message: str, progress: Optional[int] = None) -> 
         logging.debug("Failed to update job status message", exc_info=True)
 
 
+def _is_job_canceled(job_id: Optional[str]) -> bool:
+    if not job_id or not _upstash_enabled():
+        return False
+    try:
+        job = _upstash_get(_job_key(job_id)) or {}
+        return job.get("status") == "canceled"
+    except Exception:
+        return False
+
+
+def _load_truth_context_for_trace(trace_id: Optional[str]) -> Dict[str, Any]:
+    if not trace_id or trace_id == "-" or not _upstash_enabled():
+        return {}
+    try:
+        payload = _upstash_get(f"truth_gate:{trace_id}") or {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "artifacts": payload.get("artifacts", []) or [],
+            "outcomes": payload.get("outcomes", []) or [],
+            "search_results": payload.get("search_results", []) or [],
+        }
+    except Exception:
+        return {}
+
+
+def _result_usage_total_tokens(result: Any) -> int:
+    total = 0
+    for response in (getattr(result, "raw_responses", None) or []):
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            continue
+        value: Any = None
+        if isinstance(usage, dict):
+            value = usage.get("total_tokens")
+            if value is None:
+                value = int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
+        else:
+            value = getattr(usage, "total_tokens", None)
+            if value is None:
+                value = int(getattr(usage, "input_tokens", 0) or 0) + int(
+                    getattr(usage, "output_tokens", 0) or 0
+                )
+        try:
+            total += max(0, int(value or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 async def _persist_chat_turn(
     *,
     user_id: str,
@@ -212,52 +285,49 @@ def build_conversation_input(conversation: List[Dict], user_message: str) -> str
     return user_message
 
 
+def _merge_truth_context(previous: Dict[str, Any], latest: Dict[str, Any]) -> Dict[str, Any]:
+    def _dedupe(rows: List[Dict[str, Any]], key_fn) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = key_fn(row)
+            if not key:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+        return out
+
+    merged_artifacts = _dedupe(
+        (previous.get("artifacts", []) or []) + (latest.get("artifacts", []) or []),
+        lambda r: str(r.get("artifact_id") or r.get("download_url") or ""),
+    )
+    merged_outcomes = _dedupe(
+        (previous.get("outcomes", []) or []) + (latest.get("outcomes", []) or []),
+        lambda r: str(r.get("tool") or "")
+        + "|"
+        + str(r.get("status") or "")
+        + "|"
+        + str(r.get("email_id") or "")
+        + "|"
+        + str(r.get("message") or ""),
+    )
+    merged_search = _dedupe(
+        (previous.get("search_results", []) or []) + (latest.get("search_results", []) or []),
+        lambda r: str(r.get("url") or ""),
+    )
+    return {
+        "artifacts": merged_artifacts,
+        "outcomes": merged_outcomes,
+        "search_results": merged_search,
+    }
+
+
 def build_agent_instructions() -> str:
     return prompt()
-
-def build_tool_instructions() -> str:
-    return """
-## Tool Use (Available Capabilities)
-
-You have access to tools. Use them when the user asks for these actions:
-- **Read attached files**: if the user asks to summarize/inspect an uploaded file, call `read_uploaded_file` using the provided `file_id`.
-- **Send email**: if the user asks to send an email or deliver a PDF by email, you MUST call `send_resend_email`.
-- **Generate PDF**: if the user asks for a PDF, call `generate_pdf_from_text` with the content.
-- **Download PDF**: if the user provides a PDF URL to fetch, call `download_pdf`.
-- **Web search**: if the user asks for current information and web search is enabled, use the search tool.
-
-Tool failure rules:
-- If a tool returns an error (for example `{"status":"error","error":"..."}`), do not invent explanations.
-- Report the exact tool error message and ask for the next input needed to proceed.
-- For `read_uploaded_file` errors like "Invalid or corrupted PDF file", treat it as a malformed file (not "scanned") and ask the user to re-upload or provide another format.
-
-PDF reuse rules:
-- If the conversation already contains a **PDF download link** or a tool result indicating a PDF was generated, **reuse that existing PDF** and do not call `generate_pdf_from_text` again.
-- Only regenerate a PDF if the user explicitly asks to **regenerate/recreate** it, if the content has materially changed, or if the existing link is expired/broken.
-
-Link correctness rules:
-- Never fabricate S3/presigned URLs or placeholders. Do not output template strings like `downloads/[FILENAME_PLACEHOLDER]/...?[URL_PARAMS_PLACEHOLDER]`.
-- If you need a PDF link, you must use the exact URL returned by the PDF tool result (e.g. `download_url` or `public_url`).
-- Only claim a link is “presigned” if the tool result actually returned a presigned URL.
-
-Email delivery rules:
-- The `send_resend_email` tool requires a recipient email address (`to`).
-- If the user did not include an email address in their latest message, look for the most recently mentioned email address in the conversation history and use it.
-- If no email address exists anywhere in the conversation, ask the user to provide it.
-- Never claim you tried or sent an email unless `send_resend_email` actually ran.
-- When calling `send_resend_email`, format `body` as **HTML** (not Markdown) and use clickable links:
-  - Prefer: `<a href="PRESIGNED_URL">Download PDF</a>` rather than pasting the full URL text.
-  - Do not include long presigned query strings as visible text (they will contain `&` which email HTML renders as `&amp;`).
-  - If you include a URL anywhere, it must be the exact tool-returned URL (no placeholders).
-
-Tool-call formatting rules:
-- If you decide to call a tool, respond with **only** tool calls in that turn (no extra text).
-- After tool results return, produce the final user-facing response.
-
-Do not claim you cannot access files or send email when these tools are available.
-Never claim an email was sent unless the `send_resend_email` tool returns success.
-If a tool fails, explain the failure briefly and ask the user for the next best option.
-"""
 
 def build_agent_message(message: str, file_id: Optional[str]) -> str:
     if file_id:
@@ -301,6 +371,21 @@ async def rerun_with_fix_instructions(
     user_message: str,
     fix_instructions: str,
 ) -> str:
+    result = await rerun_with_fix_instructions_result(
+        user_id=user_id,
+        conversation=conversation,
+        user_message=user_message,
+        fix_instructions=fix_instructions,
+    )
+    return str(getattr(result, "final_output", "") or "")
+
+
+async def rerun_with_fix_instructions_result(
+    user_id: str,
+    conversation: List[Dict],
+    user_message: str,
+    fix_instructions: str,
+) -> Any:
     llm_timeout = _parse_timeout(LLM_TIMEOUT_SECONDS)
     if llm_timeout:
         client = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL, timeout=llm_timeout)
@@ -370,10 +455,17 @@ async def rerun_with_fix_instructions(
             result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
         else:
             result = await Runner.run(agent, user_input)
-        return result.final_output
+        return result
 
 
-async def call_grok_with_mcp(user_id: str, conversation: List[Dict], user_message: str) -> str:
+async def call_grok_with_mcp(
+    user_id: str,
+    conversation: List[Dict],
+    user_message: str,
+    *,
+    session_id: Optional[str] = None,
+    require_sources: bool = False,
+) -> tuple[str, int]:
     if not GROK_API_KEY:
         raise HTTPException(status_code=500, detail="GROK_API_KEY is not configured")
 
@@ -383,6 +475,7 @@ async def call_grok_with_mcp(user_id: str, conversation: List[Dict], user_messag
     else:
         client = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL)
     model = OpenAIChatCompletionsModel(model=GROK_MODEL_ID, openai_client=client)
+    total_llm_tokens = 0
 
     agent_instructions = build_full_instructions(user_id)
     user_input = build_conversation_input(conversation, user_message)
@@ -431,12 +524,15 @@ async def call_grok_with_mcp(user_id: str, conversation: List[Dict], user_messag
             mcp_servers=mcp_servers,
         )
 
+        logging.info("[execute] run_start provider=grok mcp_servers=%d", len(mcp_servers))
         run_timeout = _parse_timeout(RUNNER_TIMEOUT_SECONDS)
         if run_timeout:
             result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
         else:
             result = await Runner.run(agent, user_input)
-        output = result.final_output
+        total_llm_tokens += _result_usage_total_tokens(result)
+        logging.info("[execute] run_done provider=grok")
+        output = str(result.final_output or "")
         _update_job_status_message("Finalizing response...", 95)
 
         approved = load_approved_memory(user_id)
@@ -448,16 +544,200 @@ async def call_grok_with_mcp(user_id: str, conversation: List[Dict], user_messag
                     "[memory] validator noncompliant: %s",
                     verdict.get("reason", ""),
                 )
-                output = await rerun_with_fix_instructions(
-                    user_id, conversation, user_message, verdict.get("fix_instructions", "")
+                result = await rerun_with_fix_instructions_result(
+                    user_id=user_id,
+                    conversation=conversation,
+                    user_message=user_message,
+                    fix_instructions=verdict.get("fix_instructions", ""),
                 )
+                total_llm_tokens += _result_usage_total_tokens(result)
+                output = str(result.final_output or "")
         else:
             logging.info("[memory_validator] skipped (no approved memory)")
 
-        return output
+        tool_events = extract_tool_events(result)
+        pdf_input_error = find_pdf_input_invalid_error(tool_events)
+        if pdf_input_error:
+            logging.info("[pdf_retry] retrying once due to %s", pdf_input_error)
+            result = await rerun_with_fix_instructions_result(
+                user_id=user_id,
+                conversation=conversation,
+                user_message=user_message,
+                fix_instructions=(
+                    "Your previous `generate_pdf_from_text` call failed with `PDF_INPUT_INVALID`. "
+                    "Retry exactly once. Use valid markdown or valid JSON blocks. "
+                    "Do not infer, summarize, omit, or add new facts. Keep content semantically identical "
+                    "to what the user requested (same claims, numbers, citations, and ordering). "
+                    "Only repair formatting/escaping/schema issues."
+                ),
+            )
+            total_llm_tokens += _result_usage_total_tokens(result)
+            output = str(result.final_output or "")
+            tool_events = extract_tool_events(result)
+            retry_pdf_input_error = find_pdf_input_invalid_error(tool_events)
+            if retry_pdf_input_error:
+                trace_id = TRACE_ID.get()
+                logging.warning(
+                    "[pdf_retry] exhausted trace=%s reason=%s",
+                    trace_id,
+                    retry_pdf_input_error,
+                )
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "code": "PDF_INPUT_INVALID",
+                        "trace_id": trace_id,
+                        "retry_exhausted": True,
+                        "reason": retry_pdf_input_error,
+                    }
+                ), total_llm_tokens
+
+        trace_id = TRACE_ID.get()
+        current_output = str(output or "")
+        current_tool_events = tool_events
+        current_truth_context = normalize_truth_context(current_tool_events)
+        truth_fix_attempt = 0
+        try:
+            max_truth_fix_attempts = int(os.getenv("TRUTH_FIX_MAX_ATTEMPTS", "2"))
+        except ValueError:
+            max_truth_fix_attempts = 2
+        max_truth_fix_attempts = max(0, min(5, max_truth_fix_attempts))
+
+        while True:
+            logging.info(
+                "[execute] tool_events=%d artifacts=%d outcomes=%d search_results=%d",
+                len(current_tool_events),
+                len(current_truth_context.get("artifacts", []) or []),
+                len(current_truth_context.get("outcomes", []) or []),
+                len(current_truth_context.get("search_results", []) or []),
+            )
+            if require_sources:
+                debug_samples = [
+                    {
+                        "tool": str(evt.get("tool_name") or "unknown"),
+                        "output_type": type(evt.get("output")).__name__,
+                    }
+                    for evt in current_tool_events[:5]
+                ]
+                logging.info(
+                    "[truth_gate] search_require=true tool_events=%d search_results=%d samples=%s",
+                    len(current_tool_events),
+                    len(current_truth_context.get("search_results", []) or []),
+                    debug_samples,
+                )
+
+            persist_truth_context(trace_id=trace_id, session_id=session_id, context=current_truth_context)
+            rendered_output = render_high_risk_output(
+                user_message=user_message,
+                llm_output=current_output,
+                context=current_truth_context,
+                require_sources=require_sources,
+            )
+            logging.info(
+                "[render] mode=v3_canonical input_chars=%d output_chars=%d",
+                len(current_output),
+                len(rendered_output),
+            )
+            verdict = apply_truth_gate(
+                rendered_output,
+                current_truth_context,
+                risk_tier="high",
+                require_sources=require_sources,
+            )
+            persist_truth_gate_verdict(trace_id, verdict)
+            if verdict.get("status") == "pass":
+                logging.info("[validate] pass trace=%s mode=v3_canonical", trace_id)
+                return str(verdict.get("output", rendered_output) or rendered_output), total_llm_tokens
+
+            issue_code_list = sorted(
+                {
+                    str(i.get("code", "UNKNOWN"))
+                    for i in (verdict.get("issues", []) or [])
+                    if str(i.get("code", "UNKNOWN")).strip()
+                }
+            )
+            issue_codes_csv = ", ".join(issue_code_list) if issue_code_list else "UNKNOWN"
+            logging.warning("[validate] blocked trace=%s issues=%s", trace_id, issue_codes_csv)
+
+            can_auto_fix = should_attempt_auto_fix(issue_code_list)
+            if truth_fix_attempt >= max_truth_fix_attempts or not can_auto_fix:
+                return (
+                    "I couldn't safely finalize that action output due to verification checks "
+                    f"({issue_codes_csv}). Please ask me to retry the action."
+                ), total_llm_tokens
+
+            truth_fix_attempt += 1
+            fix_instructions = build_auto_fix_instructions(
+                issue_codes=issue_code_list,
+                issue_details=verdict.get("issues", []) or [],
+                truth_context=current_truth_context,
+                attempt=truth_fix_attempt,
+                max_attempts=max_truth_fix_attempts,
+            )
+            logging.info(
+                "[fix_loop] attempt=%d/%d trace=%s issues=%s",
+                truth_fix_attempt,
+                max_truth_fix_attempts,
+                trace_id,
+                issue_codes_csv,
+            )
+            result = await rerun_with_fix_instructions_result(
+                user_id=user_id,
+                conversation=conversation,
+                user_message=user_message,
+                fix_instructions=fix_instructions,
+            )
+            total_llm_tokens += _result_usage_total_tokens(result)
+            current_output = str(result.final_output or "")
+            current_tool_events = extract_tool_events(result)
+            retry_truth_context = normalize_truth_context(current_tool_events)
+            current_truth_context = _merge_truth_context(current_truth_context, retry_truth_context)
 
 
-async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str) -> str:
+async def call_grok_prose_guarded(
+    user_id: str, conversation: List[Dict], user_message: str
+) -> tuple[str, int]:
+    if not GROK_API_KEY:
+        raise HTTPException(status_code=500, detail="GROK_API_KEY is not configured")
+
+    llm_timeout = _parse_timeout(LLM_TIMEOUT_SECONDS)
+    if llm_timeout:
+        client = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL, timeout=llm_timeout)
+    else:
+        client = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL)
+    model = OpenAIChatCompletionsModel(model=GROK_MODEL_ID, openai_client=client)
+
+    instructions = (
+        build_full_instructions(user_id)
+        + "\n\nLow-risk conversational mode:\n"
+        + "- Do not call tools.\n"
+        + "- Do not claim actions were executed.\n"
+        + "- Do not provide download links or email-delivery confirmations.\n"
+    )
+    user_input = build_conversation_input(conversation, user_message)
+
+    _update_job_status_message("Generating response...", 85)
+    agent = Agent(
+        name="Digital Assistant",
+        instructions=instructions,
+        model=model,
+    )
+    run_timeout = _parse_timeout(RUNNER_TIMEOUT_SECONDS)
+    if run_timeout:
+        result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
+    else:
+        result = await Runner.run(agent, user_input)
+    llm_tokens = _result_usage_total_tokens(result)
+
+    output = str(result.final_output or "")
+    guarded_output, issues = apply_low_risk_prose_guard(output)
+    if issues:
+        logging.info("[prose_guard] issues=%s", ",".join(issues))
+    _update_job_status_message("Finalizing response...", 95)
+    return guarded_output, llm_tokens
+
+
+async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str) -> tuple[str, int]:
     """Call AWS Bedrock with MCP tools and conversation history."""
     history_text = build_conversation_input(conversation, user_message)
     system_text = build_full_instructions(user_id)
@@ -491,12 +771,13 @@ async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str
 
     for model_id in candidates:
         try:
+            total_llm_tokens = 0
             _update_job_status_message("Starting tools...", 20)
             mcp_specs = build_mcp_server_specs(
                 enable_search=ENABLE_MCP_SEARCH,
                 job_id=_CURRENT_JOB_ID.get(),
             )
-            output = await run_bedrock_with_tools(
+            output, tokens_used = await run_bedrock_with_tools(
                 bedrock_client=bedrock_client,
                 model_id=model_id,
                 system_text=system_text,
@@ -504,6 +785,7 @@ async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str
                 mcp_specs=mcp_specs,
                 inference_config={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
             )
+            total_llm_tokens += tokens_used
             if approved:
                 logging.info("[memory_validator] running (approved=%d)", len(approved))
                 verdict = validate_memory_compliance_bedrock(approved, user_message, output)
@@ -515,7 +797,7 @@ async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str
                     user_text = history_text + "\n\nRevise your response to comply with Approved Memory."
                     if fix:
                         user_text += f"\nFix instructions: {fix}"
-                    output = await run_bedrock_with_tools(
+                    output, tokens_used = await run_bedrock_with_tools(
                         bedrock_client=bedrock_client,
                         model_id=model_id,
                         system_text=system,
@@ -523,9 +805,10 @@ async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str
                         mcp_specs=mcp_specs,
                         inference_config={"maxTokens": 2000, "temperature": 0.0, "topP": 0.9},
                     )
+                    total_llm_tokens += tokens_used
             else:
                 logging.info("[memory_validator] skipped (no approved memory)")
-            return output
+            return output, total_llm_tokens
         except ClientError as e:
             error = e.response.get("Error", {})
             error_code = error.get("Code", "")
@@ -600,6 +883,12 @@ async def health_check():
     }
 
 
+@app.get("/quota")
+async def get_quota(user_id: str = Query(...)):
+    user_id = validate_user_id(user_id)
+    return get_daily_quota(user_id)
+
+
 async def _run_chat_flow(
     *,
     user_id: str,
@@ -609,28 +898,98 @@ async def _run_chat_flow(
 ) -> str:
     conversation = load_conversation(user_id, session_id)
     agent_message = build_agent_message(message, file_id)
+    job_id = _CURRENT_JOB_ID.get()
+    if _is_job_canceled(job_id):
+        raise HTTPException(status_code=499, detail="canceled")
 
-    tool_intent = bool(file_id) or bool(
-        re.search(
-            r"\b(email|pdf|download|upload|file|attach|attachment|summari[sz]e|search|web|news|latest|cite|citation|source|sources)\b",
-            message or "",
-            re.IGNORECASE,
+    # In Lambda worker runs we must avoid fire-and-forget tasks; the event loop is closed
+    # right after asyncio.run returns, which can drop pending background tasks.
+    should_sync_memory = MEMORY_EXTRACT_SYNC or bool(job_id)
+
+    quota_snapshot = get_daily_quota(user_id)
+    if quota_snapshot.get("enabled") and int(quota_snapshot["remaining"].get("tokens", 0)) <= 0:
+        assistant_response = quota_exceeded_message("tokens", quota_snapshot)
+        await _persist_chat_turn(
+            user_id=user_id,
+            session_id=session_id,
+            conversation=conversation,
+            user_message=message,
+            assistant_response=assistant_response,
+            sync_memory=should_sync_memory,
         )
-    )
+        return assistant_response
 
-    if AI_PROVIDER == "grok":
-        assistant_response = await call_grok_with_mcp(user_id, conversation, agent_message)
+    risk = classify_risk(message, file_id=file_id)
+    tier = risk.get("tier", "high")
+    reason = risk.get("reason", "unknown")
+    require_sources = bool(_SEARCH_CITATION_INTENT_RE.search(message or ""))
+    logging.info("[classify] risk_tier=%s reason=%s provider=%s", tier, reason, AI_PROVIDER)
+
+    if tier == "high":
+        # High-risk requests are routed to tool-capable path.
+        assistant_response, llm_tokens = await call_grok_with_mcp(
+            user_id,
+            conversation,
+            agent_message,
+            session_id=session_id,
+            require_sources=require_sources,
+        )
+    elif AI_PROVIDER == "grok":
+        assistant_response, llm_tokens = await call_grok_prose_guarded(
+            user_id, conversation, agent_message
+        )
     elif AI_PROVIDER == "bedrock":
-        if tool_intent:
-            logging.info("[routing] tool_intent=true -> using grok for tool call")
-            assistant_response = await call_grok_with_mcp(user_id, conversation, agent_message)
-        else:
-            assistant_response = await call_bedrock(user_id, conversation, agent_message)
+        assistant_response, llm_tokens = await call_bedrock(user_id, conversation, agent_message)
     else:
         raise HTTPException(
             status_code=500,
             detail=f"Unsupported AI_PROVIDER '{AI_PROVIDER}'. Use 'bedrock' or 'grok'.",
         )
+
+    quota_increments: Dict[str, int] = {
+        "tokens": max(0, int(llm_tokens or 0)),
+        "pdf": 0,
+        "email": 0,
+    }
+    if tier == "high":
+        trace_id = TRACE_ID.get()
+        truth_context = _load_truth_context_for_trace(trace_id)
+        action_counts = count_quota_actions_from_truth_context(truth_context)
+        quota_increments["pdf"] = int(action_counts.get("pdf", 0))
+        quota_increments["email"] = int(action_counts.get("email", 0))
+    logging.info(
+        "[quota] increments user_id=%s tokens=%d pdf=%d email=%d",
+        user_id,
+        quota_increments["tokens"],
+        quota_increments["pdf"],
+        quota_increments["email"],
+    )
+
+    try:
+        quota_result = consume_daily_quota(user_id, quota_increments)
+    except Exception as exc:
+        logging.warning("[quota] consume failed user_id=%s error=%s", user_id, exc)
+        quota_result = {"snapshot": quota_snapshot, "exceeded": [], "applied": {}}
+
+    exceeded = set(quota_result.get("exceeded") or [])
+    if "tokens" in exceeded:
+        assistant_response = quota_exceeded_message(
+            "tokens",
+            quota_result.get("snapshot") or quota_snapshot,
+        )
+    elif "pdf" in exceeded:
+        assistant_response = quota_exceeded_message(
+            "pdf",
+            quota_result.get("snapshot") or quota_snapshot,
+        )
+    elif "email" in exceeded:
+        assistant_response = quota_exceeded_message(
+            "email",
+            quota_result.get("snapshot") or quota_snapshot,
+        )
+
+    if _is_job_canceled(job_id):
+        raise HTTPException(status_code=499, detail="canceled")
 
     await _persist_chat_turn(
         user_id=user_id,
@@ -638,7 +997,7 @@ async def _run_chat_flow(
         conversation=conversation,
         user_message=message,
         assistant_response=assistant_response,
-        sync_memory=MEMORY_EXTRACT_SYNC,
+        sync_memory=should_sync_memory,
     )
     return assistant_response
 
@@ -729,6 +1088,23 @@ async def get_job_status(job_id: str, user_id: str = Query(...)):
     return job
 
 
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, user_id: str = Query(...)):
+    user_id = validate_user_id(user_id)
+    if not _upstash_enabled():
+        raise HTTPException(status_code=500, detail="Upstash Redis is not configured")
+    job = _upstash_get(_job_key(job_id))
+    if not job or job.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.get("status") in {"completed", "failed", "canceled"}:
+        return {"status": job.get("status"), "job_id": job_id}
+    job["status"] = "canceled"
+    job["error"] = "canceled by user"
+    job["updated_at"] = datetime.now().isoformat()
+    _upstash_set(_job_key(job_id), job, ASYNC_JOB_TTL_SECONDS)
+    return {"status": "canceled", "job_id": job_id}
+
+
 @app.get("/conversation/{session_id}")
 async def get_conversation(session_id: str, user_id: str = Query(...)):
     """Retrieve conversation history"""
@@ -780,7 +1156,7 @@ async def approve_memory_candidate(candidate_id: str, user_id: str = Query(...))
         raise HTTPException(status_code=404, detail="candidate not found")
 
     ttl_days = int(target.get("ttl_days") or MEMORY_TTL_MAP.get(target.get("category"), 30))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(days=ttl_days)).isoformat()
     text = str(target.get("text", "")).strip()
     if text:
@@ -839,9 +1215,10 @@ async def download_file(filename: str):
     file_path = os.path.join(downloads_dir, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
+    media_type, _ = mimetypes.guess_type(file_path)
     return FileResponse(
         file_path,
-        media_type="application/pdf",
+        media_type=media_type or "application/octet-stream",
         filename=filename,
     )
 

@@ -42,7 +42,7 @@
 }
 
 .chat-markdown p {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 0.4rem 0;
 }
 
 .chat-markdown ul,
@@ -67,7 +67,7 @@
 }
 
 .chat-markdown li + li {
-  margin-top: 0.125rem;
+  margin-top: 0.08rem;
 }
 
 .chat-markdown li > p {
@@ -81,8 +81,82 @@
 
 .chat-markdown li > ul,
 .chat-markdown li > ol {
-  margin-top: 0.25rem;
-  margin-bottom: 0.25rem;
+  margin-top: 0.18rem;
+  margin-bottom: 0.18rem;
+}
+
+.chat-markdown figure {
+  margin: 0.35rem 0 0.35rem 0;
+}
+
+.chat-markdown figcaption {
+  margin-top: 0.2rem;
+  font-size: 10px;
+  line-height: 1.25;
+  color: #64748b;
+}
+
+.chat-markdown img {
+  min-height: 140px;
+  background: linear-gradient(90deg, rgba(226, 232, 240, 0.6), rgba(241, 245, 249, 0.9), rgba(226, 232, 240, 0.6));
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+
+.chat-markdown img[data-loaded='true'] {
+  animation: none;
+  background: transparent;
+  opacity: 1;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0%;
+  }
+  100% {
+    background-position: -200% 0%;
+  }
+}
+
+.startup-loader-shimmer {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.startup-loader-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.06) 44%,
+    rgba(255, 255, 255, 0.18) 50%,
+    rgba(255, 255, 255, 0.06) 56%,
+    transparent 70%
+  );
+  transform: translateX(-130%);
+  animation: startup-panel-shimmer 2.1s ease-in-out infinite;
+}
+
+.startup-loader-shimmer > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes startup-panel-shimmer {
+  0% {
+    transform: translateX(-130%);
+  }
+  60%,
+  100% {
+    transform: translateX(130%);
+  }
 }
 
 .memory-panel-scroll {
@@ -105,4 +179,14 @@
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.25));
   border-radius: 999px;
   border: 2px solid rgba(12, 23, 40, 0.4);
+}
+
+.chat-input-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.chat-input-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }

@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -93,6 +93,42 @@ def _upstash_get(key: str) -> Optional[Dict[str, Any]]:
         return {"value": result}
 
 
+def _upstash_hgetall(key: str) -> Dict[str, str]:
+    encoded_key = quote(key, safe="")
+    payload = _upstash_request(f"hgetall/{encoded_key}")
+    result = payload.get("result")
+    if isinstance(result, dict):
+        return {str(k): str(v) for k, v in result.items()}
+    if isinstance(result, list):
+        out: Dict[str, str] = {}
+        for i in range(0, len(result), 2):
+            field = result[i] if i < len(result) else None
+            value = result[i + 1] if i + 1 < len(result) else ""
+            if field is None:
+                continue
+            out[str(field)] = str(value)
+        return out
+    return {}
+
+
+def _upstash_hincrby(key: str, field: str, amount: int) -> int:
+    encoded_key = quote(key, safe="")
+    encoded_field = quote(field, safe="")
+    payload = _upstash_request(
+        f"hincrby/{encoded_key}/{encoded_field}/{int(amount)}",
+        method="POST",
+    )
+    try:
+        return int(payload.get("result", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _upstash_expire(key: str, ttl_seconds: int) -> None:
+    encoded_key = quote(key, safe="")
+    _upstash_request(f"expire/{encoded_key}/{int(ttl_seconds)}", method="POST")
+
+
 def _job_key(job_id: str) -> str:
     return f"job:{job_id}"
 
@@ -155,17 +191,20 @@ def save_memory_candidates(user_id: str, items: List[Dict[str, Any]]) -> None:
 
 def load_approved_memory(user_id: str) -> List[Dict[str, Any]]:
     items = _load_json_list(_memory_approved_key(user_id))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     filtered: List[Dict[str, Any]] = []
     changed = False
     for item in items:
         expires_at = item.get("expires_at")
         if expires_at:
             try:
-                if datetime.fromisoformat(expires_at) < now:
+                parsed = datetime.fromisoformat(expires_at)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                if parsed < now:
                     changed = True
                     continue
-            except ValueError:
+            except (ValueError, TypeError):
                 changed = True
         filtered.append(item)
     if changed:
@@ -319,7 +358,7 @@ def list_conversations(user_id: str, limit: int = 5) -> List[Dict]:
         messages = load_conversation(user_id, session_id)
         last_message = messages[-1] if messages else {}
         last_ts = parse_message_timestamp(last_message.get("timestamp"))
-        updated_at = last_ts or obj.get("last_modified") or datetime.utcnow()
+        updated_at = last_ts or obj.get("last_modified") or datetime.now(timezone.utc)
         title = truncate_title(str(last_message.get("content", "") or "New conversation"))
         sessions.append(
             {

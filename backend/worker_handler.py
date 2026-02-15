@@ -30,6 +30,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "user_id": user_id,
         "session_id": session_id,
     }
+    if job.get("status") == "canceled":
+        logging.info("[worker] canceled before start job_id=%s", job_id)
+        return {"status": "canceled", "job_id": job_id}
     job["status"] = "running"
     job["updated_at"] = datetime.now().isoformat()
     _upstash_set(_job_key(job_id), job, ASYNC_JOB_TTL_SECONDS)
@@ -63,6 +66,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logging.warning("[worker] timeout job_id=%s after=%ss", job_id, worker_max_seconds)
         return {"status": "error", "job_id": job_id, "error": "timeout"}
     except HTTPException as e:
+        if str(e.detail) == "canceled":
+            job["status"] = "canceled"
+            job["error"] = "canceled by user"
+            job["updated_at"] = datetime.now().isoformat()
+            _upstash_set(_job_key(job_id), job, ASYNC_JOB_TTL_SECONDS)
+            logging.info("[worker] canceled job_id=%s", job_id)
+            return {"status": "canceled", "job_id": job_id}
         job["status"] = "failed"
         job["error"] = str(e.detail)
         job["updated_at"] = datetime.now().isoformat()

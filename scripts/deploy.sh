@@ -63,7 +63,11 @@ echo "📦 ECR Repo: ${ECR_REPO} Tag: ${IMAGE_TAG}"
 aws ecr get-login-password --region "${AWS_REGION}" | \
   docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
-DOCKER_BUILDKIT=0 docker build --platform linux/amd64 -t "${IMAGE_URI}" "$ROOT_DIR/backend"
+BUILD_ARGS=()
+if [ "${NO_CACHE:-}" = "1" ]; then
+  BUILD_ARGS+=(--no-cache)
+fi
+DOCKER_BUILDKIT=0 docker build --platform linux/amd64 "${BUILD_ARGS[@]}" -t "${IMAGE_URI}" "$ROOT_DIR/backend"
 docker push "${IMAGE_URI}"
 
 # Resolve the image digest so Lambda updates even if tag is unchanged

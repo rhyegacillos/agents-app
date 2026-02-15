@@ -20,6 +20,10 @@ logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logging.getLogger().setLevel(LOG_LEVEL)
 install_logging()
 
+# Silence noisy third-party INFO logs (for example fontTools glyph subsetting chatter).
+for logger_name in ("fontTools", "fontTools.subset", "weasyprint"):
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
+
 # AI provider selection
 AI_PROVIDER = os.getenv("AI_PROVIDER", "bedrock").strip().lower()
 
@@ -46,6 +50,11 @@ LLM_TIMEOUT_SECONDS = os.getenv("LLM_TIMEOUT_SECONDS", "").strip()
 MCP_STARTUP_TIMEOUT_SECONDS = os.getenv("MCP_STARTUP_TIMEOUT_SECONDS", "").strip()
 RUNNER_TIMEOUT_SECONDS = os.getenv("RUNNER_TIMEOUT_SECONDS", "").strip()
 MEMORY_EXTRACT_SYNC = os.getenv("MEMORY_EXTRACT_SYNC", "false").lower() == "true"
+
+# Quota controls (daily, per user, UTC reset)
+DAILY_TOKEN_LIMIT = int(os.getenv("DAILY_TOKEN_LIMIT", "100000"))
+DAILY_PDF_LIMIT = int(os.getenv("DAILY_PDF_LIMIT", "10"))
+DAILY_EMAIL_LIMIT = int(os.getenv("DAILY_EMAIL_LIMIT", "10"))
 
 # Memory storage configuration
 USE_S3 = os.getenv("USE_S3", "false").lower() == "true"

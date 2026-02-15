@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
 
 from mcp_tools.status import update_job_status
+from tool_instructions import tool_instructions_for
 
 mcp = FastMCP("Memory-Extractor-Service")
 
@@ -26,6 +27,15 @@ bedrock_client = boto3.client(
     service_name="bedrock-runtime",
     region_name=DEFAULT_AWS_REGION or "us-east-1",
 )
+
+
+def _tool(name: str):
+    def decorator(func):
+        doc = tool_instructions_for(name)
+        if doc:
+            func.__doc__ = doc
+        return mcp.tool()(func)
+    return decorator
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
@@ -62,7 +72,7 @@ def _call_bedrock(system: str, user: str) -> str:
     return response["output"]["message"]["content"][0]["text"]
 
 
-@mcp.tool()
+@_tool("extract_memory_candidates")
 async def extract_memory_candidates(
     conversation: str,
     memory_layers: List[Dict[str, Any]],
@@ -183,7 +193,7 @@ async def extract_memory_candidates(
         return {"candidates": []}
 
 
-@mcp.tool()
+@_tool("check_memory_conflict")
 async def check_memory_conflict(
     candidate: Dict[str, Any],
     approved: List[Dict[str, Any]],

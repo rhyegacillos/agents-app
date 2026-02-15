@@ -13,3 +13,6 @@ markdown
 mcp
 resend
 requests
+graphviz
+pandas
+vl-convert-python

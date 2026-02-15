@@ -25,6 +25,10 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
 - **Cost**
   - Worker billed duration distribution.
   - Tool call counts per request.
+  - Daily quota utilization:
+    - token usage / token limit
+    - pdf usage / pdf limit
+    - email usage / email limit
 
 ## 3) Evaluation and QA
 
@@ -38,9 +42,14 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
 - Worker memory is sized to reliably start MCP subprocesses.
 - MCP startup has a timeout to prevent indefinite hangs.
 - Model routing: tool-heavy intents route to Grok; Bedrock is used for plain Q&A by default.
+- High-risk outputs run through canonical renderer + truth gate before return.
+- Daily quotas are enforced server-side using provider-reported LLM token usage.
 
 ## 5) Observability
 
 - Every request/job gets a `trace_id`.
 - Worker and API logs include `trace_id` and `job_id` (when async).
-
+- High-risk pipeline logs: `classify`, `execute`, `render`, `validate`, `fix_loop`.
+- Quota logs:
+  - `[quota] ...` summary per turn (backend, increments, before/after, remaining, exceeded)
+  - `[quota_s3_cas] ...` conflict/success/error telemetry for S3 optimistic-concurrency writes

@@ -3,7 +3,7 @@ environment                        = "dev"
 bedrock_model_id                   = "arn:aws:bedrock:ap-southeast-1:348375262167:inference-profile/apac.amazon.nova-lite-v1:0"
 grok_model_id                      = "grok-4-1-fast"
 grok_api_url                       = "https://api.x.ai/v1"
-ai_provider                        = "grok"
+ai_provider                        = "bedrock"
 default_aws_region                 = "ap-southeast-1"
 enable_mcp_search                  = true
 uploads_dir                        = "/tmp/uploads"
@@ -24,3 +24,6 @@ use_custom_domain                  = false
 root_domain                        = ""
 async_chat_enabled                 = true
 async_job_ttl_seconds              = 3600
+daily_token_limit                  = 1000000
+
+

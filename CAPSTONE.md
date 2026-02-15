@@ -14,6 +14,7 @@ Use this doc as the top-level narrative for a job application. Deep technical re
 - calling tools (web search, file read, PDF export, email delivery)
 - extracting and storing user/project “memory” with human approval
 - running long tasks asynchronously to avoid API timeouts
+- enforcing daily usage quotas (LLM tokens, PDF exports, email sends)
 - deploying cleanly via Terraform and GitHub Actions
 
 It’s built to demonstrate real-world engineering concerns: reliability, observability, evals, CI/CD, and cost-aware architecture.
@@ -31,6 +32,7 @@ In a single session, you can show:
 5. **File Upload + Summary**: upload a PDF/DOCX/TXT and ask for a summary.
 6. **Memory Tab**: approve/deny candidate memories and see them shape future responses.
 7. **Reliability**: long-running tool chains executed via a background worker (no 30s API Gateway timeouts).
+8. **Quota Governance**: real-time daily counters (tokens/PDF/email) with deterministic server-side enforcement.
 
 ---
 
@@ -50,6 +52,7 @@ flowchart LR
   W --> LLM[LLMs: Grok + Bedrock]
   W --> MCP[MCP tools: search, PDF, email, upload, memory]
   W --> S3[S3 Memory Bucket]
+  API --> Q[(Quota State: Upstash / S3 / local)]
   U -->|direct PUT| S3
 ```
 
@@ -60,6 +63,8 @@ Core design choices:
 - **Tooling via MCP**: tools run as subprocess-backed MCP servers, enabling modular tool expansion.
 - **Multi-model routing**: choose the best model per task type (tool-heavy vs plain Q&A).
 - **Durable state**: S3 (memory + uploads/downloads) and Upstash Redis (job status).
+- **Risk-routed truth gate**: low-risk conversational path vs high-risk canonical/tool-validated path.
+- **Quota controls**: daily limits enforced in backend using provider-reported token usage (not text-size estimates).
 
 ---
 
@@ -157,6 +162,8 @@ This isolates tool-call fragility to the most reliable path for the tool workloa
 - Timeouts and retries around tool execution.
 - Instruction-level constraints: “do not claim you emailed unless tool succeeded”, “do not fabricate links”.
 - Safe fallbacks when tools fail (explain and offer alternatives).
+- High-risk outputs are validated against canonical tool context before returning.
+- Quota exceed conditions return deterministic limit messages with reset time.
 
 ### Evaluation and Regression Testing
 
@@ -224,6 +231,11 @@ Uploads have two paths:
 
 - Local dev can fall back to `POST /uploads`.
 - Deployed mode uses `POST /uploads/presign` and browser `PUT` directly to S3.
+
+Quota backends:
+- Preferred: Upstash (when configured).
+- Deployed fallback: S3 quota object with optimistic-concurrency CAS retries.
+- Local fallback: filesystem under `/tmp/quota` (configurable).
 
 ---
 

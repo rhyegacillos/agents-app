@@ -1,6 +1,7 @@
 'use client';
+/* eslint-disable @next/next/no-img-element */
 
-import { useState, useRef, useEffect, isValidElement, type ChangeEvent } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback, isValidElement, type ChangeEvent } from 'react';
 import { Send, Bot, History, X, RefreshCw, Maximize2, Paperclip, MessageSquarePlus, Brain, Terminal, LifeBuoy, Mail, FileDown, Plus, Minus, Search } from 'lucide-react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,11 +42,33 @@ interface ApprovedMemory {
     expires_at?: string;
 }
 
+interface QuotaStatus {
+    enabled: boolean;
+    day: string;
+    reset_at: string;
+    limits: {
+        tokens: number;
+        pdf: number;
+        email: number;
+    };
+    usage: {
+        tokens: number;
+        pdf: number;
+        email: number;
+    };
+    remaining: {
+        tokens: number;
+        pdf: number;
+        email: number;
+    };
+}
+
 export default function Twin() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [asyncStatus, setAsyncStatus] = useState<string | null>(null);
+    const [activeJobId, setActiveJobId] = useState<string | null>(null);
     const [sessionId, setSessionId] = useState<string>('');
     const [sessions, setSessions] = useState<SessionSummary[]>([]);
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -61,28 +84,68 @@ export default function Twin() {
     const [isClearingMemory, setIsClearingMemory] = useState(false);
     const [isMemoryInfoOpen, setIsMemoryInfoOpen] = useState(false);
     const [isApprovedMemoryOpen, setIsApprovedMemoryOpen] = useState(true);
+    const [quota, setQuota] = useState<QuotaStatus | null>(null);
+    const [isLoadingQuota, setIsLoadingQuota] = useState(false);
+    const [isBootstrapping, setIsBootstrapping] = useState(true);
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+    const cancelRequestedRef = useRef(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const bootstrapDoneRef = useRef(false);
+    const inputScrollbarRaf = useRef<number | null>(null);
+    const [inputScrollbar, setInputScrollbar] = useState({ visible: false, top: 0, height: 0 });
     const fileInputRef = useRef<HTMLInputElement>(null);
     const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    const markdownComponents: Components = {
-        p: ({ children }) => {
+    const normalizeExternalUrl = useCallback((value?: string | Blob): string => {
+        if (!value || typeof value !== 'string') return '';
+        let next = value.trim();
+        next = next.replace(/^<|>$/g, '');
+        next = next.replace(/&amp;/g, '&');
+        if (next.startsWith('/')) return `${API_URL}${next}`;
+        if (/^(https?:)?\/\//i.test(next)) return next;
+        return `https://${next}`;
+    }, [API_URL]);
+    const markdownComponents = useMemo<Components>(() => ({
+        p: ({ children, node }) => {
             const parts = Array.isArray(children) ? children : [children];
             const meaningful = parts.filter((c) => c !== null && c !== undefined && c !== false);
             const first = meaningful[0];
+            const childTags = Array.isArray((node as { children?: Array<{ tagName?: string }> } | undefined)?.children)
+                ? ((node as { children?: Array<{ tagName?: string }> }).children || []).map((child) =>
+                    String(child?.tagName || '').toLowerCase()
+                )
+                : [];
             const isLinkOnly =
-                meaningful.length === 1 &&
-                isValidElement(first) &&
-                first.type === 'a';
+                (childTags.length === 1 && childTags[0] === 'a') ||
+                (meaningful.length === 1 &&
+                    isValidElement(first) &&
+                    first.type === 'a');
+            const hasBlockLikeChild =
+                childTags.some((tag) => ['img', 'figure', 'table', 'pre', 'blockquote', 'ul', 'ol', 'div'].includes(tag)) ||
+                meaningful.some((c) => {
+                    if (!isValidElement(c)) return false;
+                    const elType = typeof c.type === 'string' ? c.type.toLowerCase() : '';
+                    if (elType === 'img' || elType === 'figure' || elType === 'figcaption') return true;
+                    const tagFromNode = String((c.props as { node?: { tagName?: string } } | undefined)?.node?.tagName || '').toLowerCase();
+                    return tagFromNode === 'img' || tagFromNode === 'figure' || tagFromNode === 'figcaption';
+                });
+            const wrapperClass = `last:mb-0 ${
+                isLinkOnly ? 'mb-1' : 'mb-2'
+            }`;
+            if (hasBlockLikeChild) {
+                return (
+                    <div className={wrapperClass} style={{ whiteSpace: 'normal' }}>
+                        {children}
+                    </div>
+                );
+            }
             return (
                 <p
-                    className={`last:mb-0 ${
-                        isLinkOnly ? 'mb-1' : 'mb-2'
-                    }`}
+                    className={wrapperClass}
                     style={{ whiteSpace: 'normal' }}
                 >
                     {children}
@@ -145,20 +208,72 @@ export default function Twin() {
             </li>
         ),
         a: ({ href, children }) => {
-            const safeHref = href
-                ? /^(https?:)?\/\//i.test(href)
-                    ? href
-                    : `https://${href}`
-                : '#';
+            const safeHref = normalizeExternalUrl(href);
             return (
             <a
-                href={safeHref}
+                href={safeHref || '#'}
                 target="_blank"
                 rel="noreferrer"
                 className="break-all text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
             >
                 {children}
             </a>
+            );
+        },
+        img: ({ src, alt }) => {
+            const safeSrc = normalizeExternalUrl(src);
+            if (!safeSrc) {
+                return (
+                    <span className="text-xs text-slate-500">
+                        Image URL is missing.
+                    </span>
+                );
+            }
+            const isPdf = /\.pdf(\?|#|$)/i.test(safeSrc);
+            const isImage = /\.(png|jpe?g|gif|webp|svg)(\?|#|$)/i.test(safeSrc);
+            if (isPdf || !isImage) {
+                const label = isPdf ? "Open PDF" : "Open file";
+                return (
+                    <a
+                        href={safeSrc}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="break-all text-[11px] text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
+                    >
+                        {label}
+                    </a>
+                );
+            }
+            return (
+                <figure className="my-1.5">
+                    <img
+                        src={safeSrc}
+                        alt={alt || 'Generated chart'}
+                        loading="eager"
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        className="max-w-full rounded-lg border border-slate-200 bg-white shadow-sm"
+                        data-loaded="false"
+                        onLoad={(e) => {
+                            e.currentTarget.dataset.loaded = 'true';
+                        }}
+                        onError={(e) => {
+                            const img = e.currentTarget;
+                            img.style.display = 'none';
+                            const fallback = img.nextElementSibling as HTMLElement | null;
+                            if (fallback) fallback.style.display = 'inline';
+                        }}
+                    />
+                    <a
+                        href={safeSrc}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hidden break-all text-[11px] text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
+                    >
+                        Open image
+                    </a>
+                    {alt && <figcaption className="mt-0.5 text-[10px] text-slate-500">{alt}</figcaption>}
+                </figure>
             );
         },
         code: ({ children }) => (
@@ -176,7 +291,7 @@ export default function Twin() {
                 {children}
             </pre>
         ),
-    };
+    }), [normalizeExternalUrl]);
 
     const isValidSyncCode = (code: string) => /^[a-zA-Z0-9_-]{8,64}$/.test(code);
 
@@ -186,14 +301,28 @@ export default function Twin() {
         return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     };
 
-    const lastSessionKey = (uid: string) => `last_session_id:${uid}`;
+    const lastSessionKey = useCallback((uid: string) => `last_session_id:${uid}`, []);
     const displayStatusLabel = asyncStatus;
+    const showInitialLoader = isBootstrapping && messages.length === 0;
+    const formatCount = (value: number) => {
+        if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+        if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+        return `${value}`;
+    };
+    const quotaItems = [
+        { key: 'tokens', label: 'Tokens', tone: 'text-rose-100 border-rose-200/25 bg-rose-300/10' },
+        { key: 'pdf', label: 'PDF', tone: 'text-indigo-100 border-indigo-200/25 bg-indigo-300/10' },
+        { key: 'email', label: 'Email', tone: 'text-emerald-100 border-emerald-200/25 bg-emerald-300/10' },
+    ] as const;
 
     const pollJob = async (jobId: string, uid: string, initialDelayMs = 2000) => {
         let delay = initialDelayMs;
         const maxAttempts = 120;
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             await new Promise(resolve => setTimeout(resolve, delay));
+            if (cancelRequestedRef.current) {
+                throw new Error('canceled');
+            }
             const res = await fetch(
                 `${API_URL}/jobs/${jobId}?user_id=${encodeURIComponent(uid)}`
             );
@@ -213,6 +342,10 @@ export default function Twin() {
             if (job.status === 'completed') {
                 return job;
             }
+            if (job.status === 'canceled') {
+                setAsyncStatus(null);
+                return job;
+            }
             if (job.status === 'failed') {
                 setAsyncStatus(null);
                 throw new Error(job.error || 'Job failed');
@@ -222,7 +355,14 @@ export default function Twin() {
         throw new Error('Job polling timed out');
     };
 
-    const renderPremiumAvatar = (sizeClass: string, iconClass: string, glow = true) => (
+    const [hasAvatar, setHasAvatar] = useState(false);
+    useEffect(() => {
+        fetch('/avatar.jpg', { method: 'HEAD' })
+            .then(res => setHasAvatar(res.ok))
+            .catch(() => setHasAvatar(false));
+    }, []);
+
+    const renderPremiumAvatar = useCallback((sizeClass: string, iconClass: string, glow = true) => (
         <div className={`relative ${sizeClass}`}>
             {glow ? (
                 <>
@@ -246,7 +386,7 @@ export default function Twin() {
                 </div>
             </div>
         </div>
-    );
+    ), [hasAvatar]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -255,6 +395,93 @@ export default function Twin() {
     const triggerFileSelect = () => {
         fileInputRef.current?.click();
     };
+
+    const cancelActiveJob = async () => {
+        cancelRequestedRef.current = true;
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        if (!activeJobId || !userId) {
+            setAsyncStatus(null);
+            setIsLoading(false);
+            setActiveJobId(null);
+            abortControllerRef.current = null;
+            return;
+        }
+        try {
+            await fetch(
+                `${API_URL}/jobs/${activeJobId}/cancel?user_id=${encodeURIComponent(userId)}`,
+                { method: 'POST' }
+            );
+        } catch (err) {
+            console.error('Cancel error:', err);
+        } finally {
+            setAsyncStatus(null);
+            setIsLoading(false);
+            setActiveJobId(null);
+            abortControllerRef.current = null;
+        }
+    };
+
+    const renderedMessages = useMemo(() => (
+        messages.map((message) => (
+            <div
+                key={message.id}
+                className={`flex gap-3 ${
+                    message.role === 'user' ? 'justify-end' : 'justify-start'
+                }`}
+            >
+                {message.role === 'assistant' && (
+                    <div className="flex-shrink-0">
+                        {renderPremiumAvatar('w-9 h-9', 'w-5 h-5', false)}
+                    </div>
+                )}
+
+                <div
+                    className={`max-w-[64%] rounded-2xl px-2.5 py-2 shadow-sm text-[13px] leading-relaxed ${
+                        message.role === 'user'
+                            ? 'bg-gradient-to-br from-slate-800 to-slate-900 text-white whitespace-pre-wrap'
+                            : 'bg-white/90 border border-white/60 text-slate-800'
+                    }`}
+                >
+                    {message.role === 'assistant' ? (
+                        <div className="text-sm leading-relaxed chat-markdown">
+                            <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                components={markdownComponents}
+                            >
+                                {message.content}
+                            </ReactMarkdown>
+                        </div>
+                    ) : (
+                        <p className="whitespace-pre-wrap">{message.content}</p>
+                    )}
+                    <p
+                        className={`text-[9px] mt-1 ${
+                            message.role === 'user' ? 'text-slate-300' : 'text-slate-500'
+                        }`}
+                    >
+                        {message.timestamp.toLocaleTimeString()}
+                    </p>
+                </div>
+
+                {message.role === 'user' && (
+                    <div className="flex-shrink-0">
+                        <div className="relative w-9 h-9">
+                            <div className="absolute -inset-[1px] rounded-full bg-gradient-to-br from-white/60 via-slate-200/40 to-slate-400/40" />
+                            <div className="relative w-full h-full rounded-full bg-slate-900/40 p-[1px] shadow-[0_5px_12px_rgba(15,23,42,0.3)]">
+                                <img
+                                    src="/user.png"
+                                    alt="User Avatar"
+                                    className="w-full h-full rounded-full border border-white/40 object-cover"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        ))
+    ), [messages, markdownComponents, renderPremiumAvatar]);
 
     const resetUpload = () => {
         setSelectedFile(null);
@@ -326,7 +553,7 @@ export default function Twin() {
         scrollToBottom();
     }, [messages]);
 
-    const loadConversation = async (uid: string, sid: string) => {
+    const loadConversation = useCallback(async (uid: string, sid: string) => {
         try {
             const response = await fetch(`${API_URL}/conversation/${sid}?user_id=${encodeURIComponent(uid)}`);
             if (!response.ok) throw new Error('Failed to load conversation');
@@ -347,9 +574,9 @@ export default function Twin() {
         } catch (error) {
             console.error('Error loading conversation:', error);
         }
-    };
+    }, [API_URL, lastSessionKey]);
 
-    const loadHistory = async (uid: string, autoRestore = true) => {
+    const loadHistory = useCallback(async (uid: string, autoRestore = true) => {
         setIsLoadingHistory(true);
         try {
             const response = await fetch(
@@ -377,9 +604,9 @@ export default function Twin() {
         } finally {
             setIsLoadingHistory(false);
         }
-    };
+    }, [API_URL, lastSessionKey, loadConversation]);
 
-    const loadMemory = async (uid: string, opts: { silent?: boolean } = {}) => {
+    const loadMemory = useCallback(async (uid: string, opts: { silent?: boolean } = {}) => {
         const { silent = false } = opts;
         if (!silent) {
             setIsLoadingMemory(true);
@@ -409,7 +636,29 @@ export default function Twin() {
                 setIsLoadingMemory(false);
             }
         }
-    };
+    }, [API_URL]);
+
+    const loadQuota = useCallback(async (uid: string, opts: { silent?: boolean } = {}) => {
+        const { silent = false } = opts;
+        if (!silent) {
+            setIsLoadingQuota(true);
+        }
+        try {
+            const response = await fetch(`${API_URL}/quota?user_id=${encodeURIComponent(uid)}`);
+            if (!response.ok) throw new Error('Failed to load quota');
+            const data = await response.json();
+            setQuota(data as QuotaStatus);
+        } catch (error) {
+            console.error('Error loading quota:', error);
+            if (!silent) {
+                setQuota(null);
+            }
+        } finally {
+            if (!silent) {
+                setIsLoadingQuota(false);
+            }
+        }
+    }, [API_URL]);
 
     const sendMessage = async () => {
         const hasAttachment = !!(selectedFile && uploadedFileId && uploadStatus === 'uploaded');
@@ -439,6 +688,8 @@ export default function Twin() {
         }
         setInput('');
         setIsLoading(true);
+        cancelRequestedRef.current = false;
+        abortControllerRef.current = new AbortController();
 
         try {
             const response = await fetch(`${API_URL}/chat`, {
@@ -446,6 +697,7 @@ export default function Twin() {
                 headers: {
                     'Content-Type': 'application/json',
                 },
+                signal: abortControllerRef.current.signal,
                 body: JSON.stringify({
                     message: messageText,
                     session_id: sessionId || undefined,
@@ -461,11 +713,17 @@ export default function Twin() {
             if (response.status === 202) {
                 const queued = await response.json();
                 setAsyncStatus('Queued… (5%)');
+                setActiveJobId(queued.job_id);
                 if (!sessionId) {
                     setSessionId(queued.session_id);
                 }
                 localStorage.setItem(lastSessionKey(userId), queued.session_id);
                 const job = await pollJob(queued.job_id, userId, (queued.retry_after || 2) * 1000);
+                setActiveJobId(null);
+                if (job.status === 'canceled') {
+                    setAsyncStatus(null);
+                    return;
+                }
                 const assistantMessage: Message = {
                     id: (Date.now() + 1).toString(),
                     role: 'assistant',
@@ -489,6 +747,7 @@ export default function Twin() {
                 setMessages(prev => [...prev, assistantMessage]);
             }
             loadHistory(userId, false);
+            loadQuota(userId, { silent: true });
             // Memory extraction is async; do silent refreshes to catch it without UI lag.
             loadMemory(userId, { silent: true });
             setTimeout(() => {
@@ -498,6 +757,14 @@ export default function Twin() {
                 loadMemory(userId, { silent: true });
             }, 6000);
         } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                setAsyncStatus(null);
+                return;
+            }
+            if (error instanceof Error && error.message === 'canceled') {
+                setAsyncStatus(null);
+                return;
+            }
             console.error('Error:', error);
             const errorMessage: Message = {
                 id: (Date.now() + 1).toString(),
@@ -509,6 +776,7 @@ export default function Twin() {
         } finally {
             setAsyncStatus(null);
             setIsLoading(false);
+            abortControllerRef.current = null;
             // Refocus the input after message is sent
             setTimeout(() => {
                 inputRef.current?.focus();
@@ -523,7 +791,33 @@ export default function Twin() {
         }
     };
 
-    const adjustInputHeight = () => {
+    const updateInputScrollbar = useCallback(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        const scrollHeight = el.scrollHeight;
+        const clientHeight = el.clientHeight;
+        const maxHeight = 160;
+        const trackPadding = 6;
+        const trackHeight = Math.max(0, clientHeight - trackPadding * 2);
+        if (scrollHeight <= maxHeight + 1) {
+            setInputScrollbar({ visible: false, top: 0, height: 0 });
+            return;
+        }
+        const thumbHeight = Math.max(24, trackHeight * (clientHeight / scrollHeight));
+        const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+        const maxScrollTop = Math.max(1, scrollHeight - clientHeight);
+        const thumbTop = trackPadding + (el.scrollTop / maxScrollTop) * maxThumbTop;
+        setInputScrollbar({ visible: true, top: thumbTop, height: thumbHeight });
+    }, []);
+
+    const scheduleInputScrollbarUpdate = useCallback(() => {
+        if (inputScrollbarRaf.current) {
+            cancelAnimationFrame(inputScrollbarRaf.current);
+        }
+        inputScrollbarRaf.current = requestAnimationFrame(updateInputScrollbar);
+    }, [updateInputScrollbar]);
+
+    const adjustInputHeight = useCallback(() => {
         const el = inputRef.current;
         if (!el) return;
         const start = el.selectionStart ?? 0;
@@ -533,16 +827,17 @@ export default function Twin() {
         const nextHeight = Math.min(el.scrollHeight, maxHeight);
         el.style.height = `${nextHeight}px`;
         el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+        scheduleInputScrollbarUpdate();
         try {
             el.setSelectionRange(start, end);
         } catch {
             // no-op for unsupported cases
         }
-    };
+    }, [scheduleInputScrollbarUpdate]);
 
     useEffect(() => {
         adjustInputHeight();
-    }, [input]);
+    }, [input, adjustInputHeight]);
 
     const handleNewChat = () => {
         setMessages([]);
@@ -652,15 +947,6 @@ export default function Twin() {
         }
     };
 
-    // Check if avatar exists
-    const [hasAvatar, setHasAvatar] = useState(false);
-    useEffect(() => {
-        // Check if avatar.png exists
-        fetch('/avatar.jpg', { method: 'HEAD' })
-            .then(res => setHasAvatar(res.ok))
-            .catch(() => setHasAvatar(false));
-    }, []);
-
     useEffect(() => {
         const stored = localStorage.getItem('sync_code');
         let code = stored;
@@ -672,16 +958,33 @@ export default function Twin() {
     }, []);
 
     useEffect(() => {
-        if (!userId) return;
-        loadHistory(userId, true);
-        loadMemory(userId);
-    }, [userId]);
+        if (!userId || bootstrapDoneRef.current) return;
+        bootstrapDoneRef.current = true;
+        const bootstrap = async () => {
+            setIsBootstrapping(true);
+            await Promise.allSettled([
+                loadHistory(userId, true),
+                loadMemory(userId),
+                loadQuota(userId),
+            ]);
+            setIsBootstrapping(false);
+        };
+        void bootstrap();
+    }, [userId, loadHistory, loadMemory, loadQuota]);
 
     useEffect(() => {
         if (!isHistoryOpen || !userId) return;
         loadHistory(userId, false);
         loadMemory(userId);
-    }, [isHistoryOpen, userId]);
+    }, [isHistoryOpen, userId, loadHistory, loadMemory]);
+
+    useEffect(() => {
+        if (!userId) return;
+        const timer = window.setInterval(() => {
+            loadQuota(userId, { silent: true });
+        }, 30000);
+        return () => window.clearInterval(timer);
+    }, [userId, loadQuota]);
 
     const COLLAPSED_HEIGHT = 640;
     const MAX_HEIGHT = 9999;
@@ -747,41 +1050,41 @@ export default function Twin() {
                                 </span>
                             </span>
                         </div>
-                        <div className="mt-2 flex items-center gap-2 overflow-visible whitespace-nowrap">
-                            <span className="text-[10px] uppercase tracking-[0.2em] text-white/60">
+                        <div className="mt-2 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap">
+                            <span className="shrink-0 text-[9px] uppercase tracking-[0.18em] text-white/60">
                                 Tools
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Brain className="h-3 w-3 text-emerald-200" />
                                 Memory
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
                                     Remembers approved preferences and project context to personalize future replies.
                                 </span>
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <FileDown className="h-3 w-3 text-indigo-200" />
-                                PDF Export
+                                PDF
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
                                     Export chat outputs or summaries as downloadable PDFs.
                                 </span>
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Paperclip className="h-3 w-3 text-slate-200" />
-                                File Upload
+                                Upload
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
                                     Upload PDFs, DOCX, or text files for summarization and analysis.
                                 </span>
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Mail className="h-3 w-3 text-rose-200" />
-                                Email Delivery
+                                Email
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
                                     Send PDFs or summaries to your email on request.
                                 </span>
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Search className="h-3 w-3 text-cyan-200" />
-                                Web Search
+                                Search
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
                                     Uses Brave to fetch current information with citations when needed.
                                 </span>
@@ -789,40 +1092,41 @@ export default function Twin() {
                         </div>
                     </div>
                 </div>
-                <div className="flex items-center gap-2 mt-1 rounded-2xl border border-white/10 bg-white/5 px-2 py-1 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)]">
-                    {memoryCandidates.length > 0 && (
+                <div className="mt-1 flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-2 py-1 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)]">
+                        {memoryCandidates.length > 0 && (
+                            <button
+                                onClick={() => {
+                                    setIsHistoryOpen(true);
+                                    setHistoryTab('memory');
+                                    if (userId) {
+                                        loadHistory(userId, false);
+                                        loadMemory(userId);
+                                    }
+                                }}
+                                className="inline-flex items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 p-2 text-[11px] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
+                                title="Review memory"
+                            >
+                                <Brain className="h-4 w-4 drop-shadow-sm" />
+                                {memoryCandidates.length}
+                            </button>
+                        )}
+                        <button
+                            onClick={handleNewChat}
+                            className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                            title="New Chat"
+                        >
+                            <MessageSquarePlus className="w-5 h-5 drop-shadow-sm" />
+                        </button>
                         <button
                             onClick={() => {
-                                setIsHistoryOpen(true);
-                                setHistoryTab('memory');
-                                if (userId) {
-                                    loadHistory(userId, false);
-                                    loadMemory(userId);
-                                }
+                                setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
                             }}
-                            className="inline-flex items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 p-2 text-[11px] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
-                            title="Review memory"
+                            className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                            title={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
                         >
-                            <Brain className="h-4 w-4 drop-shadow-sm" />
-                            {memoryCandidates.length}
+                            <Maximize2 className="w-5 h-5 drop-shadow-sm" />
                         </button>
-                    )}
-                    <button
-                        onClick={handleNewChat}
-                        className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
-                        title="New Chat"
-                    >
-                        <MessageSquarePlus className="w-5 h-5 drop-shadow-sm" />
-                    </button>
-                    <button
-                        onClick={() => {
-                            setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
-                        }}
-                        className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
-                        title={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
-                    >
-                        <Maximize2 className="w-5 h-5 drop-shadow-sm" />
-                    </button>
                         <button
                             onClick={() => {
                                 setIsHistoryOpen(true);
@@ -836,6 +1140,34 @@ export default function Twin() {
                         >
                             <History className="w-5 h-5 drop-shadow-sm" />
                         </button>
+                    </div>
+                    <div className="mt-1 flex items-center gap-1.5 pr-1">
+                        <span className="group relative inline-flex items-center text-[9px] uppercase tracking-[0.18em] text-white/60">
+                            Daily Quota
+                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-20 w-[220px] whitespace-normal rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] normal-case tracking-normal text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                {isLoadingQuota
+                                    ? 'Refreshing quota...'
+                                    : quota?.reset_at
+                                        ? `Resets at ${new Date(quota.reset_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`
+                                        : 'Quota reset info unavailable'}
+                            </span>
+                        </span>
+                        {quotaItems.map((item) => {
+                            const usage = quota?.usage?.[item.key] ?? 0;
+                            const limit = quota?.limits?.[item.key] ?? 0;
+                            return (
+                                <span
+                                    key={item.key}
+                                    className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] leading-none ${item.tone}`}
+                                >
+                                    <span>{item.label}</span>
+                                    <span className="text-white/90">
+                                        {formatCount(usage)}/{formatCount(limit)}
+                                    </span>
+                                </span>
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
 
@@ -1105,77 +1437,51 @@ export default function Twin() {
             <div className="flex-1 flex flex-col overflow-hidden rounded-b-[26px]">
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[radial-gradient(circle_at_top,_#ffffff,_#f1f5f9_55%,_#e7edf6_100%)]">
-                {messages.length === 0 && (
+                {showInitialLoader ? (
+                    <div className="mx-auto mt-8 w-full max-w-2xl rounded-[24px] bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] p-[1px] shadow-[0_16px_36px_-20px_rgba(15,23,42,0.65)]">
+                        <div className="startup-loader-shimmer rounded-[23px] border border-white/10 bg-gradient-to-r from-[#0f3b3e]/95 via-[#1b4a66]/95 to-[#1f2a44]/95 p-5 text-white">
+                            <div className="mb-3 flex items-center gap-3">
+                                <div className="h-10 w-10 flex-shrink-0">
+                                    {renderPremiumAvatar('w-10 h-10', 'w-5 h-5', false)}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold">Loading your workspace…</p>
+                                    <p className="text-xs text-white/75">Warming up serverless runtime (usually 1-5 seconds).</p>
+                                </div>
+                                <div className="h-7 w-7 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+                            </div>
+
+                            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                                <span className="text-[10px] uppercase tracking-[0.18em] text-white/65">Tools</span>
+                                <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] text-white/85">Memory</span>
+                                <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] text-white/85">PDF</span>
+                                <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] text-white/85">Upload</span>
+                                <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] text-white/85">Email</span>
+                                <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] text-white/85">Search</span>
+                            </div>
+
+                            <div className="space-y-2.5">
+                                <div className="h-2.5 w-full animate-pulse rounded bg-white/20" />
+                                <div className="h-2.5 w-5/6 animate-pulse rounded bg-white/20" />
+                                <div className="h-2.5 w-2/3 animate-pulse rounded bg-white/20" />
+                            </div>
+                        </div>
+                    </div>
+                ) : messages.length === 0 && (
                     <div className="text-center text-slate-500 mt-12">
                         <div className="mx-auto mb-4 w-20 h-20">
                             {renderPremiumAvatar('w-20 h-20', 'w-10 h-10', false)}
                         </div>
                         <p className="text-lg text-slate-700 font-medium">Hello! I&apos;m your Digital Assistant.</p>
                         <p className="text-sm mt-2">
-                            Ask me about deployment strategy, tooling, or production incidents.
+                            Ask for research, PDF export, email delivery, or deployment troubleshooting.
                         </p>
                     </div>
                 )}
 
-                {messages.map((message) => (
-                    <div
-                        key={message.id}
-                        className={`flex gap-3 ${
-                            message.role === 'user' ? 'justify-end' : 'justify-start'
-                        }`}
-                    >
-                        {message.role === 'assistant' && (
-                            <div className="flex-shrink-0">
-                                {renderPremiumAvatar('w-9 h-9', 'w-5 h-5', false)}
-                            </div>
-                        )}
+                {renderedMessages}
 
-                        <div
-                            className={`max-w-[64%] rounded-2xl px-2.5 py-2 shadow-sm text-[13px] leading-relaxed ${
-                                message.role === 'user'
-                                    ? 'bg-gradient-to-br from-slate-800 to-slate-900 text-white whitespace-pre-wrap'
-                                    : 'bg-white/90 border border-white/60 text-slate-800'
-                            }`}
-                        >
-	                            {message.role === 'assistant' ? (
-	                                <div className="text-sm leading-relaxed chat-markdown">
-	                                    <ReactMarkdown
-	                                        remarkPlugins={[remarkGfm]}
-	                                        components={markdownComponents}
-	                                    >
-	                                        {message.content}
-	                                    </ReactMarkdown>
-	                                </div>
-	                            ) : (
-                                <p className="whitespace-pre-wrap">{message.content}</p>
-                            )}
-                            <p
-                                className={`text-[9px] mt-1 ${
-                                    message.role === 'user' ? 'text-slate-300' : 'text-slate-500'
-                                }`}
-                            >
-                                {message.timestamp.toLocaleTimeString()}
-                            </p>
-                        </div>
-
-                        {message.role === 'user' && (
-                            <div className="flex-shrink-0">
-                                <div className="relative w-9 h-9">
-                                    <div className="absolute -inset-[1px] rounded-full bg-gradient-to-br from-white/60 via-slate-200/40 to-slate-400/40" />
-                                    <div className="relative w-full h-full rounded-full bg-slate-900/40 p-[1px] shadow-[0_5px_12px_rgba(15,23,42,0.3)]">
-                                        <img
-                                            src="/user.png"
-                                            alt="User Avatar"
-                                            className="w-full h-full rounded-full border border-white/40 object-cover"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                ))}
-
-                {isLoading && (
+                {isLoading && !cancelRequestedRef.current && (
                     <div className="flex gap-3 justify-start">
                         <div className="flex-shrink-0">
                             {renderPremiumAvatar('w-9 h-9', 'w-5 h-5', false)}
@@ -1195,26 +1501,38 @@ export default function Twin() {
 
             {/* Input */}
             <div className="border-t border-white/60 p-4 bg-white/90 rounded-b-[26px]">
-                {displayStatusLabel && (
+                {(displayStatusLabel || showInitialLoader) && (
                     <div className="mb-2 flex items-center gap-2 text-xs text-slate-500">
                         <span className="inline-flex h-2 w-2 rounded-full bg-slate-400 animate-pulse" />
                         <span className="flex items-center gap-1">
-                            {displayStatusLabel}
+                            {showInitialLoader ? 'Initializing app state…' : displayStatusLabel}
                         </span>
                     </div>
                 )}
-                <div className="flex gap-3">
-                    <textarea
-                        ref={inputRef}
-                        rows={1}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyPress}
-                        placeholder="Ask about deployment, infrastructure, or troubleshooting..."
-                        className="flex-1 px-4 py-3 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-slate-600/40 focus:border-transparent text-slate-800 bg-white shadow-sm resize-none leading-relaxed min-h-[48px] scrollbar-gutter-stable"
-                        disabled={isLoading}
-                        autoFocus
-                    />
+                <div className="flex gap-3 items-end">
+                    <div className="relative flex-1">
+                        <textarea
+                            ref={inputRef}
+                            rows={1}
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyPress}
+                            onScroll={scheduleInputScrollbarUpdate}
+                            placeholder={showInitialLoader ? 'Loading…' : 'Ask about deployment, infrastructure, or troubleshooting...'}
+                            className="w-full pl-4 pr-6 py-3 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-slate-600/40 focus:border-transparent text-slate-800 bg-white shadow-sm resize-none leading-relaxed min-h-[48px] overflow-y-auto chat-input-scroll"
+                            disabled={isLoading || showInitialLoader}
+                            autoFocus
+                        />
+                        <div className="pointer-events-none absolute right-1 top-2 bottom-2 w-2">
+                            <div className="absolute inset-0 rounded-full bg-transparent" />
+                            {inputScrollbar.visible && (
+                                <div
+                                    className="absolute left-0 w-2 rounded-full bg-gradient-to-b from-slate-300 to-slate-500 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.6)]"
+                                    style={{ top: inputScrollbar.top, height: inputScrollbar.height }}
+                                />
+                            )}
+                        </div>
+                    </div>
                     <input
                         ref={fileInputRef}
                         type="file"
@@ -1225,7 +1543,8 @@ export default function Twin() {
                     <button
                         type="button"
                         onClick={triggerFileSelect}
-                        className="group relative px-3.5 py-3 bg-white text-slate-700 rounded-2xl border border-slate-200 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-600/40 transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_8px_18px_-12px_rgba(15,23,42,0.35)]"
+                        disabled={showInitialLoader}
+                        className="group relative self-end px-3.5 py-3 bg-white text-slate-700 rounded-2xl border border-slate-200 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-600/40 transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_8px_18px_-12px_rgba(15,23,42,0.35)]"
                         aria-label="Upload file"
                     >
                         <span className="absolute inset-0 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-slate-100 opacity-80" />
@@ -1234,21 +1553,35 @@ export default function Twin() {
                             <Paperclip className="w-5 h-5 drop-shadow-sm" />
                         </span>
                     </button>
-                    <button
-                        onClick={sendMessage}
-                        disabled={
-                            (!input.trim() && !(selectedFile && uploadedFileId && uploadStatus === 'uploaded')) ||
-                            isLoading ||
-                            uploadStatus === 'uploading' ||
-                            uploadStatus === 'error'
-                        }
-                        className="group relative px-4 py-3 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-slate-600/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 hover:from-slate-800 hover:via-slate-900 hover:to-slate-800"
-                    >
-                        <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.35),_transparent_65%)]" />
-                        <span className="relative flex items-center justify-center gap-2">
-                            <Send className="w-5 h-5 drop-shadow-sm" />
-                        </span>
-                    </button>
+                    {isLoading ? (
+                        <button
+                            onClick={cancelActiveJob}
+                            className="group relative self-end px-4 py-3 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-rose-500/40 transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] bg-gradient-to-br from-rose-500 via-rose-600 to-rose-500 hover:from-rose-500 hover:via-rose-500 hover:to-rose-600"
+                            aria-label="Cancel request"
+                        >
+                            <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(251,113,133,0.35),_transparent_65%)]" />
+                            <span className="relative flex items-center justify-center gap-2">
+                                <X className="w-5 h-5 drop-shadow-sm" />
+                            </span>
+                        </button>
+                    ) : (
+                        <button
+                            onClick={sendMessage}
+                            disabled={
+                                (!input.trim() && !(selectedFile && uploadedFileId && uploadStatus === 'uploaded')) ||
+                                isLoading ||
+                                showInitialLoader ||
+                                uploadStatus === 'uploading' ||
+                                uploadStatus === 'error'
+                            }
+                            className="group relative self-end px-4 py-3 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-slate-600/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 hover:from-slate-800 hover:via-slate-900 hover:to-slate-800"
+                        >
+                            <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.35),_transparent_65%)]" />
+                            <span className="relative flex items-center justify-center gap-2">
+                                <Send className="w-5 h-5 drop-shadow-sm" />
+                            </span>
+                        </button>
+                    )}
                 </div>
                 {(selectedFile || uploadError) && (
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">

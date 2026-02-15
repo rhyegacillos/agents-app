@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -65,7 +65,7 @@ def update_job_status(message: str, progress: Optional[int] = None) -> None:
         job["status_message"] = message
         if progress is not None:
             job["status_progress"] = max(0, min(100, int(progress)))
-        job["updated_at"] = datetime.utcnow().isoformat()
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
         _upstash_set(_job_key(job_id), job, ttl_seconds)
     except Exception:
         # Never break tool execution because of status updates

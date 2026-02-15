@@ -19,6 +19,9 @@ This project is a web-based digital assistant with:
 - **conversation memory** stored in S3 (or local files in dev)
 - **async job queue** (Upstash Redis) when async mode is enabled
 - **MCP tool servers** for web search, PDFs, email, file upload, and memory extraction
+- **hybrid risk routing** (low-risk prose guard vs high-risk tool path)
+- **truth-gated canonical rendering** for high-risk outputs
+- **daily quota controls** (tokens/PDF/email) with backend enforcement
 - **PDF rendering via HTML → WeasyPrint** (Markdown supported)
 - **memory candidate approval** and **validator enforcement** based on approved memory
 
@@ -94,6 +97,7 @@ Framework:
 Endpoints:
 - `GET /` – API info (provider + storage)
 - `GET /health` – health check
+- `GET /quota` – daily quota usage/limits (`tokens`, `pdf`, `email`)
 - `POST /chat` – main chat endpoint
 - `GET /jobs/{job_id}` – async job status (when async enabled)
 - `GET /conversations` – list recent sessions (max 5)
@@ -115,6 +119,7 @@ All handlers live in `backend/server.py` unless stated otherwise.
 |---|---|---|
 | `GET /` | `root()` | Basic API info (provider, storage, MCP search flag) |
 | `GET /health` | `health_check()` | Health status + provider info |
+| `GET /quota` | `get_quota()` | Daily quota snapshot for the current `user_id` |
 | `POST /chat` | `chat()` | Main chat request (non‑streaming) |
 | `GET /jobs/{job_id}` | `get_job_status()` | Async job status (requires user_id) |
 | `GET /conversations` | `get_conversations()` | List recent sessions (max 5) |
@@ -188,20 +193,18 @@ Candidate → Approved flow:
 
 The backend launches MCP tool servers (stdio processes):
 - **Brave Search** (web search)
-- **PDF** generator
-- **Resend email**
-- **File upload reader**
+- **Core tools** (PDF generation/download, Resend email, file upload reader)
 - **Memory extractor**
+- **Diagram generator** (when enabled)
 
 The MCP servers are configured in:
 - `backend/mcp_tools/mcp_servers.py`
 
 Each MCP server is a standalone Python file:
 - `backend/mcp_tools/brave_mcp_server.py`
-- `backend/mcp_tools/pdf_mcp_server.py`
-- `backend/mcp_tools/resend_mcp_server.py`
-- `backend/mcp_tools/file_mcp_server.py`
+- `backend/mcp_tools/core_mcp_server.py`
 - `backend/mcp_tools/memory_mcp_server.py`
+- `backend/mcp_tools/diagram_mcp_server.py`
 - PDF generation uses HTML rendering via WeasyPrint (Markdown supported).
 
 -------------------------------------------------------------------------------
@@ -260,6 +263,34 @@ If approved memory exists:
 3) If non‑compliant → one retry with fix instructions.
 4) If compliant → response is returned as‑is.
 
+### 3.6 Hybrid risk routing + truth gate flow
+
+Per request:
+1) Backend classifies risk (`low` vs `high`) using intent heuristics.
+2) **Low risk**:
+   - model runs prose-only mode (no tool calls)
+   - prose guard removes sensitive/action-claim text if present
+3) **High risk**:
+   - tool-capable run executes MCP actions
+   - tool outcomes are normalized into canonical context (artifacts/outcomes/search)
+   - canonical renderer produces final action-safe response
+   - truth gate validates placeholders, link allowlist, source rules, and action claims
+   - fix loop retries bounded attempts if validation fails
+
+### 3.7 Daily quota enforcement flow
+
+Quota is enforced server-side per `user_id` and UTC day:
+- `tokens`: consumed from **provider-reported LLM usage**
+- `pdf`: successful `generate_pdf_from_text` outcomes
+- `email`: successful `send_resend_email` outcomes
+
+Backend selection for quota state:
+1) Upstash Redis (primary, when configured)
+2) S3 object quota state (deployed fallback; optimistic concurrency CAS)
+3) local file fallback (local/dev only, configurable)
+
+If any daily limit is exceeded, backend returns a deterministic limit message and does not execute additional quota-consuming actions in that turn.
+
 -------------------------------------------------------------------------------
 
 ## 4) Infrastructure (Terraform mapping)
@@ -314,11 +345,19 @@ Common:
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 - `WORKER_MAX_SECONDS`
-- `WORKER_LLM_TIMEOUT_SECONDS`
-- `WORKER_MCP_STARTUP_TIMEOUT_SECONDS`
-- `WORKER_RUNNER_TIMEOUT_SECONDS`
+- `LLM_TIMEOUT_SECONDS`
+- `MCP_STARTUP_TIMEOUT_SECONDS`
+- `RUNNER_TIMEOUT_SECONDS`
 - `PDF_MAX_MB`
 - `PDF_MAX_CHARS`
+
+Quota:
+- `DAILY_TOKEN_LIMIT` (default `100000`)
+- `DAILY_PDF_LIMIT` (default `10`)
+- `DAILY_EMAIL_LIMIT` (default `10`)
+- `QUOTA_LOCAL_FALLBACK` (`true` by default; local/dev only)
+- `QUOTA_LOCAL_DIR` (default `/tmp/quota`)
+- `S3_QUOTA_MAX_RETRIES` (default `6`, for S3 optimistic-concurrency retries)
 
 Memory:
 - `USE_S3` = `true` or `false`
@@ -364,8 +403,16 @@ This is not multi-tenant secure without an auth layer.
 
 - Lambda logs are in CloudWatch.
 - `/health` endpoint provides a basic status check.
-
-No structured tracing or metrics are configured by default.
+- Request/job logs include `trace_id` and `job_id`.
+- High-risk pipeline logs include phase markers:
+  - `classify`
+  - `execute`
+  - `render`
+  - `validate`
+  - `fix_loop` (when retrying)
+- Quota logs include:
+  - per-turn increments/remaining (`[quota] ...`)
+  - S3 CAS conflict/success/error telemetry (`[quota_s3_cas] ...`)
 
 -------------------------------------------------------------------------------
 
@@ -375,6 +422,7 @@ Local dev setup:
 - Backend: `uvicorn backend/server.py` on `localhost:8000`
 - Frontend: `next dev` on `localhost:3000`
 - Memory: local filesystem under `../memory/`
+- Quota state: local filesystem fallback under `/tmp/quota` (unless Upstash/S3 is configured)
 
 Local flow:
 Browser -> Next.js dev server -> FastAPI -> Grok/Bedrock -> local memory
@@ -389,6 +437,7 @@ Browser -> Next.js dev server -> FastAPI -> Grok/Bedrock -> local memory
 - Only last 50 messages are sent to the model.
 - Bedrock access depends on model availability and region.
 - Memory enforcement requires validator LLM and may add latency/cost.
+- S3 quota fallback uses optimistic concurrency and retries; extremely high contention can still require tuning `S3_QUOTA_MAX_RETRIES`.
 
 -------------------------------------------------------------------------------
 
@@ -398,6 +447,10 @@ Backend:
 - `backend/server.py` – FastAPI app
 - `backend/context.py` – system prompt builder
 - `backend/resources.py` – loads data sources
+- `backend/services/risk_router.py` – low/high risk classification
+- `backend/services/canonical_renderer.py` – high-risk canonical response rendering
+- `backend/services/output_truth_gate.py` – deterministic validation gate
+- `backend/services/quota.py` – daily quota accounting/enforcement
 - `backend/data/*` – persona facts, summary, style, linkedin
 - `backend/Dockerfile` – Lambda container image build
 - `backend/lambda_handler.py` – Mangum entrypoint
@@ -516,6 +569,21 @@ sequenceDiagram
   FE->>APIGW: GET /
   APIGW->>L: Invoke Lambda
   L-->>FE: {message, memory_enabled, storage, ai_provider, ai_model}
+```
+
+### 12.7 GET /quota
+```mermaid
+sequenceDiagram
+  participant FE as Frontend
+  participant APIGW as API Gateway
+  participant L as Lambda (FastAPI)
+  participant Q as Quota Backend (Upstash/S3/Local)
+
+  FE->>APIGW: GET /quota?user_id=...
+  APIGW->>L: Invoke Lambda
+  L->>Q: read daily usage snapshot
+  Q-->>L: usage/limits/day/reset_at
+  L-->>FE: {enabled, backend, usage, limits, remaining, reset_at}
 ```
 
 -------------------------------------------------------------------------------
@@ -686,7 +754,7 @@ sequenceDiagram
 ### 13.11 How USE_S3 is set (local vs deployed)
 
 Local development:
-- `USE_S3` defaults to `false` in `backend/server.py`.
+- `USE_S3` defaults to `false` in `backend/config.py`.
 - Memory is stored under `../memory/` on disk.
 - You can override with `USE_S3=true` if you want to test S3 locally.
 
@@ -704,6 +772,24 @@ Deployed (Lambda):
 | Memory path | `../memory/` | `s3://<memory-bucket>/{user_id}/{session_id}.json` |
 | API URL | `http://localhost:8000` | API Gateway URL |
 | Frontend | Next dev server | S3 + CloudFront |
+
+### 13.13 S3 quota CAS retry flow
+```mermaid
+sequenceDiagram
+  participant L as Lambda
+  participant S3 as S3 Quota Object
+
+  L->>S3: GET quota/<user>-<day>.json
+  S3-->>L: payload + ETag
+  L->>L: apply bounded increments vs limits
+  L->>S3: PUT with If-Match ETag (or If-None-Match *)
+  alt precondition conflict
+    S3-->>L: PreconditionFailed
+    L->>L: jitter sleep + retry (bounded)
+  else success
+    S3-->>L: 200 OK
+  end
+```
 
 -------------------------------------------------------------------------------
 

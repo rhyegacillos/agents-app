@@ -173,6 +173,12 @@ variable "async_job_ttl_seconds" {
   default     = 3600
 }
 
+variable "daily_token_limit" {
+  description = "Daily token quota limit per user"
+  type        = number
+  default     = 100000
+}
+
 variable "upstash_redis_rest_url" {
   description = "Upstash Redis REST URL"
   type        = string

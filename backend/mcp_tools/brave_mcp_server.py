@@ -7,6 +7,7 @@ import requests
 from mcp.server.fastmcp import FastMCP
 
 from mcp_tools.status import update_job_status
+from tool_instructions import tool_instructions_for
 logging.basicConfig(stream=sys.stderr, level=os.getenv("BRAVE_LOG_LEVEL", "INFO").upper())
 
 
@@ -17,8 +18,16 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "").strip()
 if not BRAVE_API_KEY:
     raise RuntimeError("BRAVE_API_KEY is required for Brave MCP server")
 
+def _tool(name: str):
+    def decorator(func):
+        doc = tool_instructions_for(name)
+        if doc:
+            func.__doc__ = doc
+        return mcp.tool()(func)
+    return decorator
 
-@mcp.tool()
+
+@_tool("brave_web_search")
 async def brave_web_search(query: str, count: int = 5) -> Dict[str, Any]:
     """
     Search the web with Brave Search API.

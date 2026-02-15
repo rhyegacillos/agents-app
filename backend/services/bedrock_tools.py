@@ -111,11 +111,12 @@ async def run_bedrock_with_tools(
     mcp_specs: List[Dict[str, Any]],
     max_tool_rounds: int = 6,
     inference_config: Optional[Dict[str, Any]] = None,
-) -> str:
+) -> Tuple[str, int]:
     inference_config = inference_config or {"maxTokens": 2000, "temperature": 0.7, "topP": 0.9}
     async with AsyncExitStack() as stack:
         tool_specs, tool_sessions = await _open_mcp_sessions(mcp_specs, stack)
         tool_config = {"tools": tool_specs} if tool_specs else None
+        total_tokens_used = 0
 
         messages = [{"role": "user", "content": [{"text": user_text}]}]
 
@@ -127,12 +128,24 @@ async def run_bedrock_with_tools(
                 toolConfig=tool_config,
                 inferenceConfig=inference_config,
             )
+            usage = response.get("usage", {}) or {}
+            try:
+                total_tokens_used += int(
+                    usage.get("totalTokens")
+                    or usage.get("total_tokens")
+                    or (
+                        int(usage.get("inputTokens", 0) or 0)
+                        + int(usage.get("outputTokens", 0) or 0)
+                    )
+                )
+            except (TypeError, ValueError):
+                pass
             content_blocks = response.get("output", {}).get("message", {}).get("content", []) or []
             tool_uses = _extract_tool_uses(content_blocks)
             messages.append({"role": "assistant", "content": content_blocks})
 
             if not tool_uses:
-                return _extract_text(content_blocks)
+                return _extract_text(content_blocks), total_tokens_used
 
             tool_result_blocks: List[Dict[str, Any]] = []
             for tool_use in tool_uses:

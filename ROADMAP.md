@@ -35,7 +35,16 @@ Legend:
 - [x] PDF export tool (chat content → PDF) — done: 2026-02-07
 - [x] Email tool (Resend MCP) — done: 2026-02-07
 - [x] File upload tool (upload + summarize) — done: 2026-02-07
-- [ ] Chart/diagram image generation (charts, graphs, flowcharts only)
+- [x] In-house chart/diagram MCP tools (bar/line/pie/scatter + flow diagram) — done: 2026-02-11
+- [ ] Chart/diagram improvements (in-house MCP, no external API dependency yet):
+- [ ] More chart types (stacked/grouped bar, area, histogram, heatmap, radar)
+- [ ] Better diagram types (sequence, swimlane, architecture blocks, decision trees)
+- [ ] Layout quality upgrades (auto-wrap, collision avoidance, adaptive spacing)
+- [ ] Theming presets (exec summary, technical, print-friendly)
+- [ ] Accessibility pass (contrast-safe palettes, readable labels, font scaling)
+- [ ] Export variants (PNG + SVG + source spec JSON)
+- [ ] Validation + recovery (strict schema checks and auto-repair on invalid specs)
+- [ ] PDF embedding quality pass (consistent margins/captions across portrait/landscape)
 - [ ] File intelligence: citation‑aware summaries (quotes + page refs)
 - [ ] File intelligence: multi‑file compare (diff/merge/consensus)
 - [ ] Task plans + progress tracking

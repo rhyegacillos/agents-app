@@ -231,6 +231,7 @@ resource "aws_lambda_function" "api" {
       UPSTASH_REDIS_REST_TOKEN   = var.upstash_redis_rest_token
       ASYNC_CHAT_ENABLED         = var.async_chat_enabled ? "true" : "false"
       ASYNC_JOB_TTL_SECONDS      = tostring(var.async_job_ttl_seconds)
+      DAILY_TOKEN_LIMIT          = tostring(var.daily_token_limit)
       ASYNC_WORKER_FUNCTION_NAME = aws_lambda_function.worker.function_name
       MEMORY_EXTRACT_SYNC        = "false"
       UPLOADS_DIR                = var.uploads_dir
@@ -276,6 +277,7 @@ resource "aws_lambda_function" "worker" {
       UPSTASH_REDIS_REST_TOKEN    = var.upstash_redis_rest_token
       ASYNC_CHAT_ENABLED          = "false"
       ASYNC_JOB_TTL_SECONDS       = tostring(var.async_job_ttl_seconds)
+      DAILY_TOKEN_LIMIT           = tostring(var.daily_token_limit)
       WORKER_MAX_SECONDS          = tostring(var.worker_max_seconds)
       LLM_TIMEOUT_SECONDS         = tostring(var.worker_llm_timeout_seconds)
       MCP_STARTUP_TIMEOUT_SECONDS = tostring(var.worker_mcp_startup_timeout_seconds)
