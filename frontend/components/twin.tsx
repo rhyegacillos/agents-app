@@ -1219,7 +1219,7 @@ export default function Twin() {
                                     <History className="h-3.5 w-3.5" />
                                     Chat History
                                 </span>
-                                <span className="text-[10px] text-white/50">5 recent</span>
+                                {/* <span className="text-[10px] text-white/50">0 recent</span> */}
                             </button>
                             <button
                                 onClick={() => setHistoryTab('memory')}
