@@ -1031,61 +1031,69 @@ export default function Twin() {
                             <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
                                 <Terminal className="h-3 w-3 text-sky-200" />
                                 Deployment Mentor
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Hands-on guidance for deploying LLM systems, infra, and tooling.
                                 </span>
                             </span>
                             <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
                                 <LifeBuoy className="h-3 w-3 text-amber-200" />
                                 Live Troubleshooting
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Real-time troubleshooting, root-cause analysis, and incident response.
                                 </span>
                             </span>
                             <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
                                 <Search className="h-3 w-3 text-cyan-200" />
                                 Researcher
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Investigates sources, synthesizes evidence, and validates claims.
                                 </span>
                             </span>
                         </div>
-                        <div className="mt-2 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap">
+                        <div className="mt-2 flex min-w-0 items-center gap-1 overflow-visible whitespace-nowrap">
                             <span className="shrink-0 text-[9px] uppercase tracking-[0.18em] text-white/60">
                                 Tools
                             </span>
                             <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Brain className="h-3 w-3 text-emerald-200" />
                                 Memory
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Remembers approved preferences and project context to personalize future replies.
                                 </span>
                             </span>
                             <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <FileDown className="h-3 w-3 text-indigo-200" />
                                 PDF
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Export chat outputs or summaries as downloadable PDFs.
                                 </span>
                             </span>
                             <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Paperclip className="h-3 w-3 text-slate-200" />
                                 Upload
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Upload PDFs, DOCX, or text files for summarization and analysis.
                                 </span>
                             </span>
                             <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Mail className="h-3 w-3 text-rose-200" />
                                 Email
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Send PDFs or summaries to your email on request.
                                 </span>
                             </span>
                             <span className="group relative inline-flex shrink-0 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] leading-none text-white/85">
                                 <Search className="h-3 w-3 text-cyan-200" />
                                 Search
-                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-20 w-[260px] whitespace-normal -translate-x-1/2 rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                    <span className="absolute left-1/2 top-0 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                     Uses Brave to fetch current information with citations when needed.
                                 </span>
                             </span>
@@ -1093,58 +1101,83 @@ export default function Twin() {
                     </div>
                 </div>
                 <div className="mt-1 flex flex-col items-end gap-1">
-                    <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-2 py-1 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)]">
+                    <div className="flex items-center gap-2 overflow-visible rounded-2xl border border-white/10 bg-white/5 px-2 py-1 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)]">
                         {memoryCandidates.length > 0 && (
+                            <div className="group relative">
+                                <button
+                                    onClick={() => {
+                                        setIsHistoryOpen(true);
+                                        setHistoryTab('memory');
+                                        if (userId) {
+                                            loadHistory(userId, false);
+                                            loadMemory(userId);
+                                        }
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 p-2 text-[11px] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
+                                    aria-label="Review memory"
+                                >
+                                    <Brain className="h-4 w-4 drop-shadow-sm" />
+                                    {memoryCandidates.length}
+                                </button>
+                                <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[180px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                                    <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
+                                    Review memory
+                                </span>
+                            </div>
+                        )}
+                        <div className="group relative">
+                            <button
+                                onClick={handleNewChat}
+                                className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                                aria-label="New chat"
+                            >
+                                <MessageSquarePlus className="w-5 h-5 drop-shadow-sm" />
+                            </button>
+                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[160px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                                <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
+                                New chat
+                            </span>
+                        </div>
+                        <div className="group relative">
+                            <button
+                                onClick={() => {
+                                    setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
+                                }}
+                                className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                                aria-label={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
+                            >
+                                <Maximize2 className="w-5 h-5 drop-shadow-sm" />
+                            </button>
+                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[160px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                                <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
+                                {expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
+                            </span>
+                        </div>
+                        <div className="group relative">
                             <button
                                 onClick={() => {
                                     setIsHistoryOpen(true);
-                                    setHistoryTab('memory');
+                                    setHistoryTab('history');
                                     if (userId) {
                                         loadHistory(userId, false);
-                                        loadMemory(userId);
                                     }
                                 }}
-                                className="inline-flex items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 p-2 text-[11px] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
-                                title="Review memory"
+                                className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                                aria-label="History"
                             >
-                                <Brain className="h-4 w-4 drop-shadow-sm" />
-                                {memoryCandidates.length}
+                                <History className="w-5 h-5 drop-shadow-sm" />
                             </button>
-                        )}
-                        <button
-                            onClick={handleNewChat}
-                            className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
-                            title="New Chat"
-                        >
-                            <MessageSquarePlus className="w-5 h-5 drop-shadow-sm" />
-                        </button>
-                        <button
-                            onClick={() => {
-                                setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
-                            }}
-                            className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
-                            title={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
-                        >
-                            <Maximize2 className="w-5 h-5 drop-shadow-sm" />
-                        </button>
-                        <button
-                            onClick={() => {
-                                setIsHistoryOpen(true);
-                                setHistoryTab('history');
-                                if (userId) {
-                                    loadHistory(userId, false);
-                                }
-                            }}
-                            className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
-                            title="History"
-                        >
-                            <History className="w-5 h-5 drop-shadow-sm" />
-                        </button>
+                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[160px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                                <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
+                                Chat history
+                            </span>
+                        </div>
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 pr-1">
                         <span className="group relative inline-flex items-center text-[9px] uppercase tracking-[0.18em] text-white/60">
                             Daily Quota
-                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-20 w-[220px] whitespace-normal rounded-lg border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[10px] normal-case tracking-normal text-white/90 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-[220px] whitespace-normal rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] normal-case tracking-normal leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
                                 {isLoadingQuota
                                     ? 'Refreshing quota...'
                                     : quota?.reset_at
