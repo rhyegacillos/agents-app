@@ -25,5 +25,7 @@ root_domain                        = ""
 async_chat_enabled                 = true
 async_job_ttl_seconds              = 3600
 daily_token_limit                  = 1000000
-
+sentry_dsn                         = "https://ee8a81b082a6c0a7d11084072379db13@o4510895849472000.ingest.us.sentry.io/4510896623845376"
+sentry_traces_sample_rate          = 0.1
+sentry_profiles_sample_rate        = 0.0
 

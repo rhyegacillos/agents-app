@@ -179,6 +179,25 @@ variable "daily_token_limit" {
   default     = 100000
 }
 
+variable "sentry_dsn" {
+  description = "Sentry DSN for backend error/performance monitoring"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "sentry_traces_sample_rate" {
+  description = "Sentry traces sample rate (0.0-1.0)"
+  type        = number
+  default     = 0.1
+}
+
+variable "sentry_profiles_sample_rate" {
+  description = "Sentry profiles sample rate (0.0-1.0)"
+  type        = number
+  default     = 0.0
+}
+
 variable "upstash_redis_rest_url" {
   description = "Upstash Redis REST URL"
   type        = string

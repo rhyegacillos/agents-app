@@ -404,6 +404,9 @@ This is not multi-tenant secure without an auth layer.
 - Lambda logs are in CloudWatch.
 - `/health` endpoint provides a basic status check.
 - Request/job logs include `trace_id` and `job_id`.
+- Sentry SDK is initialized at backend startup and captures API + worker exceptions.
+- Sentry tracing is enabled via sample-rate env vars for end-to-end transaction visibility.
+- OpenTelemetry-aligned span markers are reflected in phase logs (`classify`, `execute`, `render`, `validate`, `fix_loop`) and trace tags.
 - High-risk pipeline logs include phase markers:
   - `classify`
   - `execute`
@@ -445,6 +448,7 @@ Browser -> Next.js dev server -> FastAPI -> Grok/Bedrock -> local memory
 
 Backend:
 - `backend/server.py` – FastAPI app
+- `backend/sentry_observability.py` – Sentry init, tags, and exception capture helpers
 - `backend/context.py` – system prompt builder
 - `backend/resources.py` – loads data sources
 - `backend/services/risk_router.py` – low/high risk classification

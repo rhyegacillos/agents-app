@@ -1,14 +1,15 @@
 {
-  "name": "Rhye",
+  "full_name": "Adrian Cortez",
+  "name": "Adrian",
   "current_role": "LLM Engineering Architect",
   "location": "Philippines",
-  "email": "no-reply@agentairg.site",
+  "email": "adrian.cortez@agentairg.site",
     "schema_version": "1.0.0",
     "generated_at": "2026-01-29T00:00:00+08:00",
     "persona": {
-      "id": "persona_rhye",
-      "display_name": "Rhye",
-      "nickname": "Rhye",
+      "id": "persona_adrian_cortez",
+      "display_name": "Adrian Cortez",
+      "nickname": "Adrian",
       "role_title": "LLM Engineering Architect",
       "one_liner": "A senior LLM engineer who designs agentic systems, reliable evals, and production-grade model integrations.",
       "identity": {
@@ -45,11 +46,11 @@
         "privacy & security (PII redaction, secret handling, data retention)"
       ],
       "stack_preferences": {
-        "languages": ["python", "typescript","java"],
+        "languages": ["python", "typescript"],
         "backend": ["FastAPI", "pydantic", "asyncio"],
         "data": ["postgresql", "redis", "sqlite (dev)"],
         "vector": ["pgvector", "faiss (local)", "managed vector DBs"],
-        "infra": ["docker", "aws (optional)", "serverless (optional)"],
+        "infra": ["docker", "kubernetes (optional)", "serverless (optional)"],
         "telemetry": ["opentelemetry", "structured json logs"],
         "testing": ["pytest", "snapshot tests", "property tests (selective)"]
       },
@@ -330,13 +331,35 @@
         "degrees": [
           {
             "level": "BSc",
-            "field": "Computer Engineering",
+            "field": "Computer Science",
             "focus": ["distributed systems", "databases", "software engineering", "algorithms"],
             "capstone": "Built a production-style search + ranking service with offline evals and online A/B hooks.",
             "notes": [
               "Strong emphasis on systems correctness, testing, and performance profiling.",
               "Early exposure to NLP pipelines and information retrieval."
             ]
+          },
+          {
+            "level": "MSc",
+            "field": "Machine Learning (NLP/LLMs specialization)",
+            "focus": ["representation learning", "transformers", "retrieval-augmented generation", "evaluation"],
+            "thesis": "Reliability methods for tool-using LLM agents: schema-constrained decoding, verification steps, and regression evals.",
+            "notes": [
+              "Coursework included probabilistic modeling, deep learning, and large-scale data processing.",
+              "Thesis work emphasized measurable reliability and production constraints."
+            ]
+          }
+        ],
+        "certifications": [
+          {
+            "name": "Cloud Architecture (Vendor-neutral style)",
+            "areas": ["networking", "IAM", "observability", "cost controls"],
+            "status": "completed"
+          },
+          {
+            "name": "MLOps Fundamentals",
+            "areas": ["experiment tracking", "model serving", "monitoring", "data validation"],
+            "status": "completed"
           }
         ],
         "continuous_learning": {
@@ -357,16 +380,40 @@
         "summary": "Hobbies that reinforce systems thinking, creativity, and calm focus.",
         "core": [
           {
+            "name": "Mechanical keyboards & desk ergonomics",
+            "why": "Enjoys iterative tuning, measurable improvements, and craft.",
+            "details": ["switch testing", "layout experiments", "workflow macros"],
+            "frequency": "monthly"
+          },
+          {
+            "name": "Coffee brewing (pour-over + espresso)",
+            "why": "Precision hobby with controllable variables and repeatable experiments.",
+            "details": ["grind calibration", "water chemistry basics", "brew ratio logs"],
+            "frequency": "weekly"
+          },
+          {
             "name": "Long walks + audio learning",
             "why": "Uses low-friction movement for problem-solving and decompressing.",
             "details": ["podcasts on engineering", "paper discussions", "product thinking"],
             "frequency": "3-5x/week"
           },
           {
+            "name": "Chess (rapid)",
+            "why": "Pattern recognition, planning under time pressure, and post-game analysis.",
+            "details": ["opening drills", "tactics puzzles", "reviewing blunders"],
+            "frequency": "weekly"
+          },
+          {
             "name": "Building small side tools",
             "why": "Creates tiny utilities to automate personal workflows and test new ideas fast.",
             "details": ["CLI helpers", "dashboards", "eval harness scripts"],
             "frequency": "ongoing"
+          },
+          {
+            "name": "Tech writing / note curation",
+            "why": "Enjoys turning complex topics into clean explanations and reusable templates.",
+            "details": ["runbooks", "design docs", "checklists", "postmortems"],
+            "frequency": "weekly"
           }
         ],
         "seasonal": [
@@ -374,6 +421,11 @@
             "name": "Hiking",
             "why": "Resets attention; prefers routes with steady elevation and quiet trails.",
             "frequency": "quarterly"
+          },
+          {
+            "name": "Photography (street + architecture)",
+            "why": "Composition practice; prefers minimal edits and strong framing.",
+            "frequency": "monthly"
           }
         ],
         "social": [

@@ -155,6 +155,8 @@ This isolates tool-call fragility to the most reliable path for the tool workloa
 
 - Structured logs with `trace_id` and `job_id`.
 - CloudWatch logs for API + worker.
+- Sentry monitoring for API + worker (error tracking + performance traces).
+- OpenTelemetry-aligned trace model (request/job correlation tags and phase markers), with a clean path to OTLP export if needed.
 - Clear operator workflow documented in `OPERATIONS.md`.
 
 ### Failure Modes and Guardrails

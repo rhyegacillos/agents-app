@@ -215,28 +215,34 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      CORS_ORIGINS               = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
-      S3_BUCKET                  = aws_s3_bucket.memory.id
-      USE_S3                     = "true"
-      DEFAULT_AWS_REGION         = var.default_aws_region
-      ENABLE_MCP_SEARCH          = var.enable_mcp_search ? "true" : "false"
-      BEDROCK_MODEL_ID           = var.bedrock_model_id
-      AI_PROVIDER                = var.ai_provider
-      GROK_MODEL_ID              = var.grok_model_id
-      GROK_API_URL               = var.grok_api_url
-      GROK_API_KEY               = var.grok_api_key
-      BRAVE_API_KEY              = var.brave_api_key
-      RESEND_API_KEY             = var.resend_api_key
-      UPSTASH_REDIS_REST_URL     = var.upstash_redis_rest_url
-      UPSTASH_REDIS_REST_TOKEN   = var.upstash_redis_rest_token
-      ASYNC_CHAT_ENABLED         = var.async_chat_enabled ? "true" : "false"
-      ASYNC_JOB_TTL_SECONDS      = tostring(var.async_job_ttl_seconds)
-      DAILY_TOKEN_LIMIT          = tostring(var.daily_token_limit)
-      ASYNC_WORKER_FUNCTION_NAME = aws_lambda_function.worker.function_name
-      MEMORY_EXTRACT_SYNC        = "false"
-      UPLOADS_DIR                = var.uploads_dir
-      MAX_UPLOAD_MB              = tostring(var.max_upload_mb)
-      UPLOAD_ALLOWED_EXTS        = var.upload_allowed_exts
+      CORS_ORIGINS                = var.use_custom_domain ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+      S3_BUCKET                   = aws_s3_bucket.memory.id
+      USE_S3                      = "true"
+      DEFAULT_AWS_REGION          = var.default_aws_region
+      ENABLE_MCP_SEARCH           = var.enable_mcp_search ? "true" : "false"
+      BEDROCK_MODEL_ID            = var.bedrock_model_id
+      AI_PROVIDER                 = var.ai_provider
+      GROK_MODEL_ID               = var.grok_model_id
+      GROK_API_URL                = var.grok_api_url
+      GROK_API_KEY                = var.grok_api_key
+      BRAVE_API_KEY               = var.brave_api_key
+      RESEND_API_KEY              = var.resend_api_key
+      UPSTASH_REDIS_REST_URL      = var.upstash_redis_rest_url
+      UPSTASH_REDIS_REST_TOKEN    = var.upstash_redis_rest_token
+      ASYNC_CHAT_ENABLED          = var.async_chat_enabled ? "true" : "false"
+      ASYNC_JOB_TTL_SECONDS       = tostring(var.async_job_ttl_seconds)
+      DAILY_TOKEN_LIMIT           = tostring(var.daily_token_limit)
+      SENTRY_DSN                  = var.sentry_dsn
+      SENTRY_ENVIRONMENT          = var.environment
+      SENTRY_SERVICE              = "${local.name_prefix}-api"
+      SENTRY_RELEASE              = var.lambda_image_tag
+      SENTRY_TRACES_SAMPLE_RATE   = tostring(var.sentry_traces_sample_rate)
+      SENTRY_PROFILES_SAMPLE_RATE = tostring(var.sentry_profiles_sample_rate)
+      ASYNC_WORKER_FUNCTION_NAME  = aws_lambda_function.worker.function_name
+      MEMORY_EXTRACT_SYNC         = "false"
+      UPLOADS_DIR                 = var.uploads_dir
+      MAX_UPLOAD_MB               = tostring(var.max_upload_mb)
+      UPLOAD_ALLOWED_EXTS         = var.upload_allowed_exts
     }
   }
 
@@ -278,6 +284,12 @@ resource "aws_lambda_function" "worker" {
       ASYNC_CHAT_ENABLED          = "false"
       ASYNC_JOB_TTL_SECONDS       = tostring(var.async_job_ttl_seconds)
       DAILY_TOKEN_LIMIT           = tostring(var.daily_token_limit)
+      SENTRY_DSN                  = var.sentry_dsn
+      SENTRY_ENVIRONMENT          = var.environment
+      SENTRY_SERVICE              = "${local.name_prefix}-worker"
+      SENTRY_RELEASE              = var.lambda_image_tag
+      SENTRY_TRACES_SAMPLE_RATE   = tostring(var.sentry_traces_sample_rate)
+      SENTRY_PROFILES_SAMPLE_RATE = tostring(var.sentry_profiles_sample_rate)
       WORKER_MAX_SECONDS          = tostring(var.worker_max_seconds)
       LLM_TIMEOUT_SECONDS         = tostring(var.worker_llm_timeout_seconds)
       MCP_STARTUP_TIMEOUT_SECONDS = tostring(var.worker_mcp_startup_timeout_seconds)

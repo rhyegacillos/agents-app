@@ -92,6 +92,7 @@ from services.storage import (
     validate_user_id,
 )
 from observability import TRACE_ID, new_trace_id, reset_job_id, reset_trace_id, set_job_id, set_trace_id
+from sentry_observability import capture_sentry_exception, set_sentry_tags, set_sentry_user
 
 # Disable openai-agents tracing to avoid noisy log errors
 set_tracing_disabled(disabled=True)
@@ -120,6 +121,7 @@ async def trace_id_middleware(request, call_next):
     incoming = (request.headers.get("x-request-id") or "").strip()
     trace_id = incoming or new_trace_id()
     _, token = set_trace_id(trace_id)
+    set_sentry_tags({"trace_id": trace_id, "http_path": request.url.path})
     try:
         response = await call_next(request)
         response.headers["x-request-id"] = trace_id
@@ -896,6 +898,14 @@ async def _run_chat_flow(
     message: str,
     file_id: Optional[str],
 ) -> str:
+    set_sentry_user(user_id)
+    set_sentry_tags(
+        {
+            "session_id": session_id,
+            "has_file": bool(file_id),
+            "job_id": _CURRENT_JOB_ID.get() or "-",
+        }
+    )
     conversation = load_conversation(user_id, session_id)
     agent_message = build_agent_message(message, file_id)
     job_id = _CURRENT_JOB_ID.get()
@@ -1006,6 +1016,7 @@ async def _run_chat_flow(
 async def chat(request: ChatRequest):
     try:
         user_id = validate_user_id(request.user_id)
+        set_sentry_user(user_id)
         session_id = request.session_id or str(uuid.uuid4())
 
         if ASYNC_CHAT_ENABLED:
@@ -1071,6 +1082,7 @@ async def chat(request: ChatRequest):
     except HTTPException:
         raise
     except Exception as e:
+        capture_sentry_exception(e)
         print(f"Error in chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 

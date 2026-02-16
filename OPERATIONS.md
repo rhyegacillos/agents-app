@@ -53,3 +53,21 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
 - Quota logs:
   - `[quota] ...` summary per turn (backend, increments, before/after, remaining, exceeded)
   - `[quota_s3_cas] ...` conflict/success/error telemetry for S3 optimistic-concurrency writes
+
+## 6) Sentry Monitoring (Backend)
+
+Sentry is supported for API + worker monitoring.
+
+- Enable by setting `SENTRY_DSN` in Lambda environment variables.
+- Optional tuning vars:
+  - `SENTRY_ENVIRONMENT` (defaults to `ENVIRONMENT` or `dev`)
+  - `SENTRY_SERVICE` (recommended per function: `...-api`, `...-worker`)
+  - `SENTRY_RELEASE` (for deploy correlation; image tag is a good value)
+  - `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`)
+  - `SENTRY_PROFILES_SAMPLE_RATE` (default `0.0`)
+
+Behavior:
+
+- Unhandled FastAPI/Lambda errors are captured through Sentry integrations.
+- Worker handled failures are captured explicitly before failure responses are persisted.
+- Request/job tags include `trace_id`, `job_id`, `session_id`, and basic runtime context.

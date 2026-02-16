@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from resources import facts
 from observability import install_logging
+from sentry_observability import init_sentry
 
 
 load_dotenv()
@@ -19,6 +20,7 @@ LOG_FORMAT = os.getenv(
 logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logging.getLogger().setLevel(LOG_LEVEL)
 install_logging()
+init_sentry()
 
 # Silence noisy third-party INFO logs (for example fontTools glyph subsetting chatter).
 for logger_name in ("fontTools", "fontTools.subset", "weasyprint"):

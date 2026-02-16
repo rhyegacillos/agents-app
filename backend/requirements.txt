@@ -16,3 +16,4 @@ requests
 graphviz
 pandas
 vl-convert-python
+sentry-sdk[fastapi]

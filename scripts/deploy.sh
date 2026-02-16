@@ -67,7 +67,20 @@ BUILD_ARGS=()
 if [ "${NO_CACHE:-}" = "1" ]; then
   BUILD_ARGS+=(--no-cache)
 fi
-DOCKER_BUILDKIT=0 docker build --platform linux/amd64 "${BUILD_ARGS[@]}" -t "${IMAGE_URI}" "$ROOT_DIR/backend"
+
+# Lambda container compatibility:
+# BuildKit/buildx can emit OCI attestations (provenance/SBOM) that Lambda may reject.
+# Force attestations off; if unsupported by local Docker, fallback to legacy builder.
+if ! DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}" docker build \
+  --platform linux/amd64 \
+  --provenance=false \
+  --sbom=false \
+  "${BUILD_ARGS[@]}" \
+  -t "${IMAGE_URI}" \
+  "$ROOT_DIR/backend"; then
+  echo "⚠️ BuildKit attestation flags unsupported or build failed. Retrying with legacy builder for Lambda compatibility..."
+  DOCKER_BUILDKIT=0 docker build --platform linux/amd64 "${BUILD_ARGS[@]}" -t "${IMAGE_URI}" "$ROOT_DIR/backend"
+fi
 docker push "${IMAGE_URI}"
 
 # Resolve the image digest so Lambda updates even if tag is unchanged

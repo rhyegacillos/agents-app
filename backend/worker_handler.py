@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from config import ASYNC_JOB_TTL_SECONDS
 from observability import reset_trace_id, set_trace_id
+from sentry_observability import capture_sentry_exception, set_sentry_tags, set_sentry_user
 from services.storage import _job_key, _upstash_get, _upstash_set
 from server import _reset_current_job_id, _run_chat_flow, _set_current_job_id
 
@@ -24,6 +25,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {"status": "error", "error": "missing job fields"}
 
     _, trace_token = set_trace_id(trace_id)
+    set_sentry_user(user_id)
+    set_sentry_tags({"trace_id": trace_id, "job_id": job_id, "session_id": session_id, "runtime": "worker"})
     logging.info("[worker] start job_id=%s user_id=%s session_id=%s", job_id, user_id, session_id)
     job = _upstash_get(_job_key(job_id)) or {
         "job_id": job_id,
@@ -59,6 +62,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logging.info("[worker] completed job_id=%s", job_id)
         return {"status": "ok", "job_id": job_id}
     except asyncio.TimeoutError:
+        capture_sentry_exception(asyncio.TimeoutError(f"Worker timed out after {worker_max_seconds}s"))
         job["status"] = "failed"
         job["error"] = f"Worker timed out after {worker_max_seconds}s"
         job["updated_at"] = datetime.now().isoformat()
@@ -73,6 +77,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             _upstash_set(_job_key(job_id), job, ASYNC_JOB_TTL_SECONDS)
             logging.info("[worker] canceled job_id=%s", job_id)
             return {"status": "canceled", "job_id": job_id}
+        capture_sentry_exception(e)
         job["status"] = "failed"
         job["error"] = str(e.detail)
         job["updated_at"] = datetime.now().isoformat()
@@ -80,6 +85,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logging.exception("[worker] http exception job_id=%s", job_id)
         return {"status": "error", "job_id": job_id, "error": str(e.detail)}
     except Exception as e:
+        capture_sentry_exception(e)
         job["status"] = "failed"
         job["error"] = str(e)
         job["updated_at"] = datetime.now().isoformat()

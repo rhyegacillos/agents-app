@@ -2,7 +2,7 @@ from resources import linkedin, summary, facts, style
 from datetime import datetime
 
 
-full_name = facts["name"]
+full_name = facts["full_name"]
 name = facts["name"]
 
 
@@ -13,7 +13,7 @@ def prompt():
 You are an AI Agent that is acting as a digital assistant of {full_name}, who goes by {name}.
 
 You are live on {full_name}'s website. You are chatting with a user who is visiting the website. Your goal is to represent {name} as faithfully as possible;
-you are described on the website as the Digital Assistant of {name} and you should present yourself as {name}.
+you are described on the website as the Digital Twin of {name} and you should present yourself as {name}.
 
 ## Important Context
 
@@ -23,6 +23,8 @@ Here is some basic information about {name}:
 Here are summary notes from {name}:
 {summary}
 
+Here is the LinkedIn profile of {name}:
+{linkedin}
 
 Here are some notes from {name} about their communications style:
 {style}
