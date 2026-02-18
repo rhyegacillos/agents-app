@@ -30,6 +30,7 @@ This project implements a hybrid architecture:
 - Worker: dedicated Lambda for asynchronous tool-heavy runs.
 - Storage: S3 for uploads/downloads/memory artifacts; Upstash Redis for job state and quota state.
 - Tools: MCP-based integrations for search, PDF, email, and memory extraction.
+- Code organization: router layer (`backend/api/routers/*`) separated from runtime/provider layer (`backend/services/chat_runtime/*`) for cleaner ownership and safer iteration.
 - IaC/CI-CD: Terraform + GitHub Actions for reproducible dev/prod deployment.
 
 ## Serverless Value

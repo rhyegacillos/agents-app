@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
 import mimetypes
 import os
 from typing import Optional, List, Dict, Any
@@ -12,22 +11,16 @@ from contextvars import ContextVar
 import re
 import tempfile
 import asyncio
-from openai import AsyncOpenAI
-from contextlib import AsyncExitStack
 import logging
 import boto3
-from botocore.exceptions import ClientError
 
 from context import prompt
+from api.routers import chat_router, core_router, files_router, memory_router
+from api.schemas import ChatRequest, ChatResponse, Message, UploadPresignRequest
 from tool_instructions import build_tool_instructions
 from mcp_tools.mcp_servers import build_mcp_server_specs
-from validator_agent import (
-    validate_memory_compliance_bedrock,
-    validate_memory_compliance_grok,
-)
 
-from agents import Agent, Runner, OpenAIChatCompletionsModel, set_tracing_disabled
-from agents.mcp import MCPServerStdio
+from agents import set_tracing_disabled
 
 from config import (
     AI_PROVIDER,
@@ -54,19 +47,8 @@ from config import (
     MEMORY_TTL_MAP,
 )
 from services.memory import extract_and_store_memory
-from services.bedrock_tools import run_bedrock_with_tools
-from services.canonical_renderer import render_high_risk_output
-from services.output_truth_gate import (
-    apply_truth_gate,
-    extract_tool_events,
-    find_pdf_input_invalid_error,
-    normalize_truth_context,
-    persist_truth_context,
-    persist_truth_gate_verdict,
-)
 from services.prose_guard import apply_low_risk_prose_guard
 from services.risk_router import classify_risk
-from services.truth_fix_loop import build_auto_fix_instructions, should_attempt_auto_fix
 from services.quota import (
     consume_daily_quota,
     count_quota_actions_from_truth_context,
@@ -90,6 +72,13 @@ from services.storage import (
     save_memory_candidates,
     validate_upload_file,
     validate_user_id,
+)
+from services.chat_runtime import (
+    finalize_high_risk_response,
+    run_bedrock_chat,
+    run_grok_once,
+    run_grok_with_mcp_once,
+    usage_total_tokens,
 )
 from observability import (
     TRACE_ID,
@@ -127,6 +116,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+app.include_router(core_router)
+app.include_router(chat_router)
+app.include_router(memory_router)
+app.include_router(files_router)
 
 # Job status context for async worker updates
 _CURRENT_JOB_ID: ContextVar[Optional[str]] = ContextVar("current_job_id", default=None)
@@ -143,40 +136,6 @@ async def trace_id_middleware(request, call_next):
         return response
     finally:
         reset_trace_id(token)
-
-
-# Request/Response models
-class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None
-    file_id: Optional[str] = None
-
-
-class ChatResponse(BaseModel):
-    response: str
-    session_id: str
-
-
-class Message(BaseModel):
-    role: str
-    content: str
-    timestamp: str
-
-
-class UploadPresignRequest(BaseModel):
-    filename: str
-    size_bytes: int
-    content_type: Optional[str] = None
-
-
-def _parse_timeout(value: str) -> Optional[float]:
-    if not value:
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
 
 
 def _set_current_job_id(job_id: Optional[str]):
@@ -236,30 +195,6 @@ def _load_truth_context_for_trace(trace_id: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
-def _result_usage_total_tokens(result: Any) -> int:
-    total = 0
-    for response in (getattr(result, "raw_responses", None) or []):
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            continue
-        value: Any = None
-        if isinstance(usage, dict):
-            value = usage.get("total_tokens")
-            if value is None:
-                value = int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
-        else:
-            value = getattr(usage, "total_tokens", None)
-            if value is None:
-                value = int(getattr(usage, "input_tokens", 0) or 0) + int(
-                    getattr(usage, "output_tokens", 0) or 0
-                )
-        try:
-            total += max(0, int(value or 0))
-        except (TypeError, ValueError):
-            continue
-    return total
-
-
 async def _persist_chat_turn(
     *,
     user_id: str,
@@ -289,6 +224,85 @@ async def _persist_chat_turn(
         asyncio.create_task(extract_and_store_memory(user_id, session_id, conversation))
 
 
+def _should_sync_memory_extraction(job_id: Optional[str]) -> bool:
+    # In Lambda worker runs we must avoid fire-and-forget tasks; the event loop is
+    # closed right after asyncio.run returns, which can drop pending background tasks.
+    return MEMORY_EXTRACT_SYNC or bool(job_id)
+
+
+async def _generate_response_for_risk(
+    *,
+    user_id: str,
+    conversation: List[Dict],
+    agent_message: str,
+    session_id: str,
+    tier: str,
+    require_sources: bool,
+) -> tuple[str, int]:
+    if tier == "high":
+        return await call_grok_with_mcp(
+            user_id,
+            conversation,
+            agent_message,
+            session_id=session_id,
+            require_sources=require_sources,
+        )
+    if AI_PROVIDER == "grok":
+        return await call_grok_prose_guarded(user_id, conversation, agent_message)
+    if AI_PROVIDER == "bedrock":
+        return await call_bedrock(user_id, conversation, agent_message)
+    raise HTTPException(
+        status_code=500,
+        detail=f"Unsupported AI_PROVIDER '{AI_PROVIDER}'. Use 'bedrock' or 'grok'.",
+    )
+
+
+def _build_quota_increments(user_id: str, tier: str, llm_tokens: int) -> Dict[str, int]:
+    increments: Dict[str, int] = {
+        "tokens": max(0, int(llm_tokens or 0)),
+        "pdf": 0,
+        "email": 0,
+    }
+    if tier == "high":
+        truth_context = _load_truth_context_for_trace(TRACE_ID.get())
+        action_counts = count_quota_actions_from_truth_context(truth_context)
+        increments["pdf"] = int(action_counts.get("pdf", 0))
+        increments["email"] = int(action_counts.get("email", 0))
+
+    log_event(
+        "quota.increments",
+        user_id=user_id,
+        tokens=increments["tokens"],
+        pdf=increments["pdf"],
+        email=increments["email"],
+    )
+    set_current_span_attributes(
+        {
+            "quota.tokens.increment": increments["tokens"],
+            "quota.pdf.increment": increments["pdf"],
+            "quota.email.increment": increments["email"],
+        }
+    )
+    return increments
+
+
+def _apply_quota_exceeded_message(
+    assistant_response: str,
+    *,
+    quota_result: Dict[str, Any],
+    quota_snapshot: Dict[str, Any],
+) -> str:
+    exceeded = set(quota_result.get("exceeded") or [])
+    snapshot = quota_result.get("snapshot") or quota_snapshot
+    if "tokens" in exceeded:
+        return quota_exceeded_message("tokens", snapshot)
+    if "pdf" in exceeded:
+        return quota_exceeded_message("pdf", snapshot)
+    if "email" in exceeded:
+        return quota_exceeded_message("email", snapshot)
+    return assistant_response
+
+
 def build_conversation_input(conversation: List[Dict], user_message: str) -> str:
     lines: List[str] = []
     for msg in conversation[-20:]:
@@ -300,47 +314,6 @@ def build_conversation_input(conversation: List[Dict], user_message: str) -> str
         history = "\n".join(lines)
         return f"Conversation so far:\n{history}\n\nUser: {user_message}"
     return user_message
-
-
-def _merge_truth_context(previous: Dict[str, Any], latest: Dict[str, Any]) -> Dict[str, Any]:
-    def _dedupe(rows: List[Dict[str, Any]], key_fn) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
-        seen = set()
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            key = key_fn(row)
-            if not key:
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(row)
-        return out
-
-    merged_artifacts = _dedupe(
-        (previous.get("artifacts", []) or []) + (latest.get("artifacts", []) or []),
-        lambda r: str(r.get("artifact_id") or r.get("download_url") or ""),
-    )
-    merged_outcomes = _dedupe(
-        (previous.get("outcomes", []) or []) + (latest.get("outcomes", []) or []),
-        lambda r: str(r.get("tool") or "")
-        + "|"
-        + str(r.get("status") or "")
-        + "|"
-        + str(r.get("email_id") or "")
-        + "|"
-        + str(r.get("message") or ""),
-    )
-    merged_search = _dedupe(
-        (previous.get("search_results", []) or []) + (latest.get("search_results", []) or []),
-        lambda r: str(r.get("url") or ""),
-    )
-    return {
-        "artifacts": merged_artifacts,
-        "outcomes": merged_outcomes,
-        "search_results": merged_search,
-    }
 
 
 def build_agent_instructions() -> str:
@@ -403,7 +376,6 @@ async def rerun_with_fix_instructions_result(
     user_message: str,
     fix_instructions: str,
 ) -> Any:
-    llm_timeout = _parse_timeout(LLM_TIMEOUT_SECONDS)
     instructions = (
         build_full_instructions(user_id)
         + "\n\nYou must revise your response to comply with Approved Memory."
@@ -423,102 +395,19 @@ async def rerun_with_fix_instructions_result(
         enable_search=ENABLE_MCP_SEARCH,
         job_id=_CURRENT_JOB_ID.get(),
     )
-    if llm_timeout:
-        async with AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL, timeout=llm_timeout) as client:
-            model = OpenAIChatCompletionsModel(model=GROK_MODEL_ID, openai_client=client)
-            async with AsyncExitStack() as stack:
-                mcp_servers = []
-                for spec in mcp_specs:
-                    mcp_timeout = _parse_timeout(MCP_STARTUP_TIMEOUT_SECONDS)
-                    try:
-                        if mcp_timeout:
-                            server = await asyncio.wait_for(
-                                stack.enter_async_context(
-                                    MCPServerStdio(
-                                        name=spec["name"],
-                                        params=spec["params"],
-                                        client_session_timeout_seconds=360000,
-                                    )
-                                ),
-                                timeout=mcp_timeout,
-                            )
-                        else:
-                            server = await stack.enter_async_context(
-                                MCPServerStdio(
-                                    name=spec["name"],
-                                    params=spec["params"],
-                                    client_session_timeout_seconds=360000,
-                                )
-                            )
-                    except asyncio.TimeoutError as e:
-                        msg = f"MCP startup timeout for {spec['name']} after {mcp_timeout}s"
-                        raise HTTPException(status_code=504, detail=msg) from e
-                    except Exception as e:
-                        msg = f"MCP startup failed for {spec['name']}: {e}"
-                        raise HTTPException(status_code=500, detail=msg) from e
-                    mcp_servers.append(server)
-
-                _update_job_status_message("Generating response...", 85)
-                agent = Agent(
-                    name="Digital Assistant",
-                    instructions=instructions,
-                    model=model,
-                    mcp_servers=mcp_servers,
-                )
-                run_timeout = _parse_timeout(RUNNER_TIMEOUT_SECONDS)
-                if run_timeout:
-                    result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
-                else:
-                    result = await Runner.run(agent, user_input)
-                return result
-    else:
-        async with AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL) as client:
-            model = OpenAIChatCompletionsModel(model=GROK_MODEL_ID, openai_client=client)
-            async with AsyncExitStack() as stack:
-                mcp_servers = []
-                for spec in mcp_specs:
-                    mcp_timeout = _parse_timeout(MCP_STARTUP_TIMEOUT_SECONDS)
-                    try:
-                        if mcp_timeout:
-                            server = await asyncio.wait_for(
-                                stack.enter_async_context(
-                                    MCPServerStdio(
-                                        name=spec["name"],
-                                        params=spec["params"],
-                                        client_session_timeout_seconds=360000,
-                                    )
-                                ),
-                                timeout=mcp_timeout,
-                            )
-                        else:
-                            server = await stack.enter_async_context(
-                                MCPServerStdio(
-                                    name=spec["name"],
-                                    params=spec["params"],
-                                    client_session_timeout_seconds=360000,
-                                )
-                            )
-                    except asyncio.TimeoutError as e:
-                        msg = f"MCP startup timeout for {spec['name']} after {mcp_timeout}s"
-                        raise HTTPException(status_code=504, detail=msg) from e
-                    except Exception as e:
-                        msg = f"MCP startup failed for {spec['name']}: {e}"
-                        raise HTTPException(status_code=500, detail=msg) from e
-                    mcp_servers.append(server)
-
-                _update_job_status_message("Generating response...", 85)
-                agent = Agent(
-                    name="Digital Assistant",
-                    instructions=instructions,
-                    model=model,
-                    mcp_servers=mcp_servers,
-                )
-                run_timeout = _parse_timeout(RUNNER_TIMEOUT_SECONDS)
-                if run_timeout:
-                    result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
-                else:
-                    result = await Runner.run(agent, user_input)
-                return result
+    _update_job_status_message("Generating response...", 85)
+    result, _ = await run_grok_with_mcp_once(
+        api_key=GROK_API_KEY,
+        base_url=GROK_API_URL,
+        model_id=GROK_MODEL_ID,
+        llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
+        runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
+        mcp_startup_timeout_seconds=MCP_STARTUP_TIMEOUT_SECONDS,
+        instructions=instructions,
+        user_input=user_input,
+        mcp_specs=mcp_specs,
+    )
+    return result
 
 
 async def call_grok_with_mcp(
@@ -532,9 +421,6 @@ async def call_grok_with_mcp(
     if not GROK_API_KEY:
         raise HTTPException(status_code=500, detail="GROK_API_KEY is not configured")
 
-    llm_timeout = _parse_timeout(LLM_TIMEOUT_SECONDS)
-    total_llm_tokens = 0
-
     agent_instructions = build_full_instructions(user_id)
     user_input = build_conversation_input(conversation, user_message)
 
@@ -542,225 +428,41 @@ async def call_grok_with_mcp(
         enable_search=ENABLE_MCP_SEARCH,
         job_id=_CURRENT_JOB_ID.get(),
     )
+    log_event("execute.run_start", provider="grok", mcp_servers=len(mcp_specs))
+    result, mcp_server_count = await run_grok_with_mcp_once(
+        api_key=GROK_API_KEY,
+        base_url=GROK_API_URL,
+        model_id=GROK_MODEL_ID,
+        llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
+        runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
+        mcp_startup_timeout_seconds=MCP_STARTUP_TIMEOUT_SECONDS,
+        instructions=agent_instructions,
+        user_input=user_input,
+        mcp_specs=mcp_specs,
+    )
+    total_llm_tokens = usage_total_tokens(result)
+    log_event("execute.run_done", provider="grok", mcp_servers=mcp_server_count)
+    output = str(result.final_output or "")
+    _update_job_status_message("Finalizing response...", 95)
 
-    if llm_timeout:
-        client_ctx = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL, timeout=llm_timeout)
-    else:
-        client_ctx = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL)
+    async def _rerun_with_fix(fix_instructions: str) -> Any:
+        return await rerun_with_fix_instructions_result(
+            user_id=user_id,
+            conversation=conversation,
+            user_message=user_message,
+            fix_instructions=fix_instructions,
+        )
 
-    async with client_ctx as client:
-        model = OpenAIChatCompletionsModel(model=GROK_MODEL_ID, openai_client=client)
-        async with AsyncExitStack() as stack:
-            mcp_servers = []
-            for spec in mcp_specs:
-                mcp_timeout = _parse_timeout(MCP_STARTUP_TIMEOUT_SECONDS)
-                try:
-                    if mcp_timeout:
-                        server = await asyncio.wait_for(
-                            stack.enter_async_context(
-                                MCPServerStdio(
-                                    name=spec["name"],
-                                    params=spec["params"],
-                                    client_session_timeout_seconds=360000,
-                                )
-                            ),
-                            timeout=mcp_timeout,
-                        )
-                    else:
-                        server = await stack.enter_async_context(
-                            MCPServerStdio(
-                                name=spec["name"],
-                                params=spec["params"],
-                                client_session_timeout_seconds=360000,
-                            )
-                        )
-                except asyncio.TimeoutError as e:
-                    msg = f"MCP startup timeout for {spec['name']} after {mcp_timeout}s"
-                    raise HTTPException(status_code=504, detail=msg) from e
-                except Exception as e:
-                    msg = f"MCP startup failed for {spec['name']}: {e}"
-                    raise HTTPException(status_code=500, detail=msg) from e
-                mcp_servers.append(server)
-
-            agent = Agent(
-                name="Digital Assistant",
-                instructions=agent_instructions,
-                model=model,
-                mcp_servers=mcp_servers,
-            )
-
-            log_event("execute.run_start", provider="grok", mcp_servers=len(mcp_servers))
-            run_timeout = _parse_timeout(RUNNER_TIMEOUT_SECONDS)
-            if run_timeout:
-                result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
-            else:
-                result = await Runner.run(agent, user_input)
-            total_llm_tokens += _result_usage_total_tokens(result)
-            log_event("execute.run_done", provider="grok")
-            output = str(result.final_output or "")
-            _update_job_status_message("Finalizing response...", 95)
-
-            approved = load_approved_memory(user_id)
-            if approved:
-                log_event("memory_validator.running", approved=len(approved))
-                verdict = await validate_memory_compliance_grok(approved, user_message, output)
-                if not verdict.get("compliant"):
-                    log_event("memory_validator.noncompliant", reason=verdict.get("reason", ""))
-                    result = await rerun_with_fix_instructions_result(
-                        user_id=user_id,
-                        conversation=conversation,
-                        user_message=user_message,
-                        fix_instructions=verdict.get("fix_instructions", ""),
-                    )
-                    total_llm_tokens += _result_usage_total_tokens(result)
-                    output = str(result.final_output or "")
-            else:
-                log_event("memory_validator.skipped", reason="no_approved_memory")
-
-            tool_events = extract_tool_events(result)
-            pdf_input_error = find_pdf_input_invalid_error(tool_events)
-            if pdf_input_error:
-                log_event("pdf_retry.retrying", reason=pdf_input_error)
-                result = await rerun_with_fix_instructions_result(
-                    user_id=user_id,
-                    conversation=conversation,
-                    user_message=user_message,
-                    fix_instructions=(
-                        "Your previous `generate_pdf_from_text` call failed with `PDF_INPUT_INVALID`. "
-                        "Retry exactly once. Use valid markdown or valid JSON blocks. "
-                        "Do not infer, summarize, omit, or add new facts. Keep content semantically identical "
-                        "to what the user requested (same claims, numbers, citations, and ordering). "
-                        "Only repair formatting/escaping/schema issues."
-                    ),
-                )
-                total_llm_tokens += _result_usage_total_tokens(result)
-                output = str(result.final_output or "")
-                tool_events = extract_tool_events(result)
-                retry_pdf_input_error = find_pdf_input_invalid_error(tool_events)
-                if retry_pdf_input_error:
-                    trace_id = TRACE_ID.get()
-                    log_event(
-                        "pdf_retry.exhausted",
-                        level=logging.WARNING,
-                        trace_id=trace_id,
-                        reason=retry_pdf_input_error,
-                    )
-                    return json.dumps(
-                        {
-                            "status": "error",
-                            "code": "PDF_INPUT_INVALID",
-                            "trace_id": trace_id,
-                            "retry_exhausted": True,
-                            "reason": retry_pdf_input_error,
-                        }
-                    ), total_llm_tokens
-
-        trace_id = TRACE_ID.get()
-        current_output = str(output or "")
-        current_tool_events = tool_events
-        current_truth_context = normalize_truth_context(current_tool_events)
-        truth_fix_attempt = 0
-        try:
-            max_truth_fix_attempts = int(os.getenv("TRUTH_FIX_MAX_ATTEMPTS", "2"))
-        except ValueError:
-            max_truth_fix_attempts = 2
-        max_truth_fix_attempts = max(0, min(5, max_truth_fix_attempts))
-
-        while True:
-            log_event(
-                "execute.tool_summary",
-                tool_events=len(current_tool_events),
-                artifacts=len(current_truth_context.get("artifacts", []) or []),
-                outcomes=len(current_truth_context.get("outcomes", []) or []),
-                search_results=len(current_truth_context.get("search_results", []) or []),
-            )
-            if require_sources:
-                debug_samples = [
-                    {
-                        "tool": str(evt.get("tool_name") or "unknown"),
-                        "output_type": type(evt.get("output")).__name__,
-                    }
-                    for evt in current_tool_events[:5]
-                ]
-                log_event(
-                    "truth_gate.search_context",
-                    search_require=True,
-                    tool_events=len(current_tool_events),
-                    search_results=len(current_truth_context.get("search_results", []) or []),
-                    samples=debug_samples,
-                )
-
-            persist_truth_context(trace_id=trace_id, session_id=session_id, context=current_truth_context)
-            rendered_output = render_high_risk_output(
-                user_message=user_message,
-                llm_output=current_output,
-                context=current_truth_context,
-                require_sources=require_sources,
-            )
-            log_event(
-                "render.canonical",
-                mode="v3_canonical",
-                input_chars=len(current_output),
-                output_chars=len(rendered_output),
-            )
-            verdict = apply_truth_gate(
-                rendered_output,
-                current_truth_context,
-                risk_tier="high",
-                require_sources=require_sources,
-            )
-            persist_truth_gate_verdict(trace_id, verdict)
-            if verdict.get("status") == "pass":
-                log_event("validate.pass", trace_id=trace_id, mode="v3_canonical")
-                return str(verdict.get("output", rendered_output) or rendered_output), total_llm_tokens
-
-            issue_code_list = sorted(
-                {
-                    str(i.get("code", "UNKNOWN"))
-                    for i in (verdict.get("issues", []) or [])
-                    if str(i.get("code", "UNKNOWN")).strip()
-                }
-            )
-            issue_codes_csv = ", ".join(issue_code_list) if issue_code_list else "UNKNOWN"
-            log_event(
-                "validate.blocked",
-                level=logging.WARNING,
-                trace_id=trace_id,
-                issues=issue_codes_csv,
-            )
-
-            can_auto_fix = should_attempt_auto_fix(issue_code_list)
-            if truth_fix_attempt >= max_truth_fix_attempts or not can_auto_fix:
-                return (
-                    "I couldn't safely finalize that action output due to verification checks "
-                    f"({issue_codes_csv}). Please ask me to retry the action."
-                ), total_llm_tokens
-
-            truth_fix_attempt += 1
-            fix_instructions = build_auto_fix_instructions(
-                issue_codes=issue_code_list,
-                issue_details=verdict.get("issues", []) or [],
-                truth_context=current_truth_context,
-                attempt=truth_fix_attempt,
-                max_attempts=max_truth_fix_attempts,
-            )
-            log_event(
-                "fix_loop.attempt",
-                attempt=f"{truth_fix_attempt}/{max_truth_fix_attempts}",
-                trace_id=trace_id,
-                issues=issue_codes_csv,
-            )
-            result = await rerun_with_fix_instructions_result(
-                user_id=user_id,
-                conversation=conversation,
-                user_message=user_message,
-                fix_instructions=fix_instructions,
-            )
-            total_llm_tokens += _result_usage_total_tokens(result)
-            current_output = str(result.final_output or "")
-            current_tool_events = extract_tool_events(result)
-            retry_truth_context = normalize_truth_context(current_tool_events)
-            current_truth_context = _merge_truth_context(current_truth_context, retry_truth_context)
+    return await finalize_high_risk_response(
+        user_id=user_id,
+        user_message=user_message,
+        session_id=session_id,
+        require_sources=require_sources,
+        initial_result=result,
+        initial_output=output,
+        total_llm_tokens=total_llm_tokens,
+        rerun_with_fix=_rerun_with_fix,
+    )
 
 
 async def call_grok_prose_guarded(
@@ -778,157 +480,48 @@ async def call_grok_prose_guarded(
     )
     user_input = build_conversation_input(conversation, user_message)
 
-    llm_timeout = _parse_timeout(LLM_TIMEOUT_SECONDS)
-    if llm_timeout:
-        client_ctx = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL, timeout=llm_timeout)
-    else:
-        client_ctx = AsyncOpenAI(api_key=GROK_API_KEY, base_url=GROK_API_URL)
-    async with client_ctx as client:
-        model = OpenAIChatCompletionsModel(model=GROK_MODEL_ID, openai_client=client)
+    _update_job_status_message("Generating response...", 85)
+    result = await run_grok_once(
+        api_key=GROK_API_KEY,
+        base_url=GROK_API_URL,
+        model_id=GROK_MODEL_ID,
+        llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
+        runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
+        instructions=instructions,
+        user_input=user_input,
+    )
+    llm_tokens = usage_total_tokens(result)
 
-        _update_job_status_message("Generating response...", 85)
-        agent = Agent(
-            name="Digital Assistant",
-            instructions=instructions,
-            model=model,
-        )
-        run_timeout = _parse_timeout(RUNNER_TIMEOUT_SECONDS)
-        if run_timeout:
-            result = await asyncio.wait_for(Runner.run(agent, user_input), timeout=run_timeout)
-        else:
-            result = await Runner.run(agent, user_input)
-        llm_tokens = _result_usage_total_tokens(result)
-
-        output = str(result.final_output or "")
-        guarded_output, issues = apply_low_risk_prose_guard(output)
-        if issues:
-            logging.info("[prose_guard] issues=%s", ",".join(issues))
-        _update_job_status_message("Finalizing response...", 95)
-        return guarded_output, llm_tokens
+    output = str(result.final_output or "")
+    guarded_output, issues = apply_low_risk_prose_guard(output)
+    if issues:
+        logging.info("[prose_guard] issues=%s", ",".join(issues))
+    _update_job_status_message("Finalizing response...", 95)
+    return guarded_output, llm_tokens
 
 
 async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str) -> tuple[str, int]:
-    """Call AWS Bedrock with MCP tools and conversation history."""
     history_text = build_conversation_input(conversation, user_message)
     system_text = build_full_instructions(user_id)
     approved = load_approved_memory(user_id)
     logging.info("[memory_validator] approved_count=%d use_s3=%s", len(approved), USE_S3)
-
-    def model_candidates(model_id: str) -> List[str]:
-        model_id = model_id.strip()
-        if not model_id:
-            return []
-
-        candidates = [model_id]
-
-        # Try cross-region inference profile IDs if caller provided a base model ID.
-        if "." not in model_id.split("/")[0]:
-            region = os.getenv("DEFAULT_AWS_REGION", "us-east-1")
-            if region.startswith("us-"):
-                prefixes = ["us", "eu", "apac"]
-            elif region.startswith("eu-"):
-                prefixes = ["eu", "us", "apac"]
-            else:
-                prefixes = ["apac", "us", "eu"]
-            candidates.extend([f"{prefix}.{model_id}" for prefix in prefixes])
-
-        # Preserve order and uniqueness.
-        return list(dict.fromkeys(candidates))
-
-    candidates = model_candidates(BEDROCK_MODEL_ID)
-    if not candidates:
-        raise HTTPException(status_code=500, detail="BEDROCK_MODEL_ID is not configured")
-
-    for model_id in candidates:
-        try:
-            total_llm_tokens = 0
-            _update_job_status_message("Starting tools...", 20)
-            mcp_specs = build_mcp_server_specs(
-                enable_search=ENABLE_MCP_SEARCH,
-                job_id=_CURRENT_JOB_ID.get(),
-            )
-            output, tokens_used = await run_bedrock_with_tools(
-                bedrock_client=bedrock_client,
-                model_id=model_id,
-                system_text=system_text,
-                user_text=history_text,
-                mcp_specs=mcp_specs,
-                inference_config={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
-            )
-            total_llm_tokens += tokens_used
-            if approved:
-                logging.info("[memory_validator] running (approved=%d)", len(approved))
-                verdict = validate_memory_compliance_bedrock(approved, user_message, output)
-                if not verdict.get("compliant"):
-                    fix = verdict.get("fix_instructions", "")
-                    system = system_text + "\n\nYou must revise your response to comply with Approved Memory."
-                    if fix:
-                        system += f"\nFix instructions: {fix}"
-                    user_text = history_text + "\n\nRevise your response to comply with Approved Memory."
-                    if fix:
-                        user_text += f"\nFix instructions: {fix}"
-                    output, tokens_used = await run_bedrock_with_tools(
-                        bedrock_client=bedrock_client,
-                        model_id=model_id,
-                        system_text=system,
-                        user_text=user_text,
-                        mcp_specs=mcp_specs,
-                        inference_config={"maxTokens": 2000, "temperature": 0.0, "topP": 0.9},
-                    )
-                    total_llm_tokens += tokens_used
-            else:
-                logging.info("[memory_validator] skipped (no approved memory)")
-            return output, total_llm_tokens
-        except ClientError as e:
-            error = e.response.get("Error", {})
-            error_code = error.get("Code", "")
-            error_message = error.get("Message", str(e))
-
-            if error_code == "ValidationException":
-                if "operation not allowed" in error_message.lower():
-                    logging.warning(
-                        "Bedrock rejected modelId '%s': %s",
-                        model_id,
-                        error_message,
-                    )
-                    continue
-                logging.exception(
-                    "Bedrock validation error for modelId '%s': %s",
-                    model_id,
-                    error_message,
-                )
-                raise HTTPException(status_code=400, detail=f"Bedrock validation error: {error_message}")
-
-            if error_code == "AccessDeniedException":
-                logging.exception(
-                    "Bedrock access denied for modelId '%s': %s",
-                    model_id,
-                    error_message,
-                )
-                raise HTTPException(status_code=403, detail=f"Access denied to Bedrock model: {error_message}")
-
-            logging.exception(
-                "Bedrock error for modelId '%s': %s",
-                model_id,
-                error_message,
-            )
-            raise HTTPException(status_code=500, detail=f"Bedrock error: {error_message}")
-        except Exception as e:
-            logging.exception("Bedrock tool call failed for modelId '%s'", model_id)
-            raise HTTPException(status_code=500, detail=f"Bedrock tool call failed: {e}")
-
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "Bedrock returned 'Operation not allowed' for all model IDs tried: "
-            f"{', '.join(candidates)}. "
-            "Enable model access for the selected model in this region or set BEDROCK_MODEL_ID "
-            "to an allowed model/inference-profile ID."
-        ),
+    _update_job_status_message("Starting tools...", 20)
+    mcp_specs = build_mcp_server_specs(
+        enable_search=ENABLE_MCP_SEARCH,
+        job_id=_CURRENT_JOB_ID.get(),
+    )
+    return await run_bedrock_chat(
+        bedrock_client=bedrock_client,
+        bedrock_model_id=BEDROCK_MODEL_ID,
+        default_aws_region=DEFAULT_AWS_REGION,
+        system_text=system_text,
+        history_text=history_text,
+        user_message=user_message,
+        mcp_specs=mcp_specs,
+        approved_memory=approved,
     )
 
 
-@app.get("/")
 async def root():
     active_model = GROK_MODEL_ID if AI_PROVIDER == "grok" else BEDROCK_MODEL_ID
     return {
@@ -941,7 +534,6 @@ async def root():
     }
 
 
-@app.get("/health")
 async def health_check():
     active_model = GROK_MODEL_ID if AI_PROVIDER == "grok" else BEDROCK_MODEL_ID
     return {
@@ -953,7 +545,6 @@ async def health_check():
     }
 
 
-@app.get("/quota")
 async def get_quota(user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     return get_daily_quota(user_id)
@@ -982,9 +573,7 @@ async def _run_chat_flow(
         if _is_job_canceled(job_id):
             raise HTTPException(status_code=499, detail="canceled")
 
-        # In Lambda worker runs we must avoid fire-and-forget tasks; the event loop is closed
-        # right after asyncio.run returns, which can drop pending background tasks.
-        should_sync_memory = MEMORY_EXTRACT_SYNC or bool(job_id)
+        should_sync_memory = _should_sync_memory_extraction(job_id)
 
         quota_snapshot = get_daily_quota(user_id)
         if quota_snapshot.get("enabled") and int(quota_snapshot["remaining"].get("tokens", 0)) <= 0:
@@ -1008,52 +597,16 @@ async def _run_chat_flow(
         )
         log_event("classify", risk_tier=tier, reason=reason, provider=AI_PROVIDER)
 
-        if tier == "high":
-            # High-risk requests are routed to tool-capable path.
-            assistant_response, llm_tokens = await call_grok_with_mcp(
-                user_id,
-                conversation,
-                agent_message,
-                session_id=session_id,
-                require_sources=require_sources,
-            )
-        elif AI_PROVIDER == "grok":
-            assistant_response, llm_tokens = await call_grok_prose_guarded(
-                user_id, conversation, agent_message
-            )
-        elif AI_PROVIDER == "bedrock":
-            assistant_response, llm_tokens = await call_bedrock(user_id, conversation, agent_message)
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Unsupported AI_PROVIDER '{AI_PROVIDER}'. Use 'bedrock' or 'grok'.",
-            )
-
-        quota_increments: Dict[str, int] = {
-            "tokens": max(0, int(llm_tokens or 0)),
-            "pdf": 0,
-            "email": 0,
-        }
-        if tier == "high":
-            trace_id = TRACE_ID.get()
-            truth_context = _load_truth_context_for_trace(trace_id)
-            action_counts = count_quota_actions_from_truth_context(truth_context)
-            quota_increments["pdf"] = int(action_counts.get("pdf", 0))
-            quota_increments["email"] = int(action_counts.get("email", 0))
-        log_event(
-            "quota.increments",
+        assistant_response, llm_tokens = await _generate_response_for_risk(
             user_id=user_id,
-            tokens=quota_increments["tokens"],
-            pdf=quota_increments["pdf"],
-            email=quota_increments["email"],
+            conversation=conversation,
+            agent_message=agent_message,
+            session_id=session_id,
+            tier=tier,
+            require_sources=require_sources,
         )
-        set_current_span_attributes(
-            {
-                "quota.tokens.increment": quota_increments["tokens"],
-                "quota.pdf.increment": quota_increments["pdf"],
-                "quota.email.increment": quota_increments["email"],
-            }
-        )
+
+        quota_increments = _build_quota_increments(user_id, tier, llm_tokens)
 
         try:
             quota_result = consume_daily_quota(user_id, quota_increments)
@@ -1062,22 +615,11 @@ async def _run_chat_flow(
             record_current_span_exception(exc)
             quota_result = {"snapshot": quota_snapshot, "exceeded": [], "applied": {}}
 
-        exceeded = set(quota_result.get("exceeded") or [])
-        if "tokens" in exceeded:
-            assistant_response = quota_exceeded_message(
-                "tokens",
-                quota_result.get("snapshot") or quota_snapshot,
-            )
-        elif "pdf" in exceeded:
-            assistant_response = quota_exceeded_message(
-                "pdf",
-                quota_result.get("snapshot") or quota_snapshot,
-            )
-        elif "email" in exceeded:
-            assistant_response = quota_exceeded_message(
-                "email",
-                quota_result.get("snapshot") or quota_snapshot,
-            )
+        assistant_response = _apply_quota_exceeded_message(
+            assistant_response,
+            quota_result=quota_result,
+            quota_snapshot=quota_snapshot,
+        )
 
         if _is_job_canceled(job_id):
             raise HTTPException(status_code=499, detail="canceled")
@@ -1093,7 +635,26 @@ async def _run_chat_flow(
         return assistant_response
 
 
-@app.post("/chat")
+def _new_async_job_record(*, job_id: str, user_id: str, session_id: str, trace_id: str) -> Dict[str, Any]:
+    created_at = now_local_iso()
+    return {
+        "job_id": job_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "status": "queued",
+        "trace_id": trace_id,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
+def _mark_async_job_failed(job_record: Dict[str, Any], error_message: str) -> None:
+    job_record["status"] = "failed"
+    job_record["error"] = error_message
+    job_record["updated_at"] = now_local_iso()
+    _upstash_set(_job_key(job_record["job_id"]), job_record, ASYNC_JOB_TTL_SECONDS)
+
+
 async def chat(request: ChatRequest):
     try:
         user_id = validate_user_id(request.user_id)
@@ -1104,17 +665,13 @@ async def chat(request: ChatRequest):
                 raise HTTPException(status_code=500, detail="Async chat is not configured")
 
             job_id = str(uuid.uuid4())
-            created_at = now_local_iso()
             trace_id = new_trace_id()
-            job_record = {
-                "job_id": job_id,
-                "user_id": user_id,
-                "session_id": session_id,
-                "status": "queued",
-                "trace_id": trace_id,
-                "created_at": created_at,
-                "updated_at": created_at,
-            }
+            job_record = _new_async_job_record(
+                job_id=job_id,
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
             _upstash_set(_job_key(job_id), job_record, ASYNC_JOB_TTL_SECONDS)
 
             payload = {
@@ -1133,10 +690,7 @@ async def chat(request: ChatRequest):
                     Payload=json.dumps(payload).encode("utf-8"),
                 )
             except Exception as e:
-                job_record["status"] = "failed"
-                job_record["error"] = f"Failed to enqueue job: {e}"
-                job_record["updated_at"] = now_local_iso()
-                _upstash_set(_job_key(job_id), job_record, ASYNC_JOB_TTL_SECONDS)
+                _mark_async_job_failed(job_record, f"Failed to enqueue job: {e}")
                 raise HTTPException(status_code=500, detail="Failed to enqueue async job")
 
             status_url = f"/jobs/{job_id}"
@@ -1167,7 +721,6 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/jobs/{job_id}")
 async def get_job_status(job_id: str, user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     if not _upstash_enabled():
@@ -1180,7 +733,6 @@ async def get_job_status(job_id: str, user_id: str = Query(...)):
     return job
 
 
-@app.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     if not _upstash_enabled():
@@ -1197,7 +749,6 @@ async def cancel_job(job_id: str, user_id: str = Query(...)):
     return {"status": "canceled", "job_id": job_id}
 
 
-@app.get("/conversation/{session_id}")
 async def get_conversation(session_id: str, user_id: str = Query(...)):
     """Retrieve conversation history"""
     try:
@@ -1208,7 +759,6 @@ async def get_conversation(session_id: str, user_id: str = Query(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/conversations")
 async def get_conversations(user_id: str = Query(...), limit: int = Query(5, ge=1, le=50)):
     """List recent conversations for a user"""
     user_id = validate_user_id(user_id)
@@ -1216,7 +766,6 @@ async def get_conversations(user_id: str = Query(...), limit: int = Query(5, ge=
     return {"sessions": sessions}
 
 
-@app.get("/memory/candidates")
 async def get_memory_candidates(user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     candidates = load_memory_candidates(user_id)
@@ -1224,7 +773,6 @@ async def get_memory_candidates(user_id: str = Query(...)):
     return {"candidates": candidates}
 
 
-@app.get("/memory")
 async def get_memory(user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     approved = load_approved_memory(user_id)
@@ -1232,7 +780,6 @@ async def get_memory(user_id: str = Query(...)):
     return {"memory": approved}
 
 
-@app.post("/memory/candidates/{candidate_id}/approve")
 async def approve_memory_candidate(candidate_id: str, user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     candidates = load_memory_candidates(user_id)
@@ -1271,7 +818,6 @@ async def approve_memory_candidate(candidate_id: str, user_id: str = Query(...))
     return {"status": "ok"}
 
 
-@app.post("/memory/candidates/{candidate_id}/reject")
 async def reject_memory_candidate(candidate_id: str, user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     candidates = load_memory_candidates(user_id)
@@ -1280,7 +826,6 @@ async def reject_memory_candidate(candidate_id: str, user_id: str = Query(...)):
     return {"status": "ok"}
 
 
-@app.post("/memory/candidates/clear")
 async def clear_memory_candidates(user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     save_memory_candidates(user_id, [])
@@ -1288,7 +833,6 @@ async def clear_memory_candidates(user_id: str = Query(...)):
     return {"status": "ok"}
 
 
-@app.post("/memory/approved/{memory_id}/delete")
 async def delete_approved_memory(memory_id: str, user_id: str = Query(...)):
     user_id = validate_user_id(user_id)
     approved = load_approved_memory(user_id)
@@ -1299,7 +843,6 @@ async def delete_approved_memory(memory_id: str, user_id: str = Query(...)):
     return {"status": "ok"}
 
 
-@app.get("/downloads/{filename}")
 async def download_file(filename: str):
     if not re.match(r"^[a-zA-Z0-9._-]+$", filename or ""):
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -1315,7 +858,6 @@ async def download_file(filename: str):
     )
 
 
-@app.post("/uploads")
 async def upload_file(file: UploadFile = File(...)):
     ext = validate_upload_file(file)
     file_id = uuid.uuid4().hex
@@ -1373,7 +915,6 @@ async def upload_file(file: UploadFile = File(...)):
                 pass
 
 
-@app.post("/uploads/presign")
 async def presign_upload(req: UploadPresignRequest):
     """
     Direct-to-S3 upload path to avoid API Gateway/Lambda binary transforms.

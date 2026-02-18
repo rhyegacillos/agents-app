@@ -64,6 +64,36 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
   - `event=quota.increments`, `event=quota.consume_failed`
   - `event=worker.start`, `event=worker.completed`, `event=worker.timeout`, `event=worker.canceled`
 
+## 5.1 Refactor Changelog
+
+### 2026-02-18: Backend modularization (no API contract change)
+
+Scope:
+- Extracted endpoint registration into router modules:
+  - `backend/api/routers/core.py`
+  - `backend/api/routers/chat.py`
+  - `backend/api/routers/memory.py`
+  - `backend/api/routers/files.py`
+- Extracted API schemas into:
+  - `backend/api/schemas.py`
+- Extracted provider/runtime logic into:
+  - `backend/services/chat_runtime/grok_runner.py`
+  - `backend/services/chat_runtime/high_risk_flow.py`
+  - `backend/services/chat_runtime/bedrock_runner.py`
+- Centralized MCP subprocess logging/OTel bootstrap in:
+  - `backend/mcp_tools/bootstrap.py`
+
+Operational impact:
+- Route paths and payload contracts are unchanged.
+- Log event names used for dashboards/alerts are unchanged.
+- Deployment shape (Lambda API + worker, API Gateway, MCP subprocess model) is unchanged.
+
+Benefits:
+- Faster incident isolation (routing vs orchestration vs provider runtime separated).
+- Lower regression risk for provider-specific changes.
+- Cleaner test seams for unit/integration QA.
+- Reduced `server.py` complexity for on-call debugging.
+
 ## 6) OpenTelemetry (Vendor-Neutral Observability)
 
 OpenTelemetry traces and logs are implemented for backend API + worker and exported via OTLP HTTP.

@@ -66,6 +66,17 @@ Core design choices:
 - **Risk-routed truth gate**: low-risk conversational path vs high-risk canonical/tool-validated path.
 - **Quota controls**: daily limits enforced in backend using provider-reported token usage (not text-size estimates).
 
+Recent refactoring highlights (maintainability-focused):
+- **Router segregation**: endpoint registration moved to `backend/api/routers/*` with shared schemas in `backend/api/schemas.py`.
+- **Runtime segregation**: Grok, Bedrock, and high-risk truth-finalization moved to `backend/services/chat_runtime/*`.
+- **MCP bootstrap centralization**: shared MCP logging/OTel bootstrap in `backend/mcp_tools/bootstrap.py`.
+
+Benefits:
+- smaller, orchestration-focused `backend/server.py`
+- clearer ownership boundaries (API routing vs runtime execution vs tool process bootstrap)
+- lower regression risk when changing one provider/path
+- simpler unit/integration testing by module
+
 ---
 
 ## Why Terraform (And What It Proves)

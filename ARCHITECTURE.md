@@ -88,7 +88,9 @@ Frontend runtime config:
 ### 2.2 Backend (FastAPI on Lambda)
 
 Location:
-- `backend/server.py`
+- `backend/server.py` (app wiring + orchestration)
+- `backend/api/routers/*` (endpoint routing layer)
+- `backend/services/chat_runtime/*` (provider/runtime execution layer)
 
 Framework:
 - FastAPI + Mangum (Lambda adapter)
@@ -113,7 +115,8 @@ Endpoints:
 
 ### 2.2 Backend endpoints → handlers (code map)
 
-All handlers live in `backend/server.py` unless stated otherwise.
+Route registration lives in `backend/api/routers/*`.
+Business handlers are implemented in `backend/server.py`.
 
 | Endpoint | Handler | Purpose |
 |---|---|---|
@@ -128,12 +131,30 @@ All handlers live in `backend/server.py` unless stated otherwise.
 | `POST /memory/candidates/{id}/approve` | `approve_memory_candidate()` | Approve candidate → conflict check → store |
 | `POST /memory/candidates/{id}/reject` | `reject_memory_candidate()` | Reject candidate (remove pending) |
 | `GET /memory` | `get_memory()` | List approved memory |
+| `POST /memory/candidates/clear` | `clear_memory_candidates()` | Clear pending memory candidates |
 | `POST /memory/approved/{id}/delete` | `delete_approved_memory()` | Remove approved memory item |
 | `POST /uploads` | `upload_file()` | Upload file (local or S3) |
 | `POST /uploads/presign` | `presign_upload()` | Presign direct-to-S3 upload (avoids binary corruption through API Gateway/Lambda) |
 | `GET /downloads/{filename}` | `download_file()` | Download generated PDF |
 
-### 2.3 Prompt assembly and persona context
+### 2.3 Refactoring update (modular runtime + routers)
+
+Refactor outcome:
+- API endpoints are organized in router files: `backend/api/routers/`.
+- Shared request/response models are in `backend/api/schemas.py`.
+- Provider/runtime execution is segregated into `backend/services/chat_runtime/`:
+  - `grok_runner.py` (OpenAI client + MCP runner lifecycle)
+  - `high_risk_flow.py` (truth-gated high-risk finalization loop)
+  - `bedrock_runner.py` (Bedrock execution + retry/error normalization)
+- MCP subprocess bootstrap logic is centralized in `backend/mcp_tools/bootstrap.py`.
+
+Benefits:
+- Lower cognitive load: `server.py` is now orchestration-focused.
+- Better testability: runtime logic can be unit-tested without endpoint wiring.
+- Lower regression risk: Grok/Bedrock/high-risk flows are isolated by module boundary.
+- Faster change velocity: endpoint changes and runtime changes can be shipped independently.
+
+### 2.4 Prompt assembly and persona context
 
 Location:
 - `backend/context.py`
@@ -148,7 +169,7 @@ Prompt data:
 
 The backend builds a **system prompt** using these files at runtime.
 
-### 2.4 AI providers
+### 2.5 AI providers
 
 The backend supports two providers:
 
@@ -163,7 +184,7 @@ The backend supports two providers:
 Provider selection is controlled by:
 - `AI_PROVIDER` env var (`grok` or `bedrock`)
 
-### 2.5 Memory storage
+### 2.6 Memory storage
 
 Memory is stored per user and session:
 ```
@@ -189,7 +210,7 @@ Candidate → Approved flow:
 - User approves/rejects in the UI.
 - Approved memory is injected into the system prompt with highest priority.
 
-### 2.6 Tooling via MCP servers
+### 2.7 Tooling via MCP servers
 
 The backend launches MCP tool servers (stdio processes):
 - **Brave Search** (web search)
@@ -199,12 +220,13 @@ The backend launches MCP tool servers (stdio processes):
 
 The MCP servers are configured in:
 - `backend/mcp_tools/mcp_servers.py`
+- `backend/mcp_tools/bootstrap.py` (shared MCP logging/OTel initialization)
 
 Each MCP server is a standalone Python file:
 - `backend/mcp_tools/brave_mcp_server.py`
 - `backend/mcp_tools/core_mcp_server.py`
 - `backend/mcp_tools/memory_mcp_server.py`
-- `backend/mcp_tools/diagram_mcp_server.py`
+- `backend/mcp_tools/diagram_mcp_server.py` (present but not active in current MCP spec list)
 - PDF generation uses HTML rendering via WeasyPrint (Markdown supported).
 
 -------------------------------------------------------------------------------
@@ -422,7 +444,7 @@ This is not multi-tenant secure without an auth layer.
 ## 9) Local development architecture
 
 Local dev setup:
-- Backend: `uvicorn backend/server.py` on `localhost:8000`
+- Backend: `uvicorn server:app --reload` (run from `backend/`) on `localhost:8000`
 - Frontend: `next dev` on `localhost:3000`
 - Memory: local filesystem under `../memory/`
 - Quota state: local filesystem fallback under `/tmp/quota` (unless Upstash/S3 is configured)
@@ -447,7 +469,12 @@ Browser -> Next.js dev server -> FastAPI -> Grok/Bedrock -> local memory
 ## 11) File map (architecture-relevant)
 
 Backend:
-- `backend/server.py` – FastAPI app
+- `backend/server.py` – orchestration layer (chat flow, quota flow, storage integration)
+- `backend/api/schemas.py` – request/response models
+- `backend/api/routers/core.py` – `/`, `/health`
+- `backend/api/routers/chat.py` – `/chat`, `/jobs/*`, `/conversations*`, `/quota`
+- `backend/api/routers/memory.py` – `/memory*`
+- `backend/api/routers/files.py` – `/uploads*`, `/downloads/*`
 - `backend/otel_observability.py` – OpenTelemetry traces/logs init, OTLP export, FastAPI instrumentation helpers
 - `backend/context.py` – system prompt builder
 - `backend/resources.py` – loads data sources
@@ -455,6 +482,10 @@ Backend:
 - `backend/services/canonical_renderer.py` – high-risk canonical response rendering
 - `backend/services/output_truth_gate.py` – deterministic validation gate
 - `backend/services/quota.py` – daily quota accounting/enforcement
+- `backend/services/chat_runtime/grok_runner.py` – Grok runtime lifecycle + MCP start/run helpers
+- `backend/services/chat_runtime/high_risk_flow.py` – truth-gate/fix-loop finalization for high-risk outputs
+- `backend/services/chat_runtime/bedrock_runner.py` – Bedrock runtime path + model candidate/error handling
+- `backend/mcp_tools/bootstrap.py` – shared MCP process bootstrap (logging + OTel)
 - `backend/data/*` – persona facts, summary, style, linkedin
 - `backend/Dockerfile` – Lambda container image build
 - `backend/lambda_handler.py` – Mangum entrypoint
