@@ -987,6 +987,7 @@ function IdeaGenerator({
   const [constraints, setConstraints] = useState<string[]>([CONSTRAINTS[0]]);
   const [tone, setTone] = useState(PERSONAS[0].id);
   const [selectedModels, setSelectedModels] = useState<string[]>([MODELS[0].id]);
+  const [generatedQuickStartOpen, setGeneratedQuickStartOpen] = useState(false);
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
   const [tokenUsage, setTokenUsage] = useState<any>(initialUsage);
@@ -2572,7 +2573,11 @@ function IdeaGenerator({
       addUsage(data.usage);
       
       const keys = Object.keys(resultsData);
-      if (keys.length > 0) setActiveTab(keys[0]);
+      if (keys.length > 0) {
+        setActiveTab(keys[0]);
+        setGeneratedQuickStartOpen(false);
+      }
+      pushNotice("Ideas generated.");
 
       void saveCurrentResults(
         {
@@ -2793,6 +2798,27 @@ function IdeaGenerator({
   const canDeleteCompare = Boolean(compareResult?.comparison_id) && resultsView === "insights";
   const canDeleteDecision = Boolean(decisionReport?.id) && resultsView === "decision";
   const canDeleteStakeholder = Boolean(stakeholderReport?.id) && resultsView === "stakeholder";
+  const flowSteps: Array<{
+    key: "generated" | "insights" | "decision" | "stakeholder";
+    label: string;
+    hint: string;
+  }> = [
+    { key: "generated", label: "Generate Results", hint: "Create model outputs" },
+    { key: "insights", label: "Compare Rank Results", hint: "Diff two saved runs" },
+    { key: "decision", label: "Decision Summary Report", hint: "Rank and summarize finalists" },
+    { key: "stakeholder", label: "Execution Plan", hint: "Investment readiness assessment" },
+  ];
+  const flowCompletion: Record<"generated" | "insights" | "decision" | "stakeholder", boolean> = {
+    generated: hasResults,
+    insights: Boolean(compareResult?.comparison_id),
+    decision: Boolean(decisionReport?.id),
+    stakeholder: Boolean(stakeholderReport?.id),
+  };
+  const normalizedRichTextClass =
+    "prose prose-sm dark:prose-invert max-w-none " +
+    "prose-headings:tracking-tight prose-headings:font-semibold " +
+    "[&_h1]:text-3xl [&_h1]:leading-tight [&_h2]:text-2xl [&_h3]:text-xl " +
+    "[&_p]:text-base [&_li]:text-base";
 
   // UI gating values (keeps premium UI; free is locked)
   const maxConstraints = isPremium ? 3 : FREE_MAX_CONSTRAINTS;
@@ -3587,7 +3613,7 @@ function IdeaGenerator({
         <FullPageLoader
           title="Loading IdeaGen"
           subtitle="Preparing your workspace..."
-          chips={["Saved Results", "Compare Results", "Decision Summary"]}
+          chips={["Saved Runs & Reports", "Compare Results", "Decision Summary"]}
           note="Please wait while we initialize your dashboard."
           tip="Tip: this only appears on page refresh/load."
         />
@@ -3663,6 +3689,25 @@ function IdeaGenerator({
               </button>
             </div>
           ) : null}
+
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={generateIdeas}
+              disabled={isLoading || isApiLimited || isTokenLimited}
+              className={cx(
+                "w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-900/20",
+                (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+              )}
+            >
+              <span className="inline-flex items-center justify-center gap-2">
+                {isLoading ? <Spinner className="h-4 w-4" /> : null}
+                <span>
+                  {isLoading ? "Generating..." : isTokenLimited ? "Token Limit Reached" : isApiLimited ? "Rate Limit Reached" : "Generate Ideas"}
+                </span>
+              </span>
+            </button>
+          </div>
 
           <div className="mt-5 space-y-5 overflow-visible">
             <div ref={industryRef}>
@@ -4181,22 +4226,24 @@ function IdeaGenerator({
               </div>
             )}
 
-            <button
-              type="button"
-              onClick={generateIdeas}
-              disabled={isLoading || isApiLimited || isTokenLimited}
-              className={cx(
-                "w-full rounded-xl px-3 py-3 text-sm font-semibold text-white",
-                (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
-              )}
-            >
-              <span className="inline-flex items-center justify-center gap-2">
-                {isLoading ? <Spinner className="h-4 w-4" /> : null}
-                <span>
-                  {isLoading ? "Generating..." : isTokenLimited ? "Token Limit Reached" : isApiLimited ? "Rate Limit Reached" : "Generate Ideas"}
+            <div className="sticky bottom-3 z-20 -mx-1 rounded-xl bg-gradient-to-t from-slate-950/70 via-slate-950/40 to-transparent px-1 py-2 backdrop-blur-sm lg:hidden">
+              <button
+                type="button"
+                onClick={generateIdeas}
+                disabled={isLoading || isApiLimited || isTokenLimited}
+                className={cx(
+                  "w-full rounded-xl px-3 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-900/20",
+                  (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                )}
+              >
+                <span className="inline-flex items-center justify-center gap-2">
+                  {isLoading ? <Spinner className="h-4 w-4" /> : null}
+                  <span>
+                    {isLoading ? "Generating..." : isTokenLimited ? "Token Limit Reached" : isApiLimited ? "Rate Limit Reached" : "Generate Ideas"}
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+            </div>
 
             {(hasResults || compareResult) && (
               <div className="pt-5 mt-5 border-t border-black/10 dark:border-white/10 space-y-3">
@@ -4372,18 +4419,18 @@ function IdeaGenerator({
           <GlassCard className="p-2 sm:p-3 relative order-1 overflow-hidden">
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Saved Results</h2>
+                <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Saved Runs & Reports</h2>
                 <div className="text-[10px] text-gray-500 dark:text-gray-400">
                   {savedResults.length} saved
                 </div>
               </div>
-              <div className="grid grid-cols-4 gap-1.5 min-w-0">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 min-w-0">
                 <button
                   ref={savedGeneratedButtonRef}
                   type="button"
                   onClick={() => openSavedPanel("generated")}
                   className={cx(
-                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate",
+                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "generated"
                       ? "bg-blue-600 text-white"
@@ -4397,7 +4444,7 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("compare")}
                   className={cx(
-                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate",
+                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "compare"
                       ? "bg-blue-600 text-white"
@@ -4411,21 +4458,21 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("decision")}
                   className={cx(
-                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate",
+                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "decision"
                       ? "bg-blue-600 text-white"
                       : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
                   )}
                 >
-                  Decision Summary
+                  Decision Summary Report
                 </button>
                 <button
                   ref={savedStakeholderButtonRef}
                   type="button"
                   onClick={() => openSavedPanel("stakeholder")}
                   className={cx(
-                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate transition-colors",
+                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center transition-colors",
                     savedPanelMode === "stakeholder"
                       ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
                       : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
@@ -5344,83 +5391,118 @@ function IdeaGenerator({
           </GlassCard>
         </div>
 
-        <GlassCard className="min-h-[680px] p-6 lg:p-8">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex w-full lg:w-auto flex-wrap items-center gap-0.5 rounded-full border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-1">
-              <button
-                type="button"
-                onClick={() => setResultsView("generated")}
-                className={cx(
-                  "rounded-full px-3 py-1.5 text-xs font-semibold transition",
-                  resultsView === "generated"
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
-                )}
-              >
-                Generated Results
-              </button>
-              <span
-                aria-hidden="true"
-                className="pointer-events-none select-none px-0.5 text-gray-500/75 dark:text-gray-400/75"
-              >
-                <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none">
-                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <button
-                type="button"
-                onClick={() => setResultsView("insights")}
-                className={cx(
-                  "rounded-full px-3 py-1.5 text-xs font-semibold transition",
-                  resultsView === "insights"
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
-                )}
-              >
-                Compare Rank Results
-              </button>
-              <span
-                aria-hidden="true"
-                className="pointer-events-none select-none px-0.5 text-gray-500/75 dark:text-gray-400/75"
-              >
-                <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none">
-                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <button
-                type="button"
-                onClick={() => setResultsView("decision")}
-                className={cx(
-                  "rounded-full px-3 py-1.5 text-xs font-semibold transition",
-                  resultsView === "decision"
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
-                )}
-              >
-                Decision Summary Report
-              </button>
-              <span
-                aria-hidden="true"
-                className="pointer-events-none select-none px-0.5 text-gray-500/75 dark:text-gray-400/75"
-              >
-                <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none">
-                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <button
-                type="button"
-                onClick={() => setResultsView("stakeholder")}
-                className={cx(
-                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
-                  resultsView === "stakeholder"
-                    ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
-                    : "text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
-                )}
-              >
-                Execution Plan
-              </button>
+        <GlassCard className="min-h-[680px] p-4 lg:p-5">
+          <div className="space-y-2">
+            <div className="rounded-xl border border-black/[0.04] dark:border-white/[0.05] bg-transparent px-2.5 py-1">
+              <div className="overflow-x-auto sm:overflow-x-visible ig-scrollbar">
+                <div className="inline-flex sm:flex sm:w-full sm:min-w-0 items-center gap-2 py-0.5">
+                  <span className="text-[11px] font-semibold text-gray-500/85 dark:text-gray-400/85">Decision Flow</span>
+                  {flowSteps.map((step, idx) => {
+                    const isCurrent = resultsView === step.key;
+                    const isDone = flowCompletion[step.key];
+                    return (
+                      <div key={step.key} className="inline-flex items-center">
+                        <div className="flex min-w-[132px] flex-col">
+                          <div className="inline-flex items-center gap-1.5">
+                            <span
+                              className={cx(
+                                "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[9px] font-bold",
+                                isCurrent
+                                  ? step.key === "stakeholder"
+                                    ? "border-amber-500/80 bg-amber-500/20 text-amber-900 dark:text-amber-100"
+                                    : "border-blue-500/70 bg-blue-500/20 text-blue-800 dark:text-blue-200"
+                                  : isDone
+                                  ? "border-emerald-500/70 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                                  : "border-black/10 dark:border-white/10 text-gray-500 dark:text-gray-400"
+                              )}
+                            >
+                              {isDone && !isCurrent ? "✓" : idx + 1}
+                            </span>
+                            <span
+                              className={cx(
+                                "text-[11px] font-semibold",
+                                isCurrent
+                                  ? step.key === "stakeholder"
+                                    ? "text-amber-800 dark:text-amber-200"
+                                    : "text-blue-700 dark:text-blue-200"
+                                  : isDone
+                                  ? "text-emerald-700 dark:text-emerald-300"
+                                  : "text-gray-500/85 dark:text-gray-400/85"
+                              )}
+                            >
+                              {step.label}
+                            </span>
+                          </div>
+                          <span className="pl-5 text-[10px] text-gray-500/70 dark:text-gray-400/70">{step.hint}</span>
+                        </div>
+                        {idx < flowSteps.length - 1 ? (
+                          <span
+                            aria-hidden="true"
+                            className={cx(
+                              "mx-2 block h-px w-5",
+                              isDone ? "bg-emerald-500/45" : "bg-white/15"
+                            )}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex w-full lg:w-auto flex-wrap items-center gap-0.5 rounded-full border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-1">
+                <button
+                  type="button"
+                  onClick={() => setResultsView("generated")}
+                  className={cx(
+                    "rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    resultsView === "generated"
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
+                  )}
+                >
+                  Generated Results
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResultsView("insights")}
+                  className={cx(
+                    "rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    resultsView === "insights"
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
+                  )}
+                >
+                  Compare Rank Results
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResultsView("decision")}
+                  className={cx(
+                    "rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    resultsView === "decision"
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
+                  )}
+                >
+                  Decision Summary Report
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResultsView("stakeholder")}
+                  className={cx(
+                    "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+                    resultsView === "stakeholder"
+                      ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
+                      : "text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
+                  )}
+                >
+                  Execution Plan
+                </button>
+              </div>
+              <div className="flex items-center gap-2 lg:shrink-0">
               <button
                 type="button"
                 onClick={() => {
@@ -5502,6 +5584,7 @@ function IdeaGenerator({
                   ? "Deleting..."
                   : "Delete"}
               </button>
+              </div>
             </div>
           </div>
           {hasResults && isStorageLimited ? (
@@ -5519,13 +5602,36 @@ function IdeaGenerator({
                     <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                       <p className="text-sm font-semibold text-gray-900 dark:text-white">Your generated ideas will appear here</p>
                       <p className="text-sm text-gray-700 dark:text-gray-200">
-                        Go to <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span> and click the <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generated Results</span> button to load the generated results.
+                        Set your Target Industry, constraints, AI persona, and model selection, then click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Ideas</span>.
                       </p>
+                    </div>
+                    <div className="mt-3 text-xs text-gray-600 dark:text-gray-300">
+                      To load an older run, open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Generated Results</span>.
                     </div>
                     <div className="mt-6 text-left">
                       <div className="mx-auto max-w-lg">
+                        {!generatedQuickStartOpen ? (
+                          <div className="mx-auto max-w-md text-center">
+                            <button
+                              type="button"
+                              onClick={() => setGeneratedQuickStartOpen(true)}
+                              className="rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                            >
+                              Show Quick start
+                            </button>
+                          </div>
+                        ) : (
                         <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
                           <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Quick start</div>
+                          <div className="mt-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setGeneratedQuickStartOpen(false)}
+                              className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 hover:underline"
+                            >
+                              Hide
+                            </button>
+                          </div>
                           <div className="mt-3 space-y-1.5 text-left text-sm text-gray-700 dark:text-gray-200">
                             {[
                               <>Pick a <span className="font-semibold text-indigo-700 dark:text-indigo-300">Target Industry</span></>,
@@ -5556,6 +5662,7 @@ function IdeaGenerator({
                             <span className="ml-2 text-gray-800 dark:text-gray-200">— adjust and rerun anytime</span>
                           </div>
                         </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -5666,7 +5773,7 @@ function IdeaGenerator({
                     <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-5 lg:p-6">
                       {Object.entries(results).map(([modelId, htmlContent]) => (
                         <div key={modelId} className={activeTab === modelId ? "block" : "hidden"}>
-                          <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+                          <div className={normalizedRichTextClass} dangerouslySetInnerHTML={{ __html: htmlContent }} />
                         </div>
                       ))}
                     </div>
@@ -5680,9 +5787,9 @@ function IdeaGenerator({
                     <div className="mx-auto max-w-md text-left space-y-4">
                       <div className="rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                         <p className="text-sm font-semibold text-gray-900 dark:text-white">No comparison insights yet</p>
-                        <p className="text-sm text-gray-700 dark:text-gray-200">
-                          Go to <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span> and click the <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare Results</span> button to load the generated comparison results.
-                        </p>
+                      <p className="text-sm text-gray-700 dark:text-gray-200">
+                          Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Compare Results</span>, select two runs, and click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare</span>.
+                      </p>
                       </div>
 
                       <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4 text-left">
@@ -5817,7 +5924,7 @@ function IdeaGenerator({
                                 ) : null}
                               </div>
                               <div
-                                className="prose dark:prose-invert max-w-none mt-3"
+                                className={cx(normalizedRichTextClass, "mt-3")}
                                 dangerouslySetInnerHTML={{ __html: top.output_html }}
                               />
                             </div>
@@ -5836,7 +5943,7 @@ function IdeaGenerator({
                     <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                       <p className="text-sm font-semibold text-gray-900 dark:text-white">No decision report loaded</p>
                       <p className="text-sm text-gray-700 dark:text-gray-200">
-                        Go to <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span> and click the <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> button to load the decision summary reports.
+                        Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Decision Summary Report</span> to load or generate a report.
                       </p>
                     </div>
 
@@ -6011,7 +6118,7 @@ function IdeaGenerator({
                     <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                       <p className="text-sm font-semibold text-gray-900 dark:text-white">No execution plan loaded</p>
                       <p className="text-sm text-gray-700 dark:text-gray-200">
-                        Generate from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> or open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results → Execution Plan</span>.
+                        Generate from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> or load from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Execution Plan</span>.
                       </p>
                     </div>
 
@@ -6033,6 +6140,9 @@ function IdeaGenerator({
                               <span className="leading-tight">{tip}</span>
                             </div>
                           ))}
+                        </div>
+                        <div className="mt-3 rounded-lg bg-indigo-600/15 px-3 py-2 text-xs font-semibold text-indigo-900 dark:text-indigo-100">
+                          Execution Plan is your Investment Readiness Assessment: it consolidates the Go / Conditional Go / No-Go verdict, financial gates, budget and unit economics, monthly projection, scenario outcomes, sensitivity checks, resource plan, risk register, and required next actions before stakeholder approval.
                         </div>
                       </div>
                     </div>
@@ -6782,11 +6892,11 @@ export default function Product() {
       </div>
 
       <div className="mx-auto max-w-[1400px] px-4 py-10 overflow-x-hidden">
-        <div className="mb-8">
+        <div className="mb-5">
           <h1 className="text-3xl sm:text-4xl font-semibold text-white tracking-tight">Business Idea Generator</h1>
           <p className="mt-2 text-sm sm:text-base text-white/70">
-            Turn early ideas into confident business decisions in one guided flow—generate concepts, compare the best options,
-            select the strongest direction, and export an executive-ready plan for stakeholder approval.
+            Go from raw ideas to stakeholder-ready decisions in one guided flow—generate concepts, compare top options,
+            select the strongest direction, and export an execution-ready plan.
           </p>
         </div>
 

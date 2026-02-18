@@ -6,6 +6,7 @@
 - Implemented a contract-first reliability layer with schema validation, correction retries, and fallback payloads across generation and analysis workflows.
 - Designed and shipped **Grounded Finance v2** for Execution Plans: deterministic financial modeling + narrative-only LLM composition, including run-conditioned assumption adjustments to keep projections realistic and auditable.
 - Added proposal-grade decision controls including go/conditional/no-go gates, profitability recovery logic, assumption provenance, and sensitivity stress testing.
+- Positioned the final Execution Plan artifact as an **Investment Readiness Assessment** to unify strategic fit, financial gates, and delivery feasibility for stakeholder approval.
 - Developed end-to-end reporting delivery (PDF + presentation export) with reusable saved artifacts, cache-aware retrieval, and modal-driven UX controls.
 - Added in-context Execution Plan `Info` pill tooltips at card level so technical and non-technical stakeholders can interpret report panels without external documentation.
 - Deployed on AWS App Runner from ECR with custom domain routing, host allowlist enforcement, and production-style health/runtime configuration.

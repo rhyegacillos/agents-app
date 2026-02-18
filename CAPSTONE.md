@@ -5,7 +5,7 @@
 ## 1. Project Overview
 
 IdeaGen is a production-style AI application that turns raw LLM generation into a structured decision workflow.
-Users can generate ideas across multiple model providers, rank outputs, compare saved runs, and produce execution-ready stakeholder reports (Execution Plan + PDF/Presentation exports).
+Users can generate ideas across multiple model providers, rank outputs, compare saved runs, and produce execution-ready stakeholder reports (Execution Plan / Investment Readiness Assessment + PDF/Presentation exports).
 
 This project demonstrates end-to-end AI engineering:
 
@@ -110,6 +110,7 @@ Deployment:
 12. Progressive loading UX states: skeleton hydration, footer status messages, spinner/dot indicators, and modal lock during critical operations.
 13. Proposal disclaimer + sensitivity analysis in execution outputs for benchmark-based realism communication.
 14. Card-level `Info` pill tooltips on Execution Plan panels for plain-English interpretation of each report section.
+15. Execution Plan is positioned as an **Investment Readiness Assessment** to frame go/no-go, financial gates, and implementation readiness in one artifact.
 
 ---
 

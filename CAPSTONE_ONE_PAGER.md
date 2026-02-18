@@ -1,7 +1,7 @@
 # IdeaGen One-Pager (AI Engineer Capstone)
 
 ## Executive Summary
-IdeaGen is a production-style AI decision platform that converts raw LLM ideation into structured, auditable business decisions. The system supports multi-model generation, ranking, run-to-run comparison, decision summaries, and a final Execution Plan artifact. It is designed to move from "interesting idea text" to "stakeholder-ready plan" with clear gates, saved evidence, and exportable deliverables.
+IdeaGen is a production-style AI decision platform that converts raw LLM ideation into structured, auditable business decisions. The system supports multi-model generation, ranking, run-to-run comparison, decision summaries, and a final Execution Plan artifact (positioned as an **Investment Readiness Assessment**). It is designed to move from "interesting idea text" to "stakeholder-ready plan" with clear gates, saved evidence, and exportable deliverables.
 
 ## Problem
 Most ideation tools stop at single-shot generation. That is insufficient for business decisions because teams need:
@@ -38,6 +38,7 @@ This hybrid design improves realism without losing narrative quality.
 - Diff insight between run A and run B top-ranked outputs
 - Decision Summary report over selected runs
 - Execution Plan generation with `go / conditional_go / no-go`
+- Execution Plan framed as an **Investment Readiness Assessment** for stakeholder approval decisions
 - Execution Plan card-level `Info` pill tooltips (plain-English guidance per panel)
 - PDF export (all report types) + presentation-style PDF for Execution Plan
 - Saved artifact lifecycle (`View`, `Delete`, `Delete All`) with guarded modal UX
