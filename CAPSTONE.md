@@ -5,7 +5,7 @@
 ## 1. Project Overview
 
 IdeaGen is a production-style AI application that turns raw LLM generation into a structured decision workflow.
-Users can generate ideas across multiple model providers, rank outputs, compare saved runs, and produce stakeholder-ready PDF or email reports.
+Users can generate ideas across multiple model providers, rank outputs, compare saved runs, and produce execution-ready stakeholder reports (Execution Plan + PDF/Presentation exports).
 
 This project demonstrates end-to-end AI engineering:
 
@@ -101,9 +101,15 @@ Deployment:
 3. Saved results lifecycle: create, list, load, delete.
 4. Compare Results mode (Run A vs Run B) with top-output diff insight.
 5. Decision Summary Report across selected runs (or all runs).
-6. PDF export and email delivery for generated, compare, and decision artifacts.
-7. Premium-only recommendation for persona + constraints.
-8. Usage tracking and plan-aware limits (API calls, tokens, emails, saved storage).
+6. Execution Plan generation from saved decision artifacts with grounded finance mode.
+7. PDF export and email delivery for generated, compare, and decision artifacts, plus PDF/Presentation export for execution plans.
+8. Premium-only recommendation for persona + constraints.
+9. Usage tracking and plan-aware limits (API calls, tokens, emails, saved storage).
+10. Draggable Saved Results floating modal with generated/compare/decision/execution modes.
+11. Per-item and bulk artifact deletion (`Delete`, `Delete All`) for generated runs, comparisons, decision reports, and execution plans.
+12. Progressive loading UX states: skeleton hydration, footer status messages, spinner/dot indicators, and modal lock during critical operations.
+13. Proposal disclaimer + sensitivity analysis in execution outputs for benchmark-based realism communication.
+14. Card-level `Info` pill tooltips on Execution Plan panels for plain-English interpretation of each report section.
 
 ---
 
@@ -187,6 +193,15 @@ Cache miss triggers inference; cache hit returns existing artifact and avoids ex
 
 Decision reports store run snapshots (`runs_json`) so historical reports remain renderable even if source runs later change or are deleted.
 
+### Pattern I: Deterministic Finance + Narrative Split
+
+Execution Plan generation uses a hybrid architecture:
+
+- deterministic finance engine for budgets, unit economics, projections, scenario outcomes, and gate math
+- LLM narrative generation for thesis framing, blueprint language, and risk narrative
+
+This removes free-form financial invention while preserving high-quality narrative output.
+
 ---
 
 ## 8. Workflow Deep Dive
@@ -215,6 +230,21 @@ Decision reports store run snapshots (`runs_json`) so historical reports remain 
 ### 8.3 Decision Summary (`POST /api/rank-report`)
 
 1. Validate output mode (`pdf`, `email`, `both`) and input run set.
+
+### 8.4 Execution Plan (`POST /api/stakeholder-report`)
+
+1. Validate source artifact (`decision_report`, `compare_result`, or `saved_run`) and selection context.
+2. Validate `finance_mode` (`grounded_v2` default, `llm_v1` compatibility).
+3. Build deterministic baseline dossier from assumption packs and scenario profile.
+4. Apply deterministic run-conditioned adjustments (constraints/persona/output signals/model confidence) with bounded multipliers.
+5. Recompute projections, scenario probability mix, and funnel assumptions from adjusted assumptions.
+4. Compose narrative sections via LLM (thesis, blueprint language, risks, actions).
+6. Merge narrative with deterministic finance sections.
+7. Validate/normalize dossier and enforce decision gates (`go`, `conditional_go`, `no_go`).
+8. Persist dossier and assumptions snapshot (including adjustment/audit metadata).
+9. Support export endpoints:
+   - `/api/stakeholder-reports/{id}/pdf`
+   - `/api/stakeholder-reports/{id}/presentation`
 2. Enforce token and email limits.
 3. Resolve cached report by normalized run-set key.
 4. On cache miss, run report agent and store snapshot.
@@ -227,6 +257,27 @@ Decision reports store run snapshots (`runs_json`) so historical reports remain 
 2. Recommendation agent constrained to allowed options.
 3. Strict exact-match checks for persona and constraints.
 4. Return recommendation and explanation HTML.
+
+### 8.5 Artifact Deletion and Bulk Cleanup
+
+Single-delete endpoints:
+
+- `DELETE /api/saved-results/{id}`
+- `DELETE /api/compare-results/{id}`
+- `DELETE /api/rank-reports/{id}`
+
+Bulk-delete endpoints:
+
+- `DELETE /api/saved-results`
+- `DELETE /api/compare-results`
+- `DELETE /api/rank-reports`
+
+Frontend behavior:
+
+1. All delete actions require explicit user confirmation.
+2. Bulk delete returns `{ status, count }` and drives user feedback messaging.
+3. During bulk deletion, list rows transition to a pending-delete animation and conflicting actions are disabled.
+4. Outside-click handlers are paused for parent modal close while delete confirmations are open.
 
 ---
 
@@ -255,6 +306,9 @@ Decision reports store run snapshots (`runs_json`) so historical reports remain 
 - disabled actions when limits are reached
 - loading and lock states for long-running operations
 - modal behavior designed to prevent conflicting actions during processing
+- delete confirmations isolate destructive flows from accidental parent modal close
+- compare/report footers expose explicit in-progress state instead of idle-ready messaging
+- execution-plan cards expose in-context plain-English `Info` pill guidance for non-technical readers
 
 ---
 
@@ -301,11 +355,14 @@ Operational controls:
 The product workspace (`pages/product.tsx`) manages:
 
 - configuration inputs and advanced settings
-- generated/compare/decision tabs
-- saved-results modal with three modes
+- generated/compare/decision/execution tabs
+- saved-results modal with four modes
 - draggable modal behavior with viewport constraints
-- fixed action footers for compare and decision generation
-- route-specific delivery actions (PDF/email by current tab)
+- per-row `View/Delete` actions for saved generated runs, comparisons, decision reports, and execution plans
+- mode-specific `Delete All` controls with confirmation and empty-state disable
+- fixed action footers for compare/decision generation and execution-selector workflows
+- animated status indicators (`LoadingDots`) for compare/report progression text plus spinner states for execution generation
+- route-specific delivery actions (PDF/email/presentation by current tab)
 - usage dashboard with refresh states
 
 Goal: reduce friction between generation, evaluation, and report delivery in one session.

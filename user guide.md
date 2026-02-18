@@ -19,10 +19,11 @@ On the Product page, you will see:
 - **Top utility cards** (right, upper area):
   - **Saved Results**
   - **Current Usage** (tokens, API calls, email usage, storage)
-- **Results workspace** (right, main area) with 3 tabs:
+- **Results workspace** (right, main area) with 4 tabs:
   - **Generated Results**
   - **Compare Rank Results**
   - **Decision Summary Report**
+  - **Execution Plan**
 
 ---
 
@@ -60,11 +61,12 @@ If empty, use the quick-start instructions shown in the blank state.
 
 ## 5) Saved Results modal system
 
-In the **Saved Results** card, there are three buttons:
+In the **Saved Results** card, there are four buttons:
 
 1. **Generated Results**
 2. **Compare Results**
 3. **Decision Summary Report**
+4. **Execution Plan**
 
 Each opens a modal with the same overall structure and size.
 
@@ -73,11 +75,12 @@ Each opens a modal with the same overall structure and size.
 - Draggable by header
 - Constrained to viewport (cannot be dragged off-screen)
 - Close via **Close** button, outside click, or `Esc`
-- During long-running actions (Compare / Decision report generation), modal locks:
+- During long-running actions (Compare / Decision / Execution Plan generation), modal locks:
   - No close
   - No drag
   - Outside click ignored
   - Refresh disabled
+- During delete confirmation dialogs, outside clicks no longer close the parent Saved Results modal.
 
 ---
 
@@ -88,8 +91,19 @@ Use this modal section to:
 - View list of previously saved runs
 - **Load** a run back into workspace
 - **Delete** a saved run
+- **Delete All** saved generated runs (with confirmation)
 
 Each saved item shows timestamp and configuration summary.
+
+### Delete All behavior
+
+- The **Delete All** button sits beside **Refresh** in Generated mode
+- Button is disabled when there are no saved generated runs
+- Confirmation modal shows the number of records to remove
+- During deletion:
+  - modal actions are locked
+  - row cards animate to a pending-delete state
+  - status shows deleting progress
 
 ---
 
@@ -111,6 +125,7 @@ Run Diff Mode to compare top-ranked outputs from two saved runs.
 
 - Fixed footer shows current status on the left
 - Compare button is on the right
+- While compare is running, status switches to `Comparing selected runs` with animated dots
 - If compare fails, error appears in footer left message
 - Clicking **Refresh** clears compare error and restores default footer status
 
@@ -118,6 +133,9 @@ Run Diff Mode to compare top-ranked outputs from two saved runs.
 
 - Previously generated comparisons are listed
 - Click **View** to reload that comparison flow
+- Click **Delete** to remove one comparison
+- Click **Delete All** in the **Saved comparisons** header to remove all saved comparisons
+- **Delete All** is disabled when the list is empty
 
 ---
 
@@ -143,11 +161,15 @@ Create a decision-ready report from selected saved runs.
 - Modal closes automatically
 - UI switches to the **Decision Summary Report** tab
 - Latest report loads into the tab
+- Footer right status changes to a generating message with animated dots during report generation
 
 ### Saved decision summary reports
 
 - Existing reports are listed in modal
 - Click **View** to open a saved decision report
+- Click **Delete** to remove one saved report
+- Click **Delete All** in the **Saved decision summary reports** header to remove all saved reports
+- **Delete All** is disabled when the list is empty
 
 ---
 
@@ -175,7 +197,88 @@ Use this for:
 
 ---
 
-## 11) Current Usage card
+## 11) Execution Plan tab
+
+### Purpose
+
+Convert ranked/selected ideas into an implementation and financial decision dossier.
+
+### How generation works
+
+1. Open **Decision Summary Report**
+2. Click **Generate Execution Plan**
+3. In the selector modal, choose one output variant (per run)
+4. Click **Generate Execution Plan**
+
+### Finance mode behavior
+
+- Default mode is **Grounded Finance v2**:
+  - finance sections are deterministic (not free-form invented)
+  - finance is run-conditioned per selected report/output using deterministic rules from:
+    - constraints
+    - persona
+    - selected output signals
+    - model confidence
+  - scenario probability mix and funnel assumptions can vary by selected report/output
+  - narrative sections are LLM-assisted
+- Legacy mode (`llm_v1`) exists for compatibility.
+
+### What appears in the report
+
+- Executive decision (`Go` / `Conditional Go` / `No-Go`)
+- Decision gates + required actions
+- Execution blueprint and resource plan
+- Budget, unit economics, monthly projection
+- Scenario outcomes
+- **Proposal estimate notice** (explicit benchmark disclaimer)
+- **Sensitivity analysis** (ARPU, conversion, OpEx stress tests)
+- Assumptions + provenance
+
+### Technical label help
+
+- The Execution Plan UI adds inline tooltip icons beside technical labels (for example: Confidence, Year 1 Net, Break-even, ARPU, COGS, OpEx, Cumulative).
+- Hover the icon to read plain-language definitions without leaving the report.
+
+### Card-level info pills (new)
+
+Each major Execution Plan card title now includes an **Info** pill tooltip.  
+These are written in plain English so any user can quickly understand what each panel means before reading detailed data.
+
+Info pills are available for:
+
+- Execution Plan (overall final-decision package)
+- Executive decision
+- Business terms and definitions
+- Execution blueprint
+- Budget and unit economics
+- Stakeholder ask
+- Scenario outcomes (Year 1)
+- Sensitivity analysis
+- Monthly financial projection
+- Resource plan
+- Risk register
+- Assumptions
+- Profitability recovery plan
+
+Usage:
+
+- Hover (desktop) or tap (click) the **Info** pill beside each card title.
+- Tooltip appears near the title and explains the purpose of that panel, what data it contains, and how to interpret it.
+
+### Exports
+
+- **Download PDF**
+- **Presentation Report** (deck-style PDF)
+
+### Saved execution plans
+
+- Open from **Saved Results → Execution Plan**
+- `View`, `Delete`, and header-level `Delete All`
+- Modal supports drag, lock states, and outside-click close (when unlocked)
+
+---
+
+## 12) Current Usage card
 
 Tracks usage with live updates:
 
@@ -191,7 +294,7 @@ Tracks usage with live updates:
 
 ---
 
-## 12) Clear vs Delete in workspace
+## 13) Clear vs Delete in workspace
 
 Top-right controls in results workspace:
 
@@ -200,9 +303,11 @@ Top-right controls in results workspace:
 
 Use Delete carefully—it is persistent removal.
 
+In Saved Results modals, **Delete All** performs bulk permanent deletion with confirmation.
+
 ---
 
-## 13) Plan/limit notes
+## 14) Plan/limit notes
 
 Depending on Free vs Premium, you may have limits on:
 
@@ -217,21 +322,21 @@ When limits are reached, actions are disabled or return limit messages.
 
 ---
 
-## 14) Best-practice workflow (recommended)
+## 15) Best-practice workflow (recommended)
 
 1. Configure industry + constraints + persona + models
 2. Generate ideas
 3. Save useful runs
 4. Compare strongest runs in **Compare Results**
 5. Build **Decision Summary Report** from finalists
-6. Export PDF / send email for stakeholder review
+6. Build **Execution Plan** from the winner output variant
+7. Export PDF / Presentation Report for stakeholder review
 
 ---
 
-## 15) Troubleshooting quick checks
+## 16) Troubleshooting quick checks
 
 - **No results shown**: ensure at least one model is selected and generation was run
 - **Compare disabled**: choose two valid runs first
 - **Email send blocked**: check email limit in Current Usage
 - **Refresh 404 after deploy**: use trailing-slash routes with static export setup (deployment config dependent)
-

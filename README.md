@@ -17,7 +17,7 @@ UI (Next.js) ---> FastAPI API ---> LLM Providers
      |                |               |-- Grok
      |                |
      |                +--> SQLite (saved runs, reports, usage)
-     |                +--> PDF renderer (xhtml2pdf)
+     |                +--> PDF renderer (WeasyPrint)
      |                +--> Resend email
 ```
 
@@ -26,14 +26,38 @@ UI (Next.js) ---> FastAPI API ---> LLM Providers
 - Agentic JSON validation and retries for structured outputs.
 - Separate analysis agents for ranking and comparisons.
 - Strict prompts to avoid assumptions and keep outputs factual.
+- Grounded Finance v2 for Execution Plans (deterministic financial model + narrative-only LLM).
 
 ## Agent flows
 - Idea generation: multi-model outputs for the same config.
 - Model ranking (per run): ranks model outputs using a rubric.
 - Compare results (across runs): compares top-ranked outputs for the same config.
 - Decision Summary Report: ranks multiple runs and summarizes insights.
+- Execution Plan: generates implementation and finance dossier from saved decision artifacts.
 - Recommend combination: suggests constraints/persona for a target industry.
 - Email agent: centralized report email sending.
+
+## Saved Results modal UX (implemented)
+- One draggable, viewport-constrained floating modal shell with 4 modes: Generated, Compare, Decision, Execution Plan.
+- Per-item actions:
+  - Generated: `Load`, `Delete`
+  - Compare: `View`, `Delete`
+  - Decision: `View`, `Delete`
+  - Execution Plan: `View`, `Delete`
+- Bulk actions:
+  - `Delete All` in Generated header (beside Refresh)
+  - `Delete All` in Saved Comparisons header
+  - `Delete All` in Saved Decision Summary Reports header
+  - `Delete All` in Saved Execution Plans header
+- Delete-all actions are disabled when the list is empty and always require confirmation.
+- During compare/report generation and bulk deletion, conflicting modal actions are locked.
+- Delete confirmation dialogs no longer trigger parent modal auto-close from outside-click listeners.
+
+## Bulk delete APIs (implemented)
+- `DELETE /api/saved-results` -> bulk delete generated runs, returns `{ status, count }`
+- `DELETE /api/compare-results` -> bulk delete comparisons, returns `{ status, count }`
+- `DELETE /api/rank-reports` -> bulk delete decision reports, returns `{ status, count }`
+- `DELETE /api/stakeholder-reports` -> bulk delete execution plans, returns `{ status, count }`
 
 ## Ranking rubric (per run)
 The model ranking agent scores outputs on:
@@ -54,7 +78,23 @@ The model ranking agent scores outputs on:
 - Per-run ranking uses the rubric above.
 - Compare Results uses top-ranked outputs only and highlights key changes.
 - Decision Summary Report ranks runs and summarizes risks and next steps.
+- Execution Plan uses grounded deterministic finance and rule-based gates for `go | conditional_go | no_go`.
 - Manual spot checks verify that outputs match the configuration and avoid hallucination.
+
+## Execution Plan (Grounded Finance v2)
+
+Execution Plans are generated from saved artifacts (`decision_report`, `compare_result`, or `saved_run`) and support strict finance grounding.
+
+- Default mode: `finance_mode=grounded_v2`
+  - financial sections are deterministic (`resources`, `costs`, `revenue_profit`, `scenarios`, `stakeholder_ask`)
+  - LLM is used only for narrative sections (thesis, execution blueprint, risks, decision wording)
+- Compatibility mode: `finance_mode=llm_v1`
+- Report includes:
+  - proposal estimate disclaimer banner,
+  - sensitivity analysis stress tests (ARPU, conversion, OpEx),
+  - assumption source + confidence fields,
+  - decision support gates and profitability recovery plan,
+  - per-card `Info` pill tooltips in the Execution Plan UI with plain-English explanations for non-technical readers.
 
 ## Local development
 
@@ -98,6 +138,9 @@ docker run -p 8000:8000 \
 - Security/privacy: `security_privacy.md`
 - Billing/limits: `billing_limits.md`
 - UX flow guide: `ux_flow.md`
+- User guide: `user guide.md`
+- Deep architecture reference: `ARCHITECTURE.md`
+- Stakeholder dossier schema spec: `stakeholder_report_schema.md`
 - Launch checklist: `checklist.md`
 - Roadmap: `roadmap.md`
 

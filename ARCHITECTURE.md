@@ -714,6 +714,21 @@ Failure:
 
 - `404` not found.
 
+### 5.5a `DELETE /api/saved-results`
+
+Purpose:
+
+- bulk-delete all saved generated runs scoped to current user.
+
+Behavior:
+
+- deletes all rows in `saved_results` for the authenticated user,
+- returns deleted row count in response payload.
+
+Response:
+
+- `{ "status": "deleted", "count": <int> }`
+
 ### 5.6 `POST /api/compare-results`
 
 Purpose:
@@ -762,6 +777,17 @@ Purpose:
 
 - delete saved comparison.
 
+### 5.8a `DELETE /api/compare-results`
+
+Purpose:
+
+- bulk-delete all saved comparisons for current user.
+
+Behavior:
+
+- removes all rows from `saved_comparisons` scoped by `user_id`,
+- returns deleted count for UI toast/status consistency.
+
 ### 5.9 `GET /api/compare-results/{comparison_id}/pdf`
 
 Purpose:
@@ -802,6 +828,17 @@ Failures:
 Purpose:
 
 - list saved decision summary reports.
+
+### 5.11a `DELETE /api/rank-reports`
+
+Purpose:
+
+- bulk-delete all saved decision summary reports for current user.
+
+Behavior:
+
+- removes all rows from `saved_rank_reports` for authenticated user,
+- returns deleted count for UI feedback.
 
 ### 5.12 `GET /api/rank-reports/{report_id}`
 
@@ -1341,11 +1378,12 @@ Primary page regions:
 
 1. Configuration panel (industry, constraints, persona, models, advanced settings)
 2. Usage panel (tokens/API/email/storage)
-3. Saved Results launcher card (three modal buttons)
-4. Main results area with three tabs:
+3. Saved Results launcher card (four modal buttons)
+4. Main results area with four tabs:
    - Generated Results
    - Compare Rank Results
    - Decision Summary Report
+   - Execution Plan
 
 ### 10.2 Core state domains
 
@@ -1353,6 +1391,7 @@ Notable state groups:
 
 - generation state: `results`, `isLoading`, `activeTab`, `rankResult`
 - saved artifacts: `savedResults`, `savedComparisons`, `savedReports`
+- execution artifacts: `savedStakeholderReports`, `stakeholderReport`, execution picker state
 - compare state: `compareSelection`, `compareResult`, `compareError`, `compareLoading`
 - report state: `reportSelection`, `reportOutput`, `reportEmail`, `reportLoading`, `decisionReport`
 - modal state: `savedPanelMode`, `savedPanelPos`, drag refs, lock state
@@ -1384,11 +1423,12 @@ UI gating behavior:
 
 ### 10.6 Saved Results modal architecture
 
-The Saved Results card opens one shared modal shell in one of three modes:
+The Saved Results card opens one shared modal shell in one of four modes:
 
 - `generated`
 - `compare`
 - `decision`
+- `stakeholder` (Execution Plan)
 
 Shared modal shell properties:
 
@@ -1397,7 +1437,8 @@ Shared modal shell properties:
 - constrained to viewport bounds,
 - overlay backdrop,
 - outside click + Escape close behavior,
-- lock mode during long-running compare/report actions.
+- lock mode during long-running compare/report actions,
+- parent modal outside-click close is paused while delete-confirm dialogs are open.
 
 ### 10.7 Draggable modal implementation
 
@@ -1420,19 +1461,34 @@ Generated mode:
 
 - list saved runs,
 - load or delete actions,
+- header-level `Delete All` action beside `Refresh`,
+- bulk-delete confirmation modal with record count,
+- row-level pending-delete animation during bulk delete,
 - load action closes modal and hydrates results area.
 
 Compare mode:
 
 - run selector (A/B),
 - saved comparisons list,
+- per-row `View` and `Delete` actions,
+- list-header `Delete All` action on the right,
+- bulk-delete confirmation + animated deleting state,
 - fixed-height footer with status/error and Compare action.
 
 Decision mode:
 
 - run-selection controls,
-- saved reports list with View action,
+- saved reports list with `View` and `Delete` actions,
+- list-header `Delete All` action on the right,
+- bulk-delete confirmation + animated deleting state,
 - fixed footer with output mode/email input/generate action.
+
+Execution Plan mode:
+
+- saved execution plans list with `View` and `Delete` actions,
+- list-header `Delete All` action on the right,
+- same shared floating modal shell and drag/lock semantics,
+- `View` hydrates Execution Plan tab with loading skeleton before content render.
 
 ### 10.9 Loading and hydration patterns
 
@@ -1441,6 +1497,7 @@ The UI uses staged loading patterns to avoid abrupt transitions:
 - minimum-delay loaders (`ensureMinLoadingTime`),
 - skeleton card (`ResultsSkeletonCard`) when loading saved artifact into main view,
 - per-button spinners,
+- animated status dots (`LoadingDots`) for compare/report in-progress status text,
 - modal lock banner while long actions are in progress.
 
 ### 10.10 Generated tab blank-state guidance
@@ -1454,6 +1511,42 @@ Generated tab includes:
 
 Compare and Decision tabs mirror this pattern with feature-specific quick-tip steps.
 
+### 10.11a Execution Plan terminology assist
+
+Execution Plan cards and tables include inline tooltip icons on technical labels (for example: `ARPU`, `COGS`, `OpEx`, `Break-even`, `Year 1 Net`, `Confidence`, `Avg FTE`).
+
+Design intent:
+
+- reduce ambiguity for non-technical stakeholders,
+- keep definitions in-context without navigating away,
+- preserve compact report density while improving readability.
+
+### 10.11b Execution Plan card-level info pills
+
+Execution Plan panel titles now include a dedicated `Info` pill tooltip (`InfoPillTooltip` in `pages/product.tsx`) for plain-English, panel-level guidance.
+
+Panels covered:
+
+- Execution Plan
+- Executive decision
+- Business terms and definitions
+- Execution blueprint
+- Budget and unit economics
+- Stakeholder ask
+- Scenario outcomes (Year 1)
+- Sensitivity analysis
+- Monthly financial projection
+- Resource plan
+- Risk register
+- Assumptions
+- Profitability recovery plan
+
+Design intent:
+
+- explain what each panel is for before users parse metrics/tables,
+- improve readability for non-technical stakeholders without adding visual clutter,
+- keep contextual help colocated with the panel header instead of separate docs.
+
 ### 10.11 Delivery actions in main workspace
 
 Download and email actions route to context-specific API endpoints:
@@ -1461,6 +1554,35 @@ Download and email actions route to context-specific API endpoints:
 - generated view -> `/api/download-pdf`, `/api/email`
 - compare view -> `/api/compare-results/{id}/pdf`, `/api/compare-results/{id}/email`
 - decision view -> `/api/rank-reports/{id}/pdf`, `/api/rank-reports/{id}/email`
+- execution plan view -> `/api/stakeholder-reports/{id}/pdf`, `/api/stakeholder-reports/{id}/presentation`
+
+### 10.12 Execution Plan architecture (Grounded Finance v2)
+
+Execution Plan generation is split into deterministic finance + narrative composition.
+
+Request path:
+
+- `POST /api/stakeholder-report`
+- accepts `source`, `scenario_profile`, `horizon_months`, `currency`, `region`, `output`, `finance_mode`
+
+Modes:
+
+- `grounded_v2` (default)
+  - deterministic sections: `resources`, `costs`, `revenue_profit`, `scenarios`, `stakeholder_ask`, finance assumptions
+  - finance baseline is now **run-conditioned** (still deterministic):
+    - starts from industry assumption pack,
+    - applies bounded multipliers derived from selected run constraints/persona/output signals/model confidence,
+    - recalculates scenario probabilities and funnel assumptions per selected report/output.
+  - LLM narrative sections: thesis phrasing, blueprint language, risk wording, plan narrative
+  - output includes `proposal_disclaimer` and `sensitivity_analysis`
+- `llm_v1` (compatibility path)
+
+Validation:
+
+- server-side dossier normalization and schema checks run after generation,
+- decision gates and profitability recovery are computed and enforced in backend,
+- provenance records `finance_mode`, `financials_grounded`, `formula_version`, and `narrative_model`.
+- assumptions now include run-conditioned metadata (`selected_output_title`, model confidence, scenario mix, adjustment tags) for auditability.
 
 ---
 
@@ -1525,6 +1647,23 @@ User clicks Download PDF / Send Email
   -> backend renders PDF using html templates
   -> for email paths: backend runs email agent + sends via Resend
   -> UI reports success/failure status
+```
+
+## 11.6 Execution Plan flow
+
+```text
+User opens Decision Summary tab
+  -> clicks Generate Execution Plan
+  -> selector modal opens with ranked outputs (one selectable variant per run)
+  -> user selects one output variant
+  -> POST /api/stakeholder-report (finance_mode=grounded_v2)
+  -> backend resolves source artifact and selected model output
+  -> backend builds deterministic finance baseline
+  -> backend composes narrative sections (LLM)
+  -> backend validates/normalizes dossier and saves artifact
+  -> selector modal closes
+  -> workspace loads Execution Plan tab with hydration skeleton
+  -> user can export PDF or Presentation report
 ```
 
 ---

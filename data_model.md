@@ -80,6 +80,39 @@ Relationships:
 
 ---
 
+### saved_stakeholder_reports
+Stores Stakeholder Execution Dossiers (JSON artifact, no user input mode).
+
+Columns:
+- `id` INTEGER PRIMARY KEY AUTOINCREMENT
+- `user_id` TEXT
+- `created_at` TEXT
+- `source_type` TEXT (`decision_report`, `compare_result`, `saved_run`)
+- `source_id` INTEGER
+- `scenario_profile` TEXT (`conservative`, `base`, `aggressive`, `all`)
+- `horizon_months` INTEGER
+- `currency` TEXT (current: `USD`)
+- `region` TEXT (current: `US`)
+- `dossier_json` TEXT
+- `assumptions_json` TEXT
+- `model` TEXT
+
+Relationships:
+- `source_type/source_id` references one of:
+  - `saved_rank_reports.id`
+  - `saved_comparisons.id`
+  - `saved_results.id`
+- Relationship integrity is enforced in application logic.
+
+Execution Plan payload conventions (stored inside `dossier_json`):
+- `proposal_disclaimer`: marks report as benchmark-grounded estimate.
+- `sensitivity_analysis`: ARPU / conversion / OpEx stress-test results.
+- `decision_support`: gate status, required actions, and profitability recovery plan.
+- `provenance.finance_mode`: `grounded_v2` (default) or `llm_v1`.
+- `provenance.financials_grounded`: boolean indicating deterministic finance application.
+
+---
+
 ## Migrations / Alterations
 Applied at startup in `init_db()`:
 - Add `tokens_last_reset_date` to `user_usage`.
@@ -89,3 +122,4 @@ Applied at startup in `init_db()`:
 ## Notes
 - JSON fields are stored as stringified JSON and parsed in `api/db.py`.
 - There are no foreign key constraints; relationships are managed in application logic.
+- `model` in `saved_stakeholder_reports` records the narrative model used; finance values may still be deterministic via `grounded_v2`.

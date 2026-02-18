@@ -69,6 +69,23 @@ def init_db():
             model TEXT
         )
     ''')
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS saved_stakeholder_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            created_at TEXT,
+            source_type TEXT,
+            source_id INTEGER,
+            scenario_profile TEXT,
+            horizon_months INTEGER,
+            currency TEXT,
+            region TEXT,
+            dossier_json TEXT,
+            assumptions_json TEXT,
+            model TEXT
+        )
+    ''')
     
     # Migration for new column
     try:
@@ -596,6 +613,21 @@ def delete_saved_rank_report(user_id, report_id):
     finally:
         conn.close()
 
+
+def delete_all_saved_rank_reports(user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            DELETE FROM saved_rank_reports
+            WHERE user_id = ?
+        ''', (user_id,))
+        conn.commit()
+        return c.rowcount or 0
+    finally:
+        conn.close()
+
+
 def list_saved_rank_reports(user_id, limit=6):
     conn = get_db()
     try:
@@ -698,7 +730,7 @@ def get_saved_results_by_ids(user_id, ids):
         c = conn.cursor()
         c.execute(
             f'''
-            SELECT id, created_at, industry, tone, constraints_json, models_json, results_json
+            SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
             FROM saved_results
             WHERE user_id = ? AND id IN ({placeholders})
             ''',
@@ -719,6 +751,10 @@ def get_saved_results_by_ids(user_id, ids):
                 results = json.loads(row["results_json"]) if row["results_json"] else {}
             except json.JSONDecodeError:
                 results = {}
+            try:
+                rank_result = json.loads(row["rank_result_json"]) if row["rank_result_json"] else None
+            except json.JSONDecodeError:
+                rank_result = None
             out.append({
                 "id": row["id"],
                 "created_at": row["created_at"],
@@ -727,6 +763,7 @@ def get_saved_results_by_ids(user_id, ids):
                 "constraints": constraints,
                 "models": models,
                 "results": results,
+                "rank_result": rank_result,
             })
         return out
     finally:
@@ -817,6 +854,21 @@ def delete_saved_comparison(user_id, comparison_id):
     finally:
         conn.close()
 
+
+def delete_all_saved_comparisons(user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            DELETE FROM saved_comparisons
+            WHERE user_id = ?
+        ''', (user_id,))
+        conn.commit()
+        return c.rowcount or 0
+    finally:
+        conn.close()
+
+
 def save_comparison(user_id, run_a_id, run_b_id, winner_run_id, comparison, model):
     conn = get_db()
     try:
@@ -887,6 +939,20 @@ def delete_saved_result(user_id, saved_id):
         conn.close()
 
 
+def delete_all_saved_results(user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''
+            DELETE FROM saved_results
+            WHERE user_id = ?
+        ''', (user_id,))
+        conn.commit()
+        return c.rowcount or 0
+    finally:
+        conn.close()
+
+
 def update_saved_result_rank(user_id, saved_id, rank_result):
     conn = get_db()
     try:
@@ -919,5 +985,179 @@ def get_saved_results_usage_bytes(user_id):
         ''', (user_id,))
         row = c.fetchone()
         return int(row["total"] or 0)
+    finally:
+        conn.close()
+
+
+def save_stakeholder_report(
+    user_id,
+    source_type,
+    source_id,
+    scenario_profile,
+    horizon_months,
+    currency,
+    region,
+    dossier,
+    assumptions,
+    model=None,
+):
+    conn = get_db()
+    try:
+        created_at = datetime.now(timezone.utc).isoformat()
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO saved_stakeholder_reports (
+                user_id, created_at, source_type, source_id, scenario_profile, horizon_months,
+                currency, region, dossier_json, assumptions_json, model
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                user_id,
+                created_at,
+                source_type,
+                source_id,
+                scenario_profile,
+                horizon_months,
+                currency,
+                region,
+                json.dumps(dossier or {}),
+                json.dumps(assumptions or []),
+                model,
+            ),
+        )
+        conn.commit()
+        return {"id": c.lastrowid, "created_at": created_at}
+    finally:
+        conn.close()
+
+
+def get_saved_stakeholder_report_by_id(user_id, report_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT *
+            FROM saved_stakeholder_reports
+            WHERE user_id = ? AND id = ?
+            LIMIT 1
+            ''',
+            (user_id, report_id),
+        )
+        row = c.fetchone()
+        if not row:
+            return None
+        dossier = {}
+        assumptions = []
+        if row["dossier_json"]:
+            try:
+                dossier = json.loads(row["dossier_json"])
+            except json.JSONDecodeError:
+                dossier = {}
+        if row["assumptions_json"]:
+            try:
+                assumptions = json.loads(row["assumptions_json"])
+            except json.JSONDecodeError:
+                assumptions = []
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "source_type": row["source_type"],
+            "source_id": row["source_id"],
+            "scenario_profile": row["scenario_profile"],
+            "horizon_months": row["horizon_months"],
+            "currency": row["currency"],
+            "region": row["region"],
+            "model": row["model"],
+            "assumptions": assumptions,
+            "dossier": dossier,
+        }
+    finally:
+        conn.close()
+
+
+def list_saved_stakeholder_reports(user_id, limit=6):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT id, created_at, source_type, source_id, scenario_profile, horizon_months, currency, region, model, dossier_json
+            FROM saved_stakeholder_reports
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            ''',
+            (user_id, limit),
+        )
+        rows = c.fetchall()
+        out = []
+        for row in rows:
+            title = "Untitled execution plan"
+            recommendation = "conditional_go"
+            if row["dossier_json"]:
+                try:
+                    dossier = json.loads(row["dossier_json"]) if row["dossier_json"] else {}
+                except json.JSONDecodeError:
+                    dossier = {}
+                decision = dossier.get("decision") if isinstance(dossier.get("decision"), dict) else {}
+                winner = decision.get("winner") if isinstance(decision.get("winner"), dict) else {}
+                winner_title = str(winner.get("title") or "").strip()
+                if winner_title:
+                    title = winner_title
+                raw_recommendation = str(decision.get("go_no_go") or "").strip().lower()
+                if raw_recommendation in {"go", "conditional_go", "no_go"}:
+                    recommendation = raw_recommendation
+            out.append(
+                {
+                    "id": row["id"],
+                    "created_at": row["created_at"],
+                    "source_type": row["source_type"],
+                    "source_id": row["source_id"],
+                    "scenario_profile": row["scenario_profile"],
+                    "horizon_months": row["horizon_months"],
+                    "currency": row["currency"],
+                    "region": row["region"],
+                    "model": row["model"],
+                    "title": title,
+                    "recommendation": recommendation,
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def delete_saved_stakeholder_report(user_id, report_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''
+            DELETE FROM saved_stakeholder_reports
+            WHERE user_id = ? AND id = ?
+            ''',
+            (user_id, report_id),
+        )
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_all_saved_stakeholder_reports(user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''
+            DELETE FROM saved_stakeholder_reports
+            WHERE user_id = ?
+            ''',
+            (user_id,),
+        )
+        conn.commit()
+        return c.rowcount or 0
     finally:
         conn.close()

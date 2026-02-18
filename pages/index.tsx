@@ -3,6 +3,63 @@
 import Link from "next/link";
 import { SignInButton, SignedIn, SignedOut, UserButton, useUser } from "@clerk/nextjs";
 
+const FEATURE_CARDS: Array<{ title: string; description: string }> = [
+  {
+    title: "Structured idea output",
+    description:
+      "Generate decision-ready sections (problem, scope, moat, pricing, metrics, plan) with constraints applied.",
+  },
+  {
+    title: "Multi-model comparison",
+    description: "Select multiple LLMs and compare results side-by-side in a clean tabbed viewer.",
+  },
+  {
+    title: "Recommend Combination (Premium)",
+    description:
+      "Get a recommended persona + constraints pairing, plus reasons you can reuse in messaging.",
+  },
+  {
+    title: "Constraints + personas",
+    description: "Choose guardrails and tone. Premium unlocks multi-select constraints and full persona set.",
+  },
+  {
+    title: "Export + Email (Premium)",
+    description:
+      "Export polished PDF reports and send them by email directly from the app for faster stakeholder sharing.",
+  },
+  {
+    title: "Saved results library",
+    description: "Save multi-model runs by date and reload them any time to continue, export, or email.",
+  },
+  {
+    title: "Usage + storage tracking",
+    description: "Live view of token, API, email, and saved-results storage limits with automatic resets.",
+  },
+  {
+    title: "Rank Reports",
+    description: "Turn multiple saved runs into a ranked report you can share with stakeholders in one click.",
+  },
+  {
+    title: "Compare Rank Results",
+    description: "Pick two saved runs and see what changed, which option wins, and the top outputs side-by-side.",
+  },
+  {
+    title: "Decision Summary Report",
+    description:
+      "Choose several saved runs and get one clear summary of the best choice, why it wins, risks, and next steps.",
+  },
+  {
+    title: "Execution Plan (Premium)",
+    description:
+      "Convert the winning idea into an investor-ready execution plan with go/no-go gates, budget, forecast, risks, and export-ready outputs.",
+  },
+  {
+    title: "Agentic reliability",
+    description:
+      "Monitoring-friendly logging + retry behavior for slow responses, and fallbacks for provider errors.",
+  },
+];
+
 export default function Home() {
   const { user, isLoaded } = useUser();
 
@@ -80,7 +137,7 @@ export default function Home() {
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
               <span className="h-2 w-2 rounded-full bg-emerald-400/80" />
-              New: agentic diff insights + reports
+              New: decision summary + execution plan workflow
             </div>
 
             <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
@@ -90,7 +147,7 @@ export default function Home() {
 
             <p className="mt-4 text-base text-white/70 sm:text-lg">
               IdeaGen turns your constraints, industry, and persona into structured, decision-ready business ideas.
-              Compare multiple LLMs, get recommended combinations, and export polished outputs.
+              Compare multiple LLMs, select a winner with ranked evidence, then generate an execution plan you can share with stakeholders.
             </p>
 
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -134,8 +191,8 @@ export default function Home() {
                 <div className="mt-1 text-white/60">Compare outputs</div>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                <div className="text-white font-semibold">Report Insights</div>
-                <div className="mt-1 text-white/60">Rank Reports + Decision Summary</div>
+                <div className="text-white font-semibold">Decision to Execution</div>
+                <div className="mt-1 text-white/60">Compare + Decision Summary + Execution Plan</div>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <div className="text-white font-semibold">Exportable</div>
@@ -194,7 +251,7 @@ export default function Home() {
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                     <div className="flex items-center justify-between">
                       <div className="text-xs text-white/60">Report insights</div>
-                      <div className="text-[11px] text-white/60">Rank Reports • Decision Summary</div>
+                      <div className="text-[11px] text-white/60">Compare • Decision Summary • Execution Plan</div>
                     </div>
                     <div className="mt-3 space-y-2">
                       <div className="flex items-center justify-between rounded-lg bg-white/5 px-2.5 py-2 text-[11px] text-white/80">
@@ -243,82 +300,12 @@ export default function Home() {
         </div>
 
         <div className="mt-8 grid gap-4 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Structured idea output</div>
-            <p className="mt-2 text-sm text-white/70">
-              Generate decision-ready sections (problem, scope, moat, pricing, metrics, plan) with constraints applied.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Multi-model comparison</div>
-            <p className="mt-2 text-sm text-white/70">
-              Select multiple LLMs and compare results side-by-side in a clean tabbed viewer.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Recommend Combination (Premium)</div>
-            <p className="mt-2 text-sm text-white/70">
-              Get a recommended persona + constraints pairing, plus reasons you can reuse in messaging.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Constraints + personas</div>
-            <p className="mt-2 text-sm text-white/70">
-              Choose guardrails and tone. Premium unlocks multi-select constraints and full persona set.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Export report (Premium)</div>
-            <p className="mt-2 text-sm text-white/70">
-              Download PDF or email the output—ideal for sharing with cofounders, clients, or your own pipeline.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Saved results library</div>
-            <p className="mt-2 text-sm text-white/70">
-              Save multi-model runs by date and reload them any time to continue, export, or email.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Usage + storage tracking</div>
-            <p className="mt-2 text-sm text-white/70">
-              Live view of token, API, email, and saved-results storage limits with automatic resets.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Compare Rank Results</div>
-            <p className="mt-2 text-sm text-white/70">
-              Pick two saved runs and see what changed, which option wins, and the top outputs side-by-side.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Decision Summary Report</div>
-            <p className="mt-2 text-sm text-white/70">
-              Choose several saved runs and get one clear summary of the best choice, why it wins, risks, and next steps.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Rank Reports</div>
-            <p className="mt-2 text-sm text-white/70">
-              Turn multiple saved runs into a ranked report you can share with stakeholders in one click.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="text-sm font-semibold text-white">Agentic reliability</div>
-            <p className="mt-2 text-sm text-white/70">
-              Monitoring-friendly logging + retry behavior for slow responses, and fallbacks for provider errors.
-            </p>
-          </div>
+          {FEATURE_CARDS.map((item) => (
+            <div key={item.title} className="rounded-3xl border border-white/10 bg-white/5 p-5">
+              <div className="text-sm font-semibold text-white">{item.title}</div>
+              <p className="mt-2 text-sm text-white/70">{item.description}</p>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -333,12 +320,12 @@ export default function Home() {
           </div>
 
           <div className="mt-6 grid gap-4 md:grid-cols-2">
-            <div className="rounded-3xl border border-white/10 bg-black/20 p-6">
+            <div className="rounded-3xl border border-white/10 bg-black/20 p-6 flex h-full flex-col">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-white">Free</div>
                 <span className="text-xs text-white/60">Limited</span>
               </div>
-              <ul className="mt-4 space-y-2 text-sm text-white/70">
+              <ul className="mt-4 space-y-2 text-sm text-white/70 flex-1">
                 <li>• Generate ideas</li>
                 <li>• 1 model at a time</li>
                 <li>• Constraint selection limited</li>
@@ -346,6 +333,7 @@ export default function Home() {
                 <li>• Saved results (100MB)</li>
                 <li>• Compare Rank Results</li>
                 <li>• Decision Summary Report (PDF only)</li>
+                <li>• No Execution Plan</li>
                 <li>• No recommend combination</li>
                 <li>• No PDF/email export</li>
               </ul>
@@ -368,14 +356,14 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-3xl border border-white/10 bg-white/10 p-6">
+            <div className="rounded-3xl border border-white/10 bg-white/10 p-6 flex h-full flex-col">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-white">Premium</div>
                 <span className="text-xs rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-white/80">
                   Recommended
                 </span>
               </div>
-              <ul className="mt-4 space-y-2 text-sm text-white/70">
+              <ul className="mt-4 space-y-2 text-sm text-white/70 flex-1">
                 <li>• Multi-model comparison</li>
                 <li>• Multi-select constraints</li>
                 <li>• Full persona set</li>
@@ -383,6 +371,7 @@ export default function Home() {
                 <li>• Saved results (1GB)</li>
                 <li>• Compare Rank Results</li>
                 <li>• Decision Summary Report (PDF + email)</li>
+                <li>• Execution Plan + Presentation Report</li>
                 <li>• PDF export + email delivery</li>
               </ul>
               <div className="mt-5">

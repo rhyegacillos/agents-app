@@ -53,6 +53,39 @@ const INDUSTRIES = [
   "SMB Back Office (Accounting, Payroll, Invoicing)",
 ];
 
+const INDUSTRY_HINTS: Record<string, string> = {
+  "FinTech": "Products for payments, lending, banking, and money operations.",
+  "HealthTech": "Solutions for healthcare systems, clinics, and patient workflows.",
+  "EdTech": "Tools that improve learning, teaching, and education operations.",
+  "AgriTech": "Technology for farming, crop planning, and agricultural efficiency.",
+  "E-commerce": "Online selling, storefront operations, checkout, and fulfillment.",
+  "Real Estate": "Tools for property search, leasing, transactions, and management.",
+  "Cybersecurity": "Solutions that protect systems, data, and user access.",
+  "LegalTech": "Software for legal research, contracts, compliance, and law operations.",
+  "MarTech": "Tools for marketing campaigns, analytics, and customer engagement.",
+  "CleanTech": "Technology focused on sustainability, energy efficiency, and emissions reduction.",
+  "Gaming": "Products for game creation, player growth, and live operations.",
+  "Logistics": "Solutions for shipping, routing, delivery tracking, and warehouse flow.",
+  "Travel & Tourism": "Tools for bookings, itineraries, customer support, and travel planning.",
+  "HR Tech": "Products for hiring, onboarding, people ops, and workforce management.",
+  "PropTech": "Technology for property operations, leasing, and building management.",
+  "InsuranceTech": "Tools for underwriting, claims, pricing, and policy servicing.",
+  "Supply Chain & Procurement": "Solutions for sourcing, purchasing, inventory, and supplier workflows.",
+  "Customer Support Operations": "Tools for ticket handling, helpdesk productivity, and service quality.",
+  "Sales Operations & RevOps": "Products for pipeline management, forecasting, and revenue execution.",
+  "Healthcare Operations (Non-Clinical)": "Operational tools for healthcare admin, scheduling, and back-office tasks.",
+  "Pharma & Life Sciences Ops": "Solutions for pharma workflows, documentation, and regulated operations.",
+  "Financial Compliance & Audit": "Tools for controls, reporting, risk checks, and audit readiness.",
+  "Construction & Field Services": "Products for jobsite planning, field teams, and service dispatch.",
+  "Manufacturing Operations": "Tools for production planning, quality, and factory workflows.",
+  "Energy & Utilities Operations": "Solutions for grid, utility operations, and service reliability.",
+  "Government & Public Sector Ops": "Tools for public services, agency workflows, and compliance-heavy operations.",
+  "Media & Content Operations": "Products for content production, publishing pipelines, and editorial workflows.",
+  "Creator Economy Tools": "Tools for creators to grow audience, monetize, and manage work.",
+  "Retail Operations": "Solutions for store performance, inventory, and shopper experience.",
+  "SMB Back Office (Accounting, Payroll, Invoicing)": "Tools for small-business finance and day-to-day admin operations.",
+};
+
 const CONSTRAINTS = [
   "None",
   "Low Startup Cost (<$5k)",
@@ -73,6 +106,26 @@ const CONSTRAINTS = [
   "Legacy Systems Only (Email, Excel, PDFs)",
 ];
 
+const CONSTRAINT_HINTS: Record<string, string> = {
+  "None": "No limits. The AI can propose any idea type.",
+  "Low Startup Cost (<$5k)": "Ideas should be launchable with about $5,000 or less.",
+  "No-Code Solution": "Prefer tools and workflows that do not require custom coding.",
+  "Enterprise Scale": "Ideas should support large teams, high volume, and reliability needs.",
+  "B2B SaaS": "Focus on software sold to businesses on a subscription model.",
+  "B2C Mobile App": "Focus on a mobile app experience for individual consumers.",
+  "Bootstrapped Friendly": "Ideas should be practical without heavy outside funding.",
+  "Human-in-the-Loop Required": "A person must review or approve key AI decisions.",
+  "Regulated Environment (HIPAA, SOC2, GDPR)": "Ideas must work in strict compliance and audit-heavy contexts.",
+  "Data Cannot Leave Customer Environment": "Data must stay in the customer's own environment (on-prem or private cloud).",
+  "API-First (No UI MVP)": "Prioritize backend/API value first, with minimal or no initial frontend.",
+  "Single-Person Buyer (Founder / Manager)": "Design for one clear decision maker with fast buying decisions.",
+  "Long Sales Cycle (6+ months)": "Assume enterprise-like procurement with long evaluation and approval timelines.",
+  "Usage-Based Pricing Required": "Business model should charge based on usage/consumption.",
+  "Offline / Low-Connectivity Environment": "Solution should work with weak internet or partial offline operation.",
+  "International / Multi-Language Users": "Plan for localization and multiple language support early.",
+  "Legacy Systems Only (Email, Excel, PDFs)": "Assume customers rely on basic tools and older workflows.",
+};
+
 const PERSONAS = [
   { id: "Neutral", label: "Neutral / Professional (Execution Focused)" },
   { id: "Critical VC", label: "Critical VC Investor (Risk, Moat, Distribution)" },
@@ -84,12 +137,53 @@ const PERSONAS = [
   { id: "Growth Marketer", label: "Growth Marketer (Acquisition & Retention)" },
 ];
 
+const PERSONA_HINTS: Record<string, string> = {
+  "Neutral": "Balanced and practical. Focuses on clear execution, feasibility, and tradeoffs.",
+  "Critical VC": "Investor mindset. Challenges market size, moat strength, risks, and defensibility.",
+  "Optimistic Visionary": "Big-picture mode. Pushes platform potential, expansion, and long-term upside.",
+  "Operator": "Execution-first. Emphasizes process, workflow fit, ROI, and operational reality.",
+  "Compliance Officer": "Risk-control lens. Prioritizes policy, auditability, security, and safety controls.",
+  "Solo Founder": "Lean builder style. Focuses on speed, simplicity, and early cashflow.",
+  "Enterprise Buyer": "Procurement mindset. Prioritizes security, governance, integration, and vendor trust.",
+  "Growth Marketer": "Go-to-market lens. Focuses on acquisition channels, retention loops, and conversion.",
+};
+
 const MODELS = [
   { id: "gpt-5-nano", label: "OpenAI" },
   { id: "gemini-2.5-pro", label: "Gemini" },
   { id: "deepseek-chat", label: "DeepSeek" },
   { id: "grok-4-1-fast-reasoning", label: "Grok" },
 ];
+
+function getConstraintHint(constraint: string) {
+  return CONSTRAINT_HINTS[constraint] || "Applies this rule while generating ideas.";
+}
+
+function getIndustryHint(industry: string) {
+  return INDUSTRY_HINTS[industry] || "Sets the business domain for the ideas.";
+}
+
+function getPersonaHint(personaId: string) {
+  return PERSONA_HINTS[personaId] || "Changes the point of view used to evaluate and write ideas.";
+}
+
+type HoverBubbleState = {
+  text: string;
+  top: number;
+  left: number;
+  side: "right" | "left";
+};
+
+function buildHoverBubble(target: HTMLElement, text: string): HoverBubbleState {
+  const rect = target.getBoundingClientRect();
+  const bubbleWidth = 320;
+  const margin = 12;
+  const hasRightSpace = rect.right + margin + bubbleWidth < window.innerWidth - 12;
+  const side: "right" | "left" = hasRightSpace ? "right" : "left";
+  const top = Math.round(Math.max(16, Math.min(window.innerHeight - 16, rect.top + rect.height / 2)));
+  const left = side === "right" ? rect.right + margin : rect.left - margin;
+  return { text, top, left, side };
+}
 
 type IdeaResults = { [key: string]: string };
 type SavedResultSummary = {
@@ -114,8 +208,8 @@ type CompareResult = {
     winner_rationale: string;
     risks?: string[];
     top_outputs?: {
-      run_a?: { title?: string; model_label?: string; model_id?: string; output_html?: string };
-      run_b?: { title?: string; model_label?: string; model_id?: string; output_html?: string };
+      run_a?: { title?: string; model_label?: string; model_id?: string; output_html?: string; score?: number | null };
+      run_b?: { title?: string; model_label?: string; model_id?: string; output_html?: string; score?: number | null };
     };
   };
   cached?: boolean;
@@ -141,8 +235,8 @@ type SavedComparisonSummary = {
   run_b_id: number;
   winner_run_id: number | null;
   top_outputs?: {
-    run_a?: { title?: string; model_label?: string };
-    run_b?: { title?: string; model_label?: string };
+    run_a?: { title?: string; model_label?: string; score?: number | null };
+    run_b?: { title?: string; model_label?: string; score?: number | null };
   };
 };
 type SavedReportSummary = {
@@ -176,6 +270,190 @@ type DecisionSummaryReport = {
   }>;
 };
 
+type StakeholderReportSummary = {
+  id: number;
+  created_at: string;
+  source_type: string;
+  source_id: number;
+  title?: string;
+  recommendation?: "go" | "conditional_go" | "no_go";
+  scenario_profile: string;
+  horizon_months: number;
+  currency: string;
+  region: string;
+  model?: string;
+};
+
+type StakeholderReport = StakeholderReportSummary & {
+  assumptions?: Array<{
+    key: string;
+    value: string | number;
+    unit: string;
+    source: string;
+    confidence: "low" | "medium" | "high";
+  }>;
+  dossier?: {
+    decision?: {
+      thesis?: string;
+      go_no_go?: "go" | "conditional_go" | "no_go";
+      confidence?: number;
+      winner?: { run_id?: number; model_id?: string; title?: string };
+    };
+    decision_support?: {
+      status?: "viable" | "conditional" | "not_viable";
+      forced_by_rules?: boolean;
+      reasons?: string[];
+      required_actions?: string[];
+      profitability_recovery?: {
+        enabled?: boolean;
+        monthly_profit_gap?: number;
+        target_year_1_net_profit?: number;
+        levers?: Array<{
+          name?: string;
+          target?: string;
+          estimated_monthly_impact?: number;
+        }>;
+        scenarios?: Array<{
+          name?: string;
+          moves?: string[];
+          estimated_monthly_impact?: number;
+          estimated_year_1_net_profit?: number;
+          estimated_break_even_month?: number;
+        }>;
+        experiments_90_days?: Array<{
+          name?: string;
+          owner?: string;
+          target_metric?: string;
+          deadline_days?: number;
+          expected_monthly_impact?: number;
+        }>;
+        approval_gate?: string;
+      };
+      gates?: {
+        year_1_net_profit?: number;
+        expected_year_1_net_profit?: number | null;
+        break_even_month?: number;
+        break_even_within_horizon?: boolean;
+        gross_margin_ratio?: number | null;
+        horizon_months?: number;
+      };
+    };
+    execution_blueprint?: {
+      phases?: Array<{
+        name?: string;
+        start_month?: number;
+        end_month?: number;
+        workstreams?: string[];
+        deliverables?: string[];
+        dependencies?: string[];
+        owner_roles?: string[];
+      }>;
+      critical_path?: string[];
+      gates?: string[];
+      kill_criteria?: string[];
+    };
+    resources?: {
+      roles?: Array<{
+        role?: string;
+        fte_by_month?: number[];
+        employment_type?: string;
+        cost_monthly?: number[];
+      }>;
+      tooling?: Array<{ name?: string; category?: string; monthly_cost?: number }>;
+      external_dependencies?: string[];
+    };
+    costs?: {
+      setup_cost?: {
+        engineering?: number;
+        legal_compliance?: number;
+        launch_marketing?: number;
+        other?: number;
+        total?: number;
+      };
+      monthly_opex?: Array<{
+        month?: number;
+        payroll?: number;
+        infra?: number;
+        ai_inference?: number;
+        tools?: number;
+        sales_marketing?: number;
+        other?: number;
+        total?: number;
+      }>;
+      unit_cogs?: {
+        per_customer_monthly?: number;
+        components?: Array<{ name?: string; amount?: number }>;
+      };
+    };
+    revenue_profit?: {
+      pricing?: { model?: string; arpu_monthly?: number };
+      funnel_assumptions?: {
+        traffic_to_lead?: number;
+        lead_to_sql?: number;
+        sql_to_customer?: number;
+      };
+      break_even_month?: number;
+      monthly_projection?: Array<{
+        month?: number;
+        customers?: number;
+        revenue?: number;
+        cogs?: number;
+        gross_profit?: number;
+        opex?: number;
+        net_profit?: number;
+        cumulative_net_profit?: number;
+      }>;
+    };
+    scenarios?: Array<{
+      name?: string;
+      probability?: number;
+      key_assumptions?: string[];
+      year_1_revenue?: number;
+      year_1_net_profit?: number;
+    }>;
+    risks?: Array<{
+      category?: string;
+      description?: string;
+      impact?: string;
+      probability?: string;
+      mitigation?: string;
+      owner_role?: string;
+      trigger?: string;
+    }>;
+    stakeholder_ask?: {
+      budget_required?: number;
+      team_required?: string[];
+      decision_required?: string;
+      next_30_days?: string[];
+    };
+    proposal_disclaimer?: {
+      title?: string;
+      message?: string;
+      data_basis?: string;
+      updated_at?: string;
+    };
+    sensitivity_analysis?: {
+      baseline?: {
+        year_1_revenue?: number;
+        year_1_net_profit?: number;
+        break_even_month?: number;
+      };
+      tests?: Array<{
+        name?: string;
+        year_1_revenue?: number;
+        year_1_net_profit?: number;
+        break_even_month?: number;
+      }>;
+      interpretation?: string;
+    };
+    provenance?: {
+      source_artifacts?: Array<{ type?: string; id?: number }>;
+      formula_version?: string;
+      generator_version?: string;
+    };
+  };
+};
+
 type RunSnapshot = NonNullable<DecisionSummaryReport["runs_snapshot"]>[number];
 
 function cx(...classes: Array<string | false | null | undefined>) {
@@ -188,6 +466,16 @@ function Spinner({ className = "" }: { className?: string }) {
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
     </svg>
+  );
+}
+
+function LoadingDots({ className = "" }: { className?: string }) {
+  return (
+    <span className={cx("inline-flex items-center gap-0.5", className)} aria-hidden="true">
+      <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:0ms]" />
+      <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:180ms]" />
+      <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:360ms]" />
+    </span>
   );
 }
 
@@ -218,6 +506,50 @@ function HelpTooltip({ content }: { content: React.ReactNode }) {
   );
 }
 
+function InfoPillTooltip({ content }: { content: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+
+  return (
+    <div className="relative inline-flex items-start">
+      <button
+        type="button"
+        className="inline-flex -translate-y-1 items-center rounded-full border border-sky-400/35 bg-sky-500/10 px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-[0.08em] leading-none text-sky-200 transition-colors hover:bg-sky-500/20 focus:outline-none"
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onFocus={() => setShow(true)}
+        onBlur={() => setShow(false)}
+        onClick={() => setShow((prev) => !prev)}
+        aria-label="Panel info"
+      >
+        Info
+      </button>
+      {show ? (
+        <div className="absolute left-0 top-full z-50 mt-2 w-[22rem] max-w-[82vw] rounded-lg border border-sky-400/30 bg-slate-950/95 p-3 text-[11px] leading-relaxed text-sky-50 shadow-xl pointer-events-none">
+          {content}
+          <div className="absolute -top-2 left-4 h-2 w-2 rotate-45 border-l border-t border-sky-400/30 bg-slate-950/95" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TechnicalLabel({
+  label,
+  tooltip,
+  className = "",
+}: {
+  label: string;
+  tooltip: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <span className={cx("inline-flex items-center gap-1", className)}>
+      <span>{label}</span>
+      <HelpTooltip content={tooltip} />
+    </span>
+  );
+}
+
 function UsageLabel({ label, tooltip }: { label: string; tooltip: string }) {
   return (
     <span className="relative inline-flex items-center group">
@@ -239,6 +571,22 @@ function UsageLabel({ label, tooltip }: { label: string; tooltip: string }) {
       </span>
     </span>
   );
+}
+
+function recommendationLabel(value?: string) {
+  if (value === "go") return "Go";
+  if (value === "no_go") return "No-Go";
+  return "Conditional Go";
+}
+
+function recommendationTone(value?: string) {
+  if (value === "go") {
+    return "border-emerald-500/40 bg-emerald-500/12 text-emerald-300";
+  }
+  if (value === "no_go") {
+    return "border-rose-500/40 bg-rose-500/12 text-rose-300";
+  }
+  return "border-amber-500/40 bg-amber-500/12 text-amber-300";
 }
 
 function FullPageLoader({
@@ -410,39 +758,6 @@ function UpgradeModal({
   );
 }
 
-function LimitModal({
-  open,
-  onClose,
-  title,
-  message,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  message: string;
-}) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
-        <div className="text-lg font-semibold text-red-200">{title}</div>
-        <p className="mt-2 text-sm text-white/70">
-          {message}
-        </p>
-        <div className="mt-5 flex gap-2">
-          <button
-            type="button"
-            className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ResultsSkeletonCard() {
   return (
     <div className="mt-4 space-y-4 animate-pulse">
@@ -480,6 +795,7 @@ function ConstraintMultiSelectDropdown({
   onPremiumOptionSelected?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [hoverBubble, setHoverBubble] = useState<HoverBubbleState | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const NONE = options[0]; // "None" is expected to be first
@@ -492,6 +808,10 @@ function ConstraintMultiSelectDropdown({
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
+
+  useEffect(() => {
+    if (!open) setHoverBubble(null);
+  }, [open]);
 
   const toggle = (opt: string, isOptionPremiumLocked: boolean) => {
     if (isOptionPremiumLocked) {
@@ -581,6 +901,7 @@ function ConstraintMultiSelectDropdown({
           <div className="p-2 max-h-64 overflow-y-auto ig-scrollbar bg-slate-950/95">
             {options.map((opt, idx) => {
               const checked = value.includes(opt);
+              const optionHint = getConstraintHint(opt);
 
               // "None" is always allowed; premium lock applies to the rest
               const optionPremiumLocked = opt !== NONE && !isPremium && idx >= freeAllowedCount;
@@ -594,6 +915,12 @@ function ConstraintMultiSelectDropdown({
               return (
                 <label
                   key={opt}
+                  aria-label={`${opt}. ${optionHint}`}
+                  onMouseEnter={(e) => setHoverBubble(buildHoverBubble(e.currentTarget, `${opt} — ${optionHint}`))}
+                  onMouseMove={(e) => setHoverBubble(buildHoverBubble(e.currentTarget, `${opt} — ${optionHint}`))}
+                  onMouseLeave={() => setHoverBubble(null)}
+                  onFocus={(e) => setHoverBubble(buildHoverBubble(e.currentTarget, `${opt} — ${optionHint}`))}
+                  onBlur={() => setHoverBubble(null)}
                   className={cx(
                     "flex items-center gap-2 px-2 py-2 rounded-xl select-none",
                     disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-white/10"
@@ -615,6 +942,22 @@ function ConstraintMultiSelectDropdown({
           </div>
         </div>
       )}
+      {open && hoverBubble
+        ? createPortal(
+            <div
+              className="fixed z-[120] max-w-[320px] rounded-xl border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[11px] leading-snug text-white/90 shadow-2xl backdrop-blur pointer-events-none"
+              style={{
+                top: hoverBubble.top,
+                left: hoverBubble.left,
+                transform: hoverBubble.side === "right" ? "translateY(-50%)" : "translate(-100%, -50%)",
+              }}
+              role="tooltip"
+            >
+              {hoverBubble.text}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -637,7 +980,7 @@ function IdeaGenerator({
   const [isLoading, setIsLoading] = useState(false);
   const [resultsHydrating, setResultsHydrating] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("");
-  const [resultsView, setResultsView] = useState<"generated" | "insights" | "decision">("generated");
+  const [resultsView, setResultsView] = useState<"generated" | "insights" | "decision" | "stakeholder">("generated");
   const [loadedSavedId, setLoadedSavedId] = useState<number | null>(null);
   const [loadedSavedSnapshot, setLoadedSavedSnapshot] = useState<string | null>(null);
   const [industry, setIndustry] = useState(INDUSTRIES[0]);
@@ -647,7 +990,6 @@ function IdeaGenerator({
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
   const [tokenUsage, setTokenUsage] = useState<any>(initialUsage);
-  const [limitModal, setLimitModal] = useState({ open: false, title: "", message: "" });
   const [usageNotices, setUsageNotices] = useState<{ id: string; message: string }[]>([]);
   const noticeTimeouts = useRef<number[]>([]);
   const [savedResults, setSavedResults] = useState<SavedResultSummary[]>([]);
@@ -657,7 +999,7 @@ function IdeaGenerator({
   const [deletingSavedId, setDeletingSavedId] = useState<number | null>(null);
   const [savedUsageBytes, setSavedUsageBytes] = useState(0);
   const [savedLimitBytes, setSavedLimitBytes] = useState(0);
-  const [savedPanelMode, setSavedPanelMode] = useState<"generated" | "compare" | "decision" | null>(null);
+  const [savedPanelMode, setSavedPanelMode] = useState<"generated" | "compare" | "decision" | "stakeholder" | null>(null);
   const [savedPanelPos, setSavedPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const savedPanelRef = useRef<HTMLDivElement | null>(null);
   const savedPanelDragRef = useRef<{
@@ -672,6 +1014,7 @@ function IdeaGenerator({
   const savedGeneratedButtonRef = useRef<HTMLButtonElement | null>(null);
   const savedCompareButtonRef = useRef<HTMLButtonElement | null>(null);
   const savedDecisionButtonRef = useRef<HTMLButtonElement | null>(null);
+  const savedStakeholderButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mounted, setMounted] = useState(false);
   const [pageBootLoading, setPageBootLoading] = useState(true);
   const [compareSelection, setCompareSelection] = useState<{ runA: number | null; runB: number | null }>({
@@ -685,6 +1028,29 @@ function IdeaGenerator({
   const [comparisonsLoading, setComparisonsLoading] = useState(false);
   const [savedReports, setSavedReports] = useState<SavedReportSummary[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
+  const [savedStakeholderReports, setSavedStakeholderReports] = useState<StakeholderReportSummary[]>([]);
+  const [stakeholderReportsLoading, setStakeholderReportsLoading] = useState(false);
+  const [stakeholderReport, setStakeholderReport] = useState<StakeholderReport | null>(null);
+  const [executionPlanPickerOpen, setExecutionPlanPickerOpen] = useState(false);
+  const [executionPlanSelectedKey, setExecutionPlanSelectedKey] = useState<string | null>(null);
+  const [executionPlanPickerLoading, setExecutionPlanPickerLoading] = useState(false);
+  const [executionPlanGeneratedKeys, setExecutionPlanGeneratedKeys] = useState<string[]>([]);
+  const [executionPlanPickerError, setExecutionPlanPickerError] = useState<string | null>(null);
+  const [executionPlanPickerPos, setExecutionPlanPickerPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const executionPlanPickerRef = useRef<HTMLDivElement | null>(null);
+  const executionPlanPickerDragRef = useRef<{
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [isDraggingExecutionPlanPicker, setIsDraggingExecutionPlanPicker] = useState(false);
+  const [stakeholderLoadingId, setStakeholderLoadingId] = useState<number | null>(null);
+  const [stakeholderGenerating, setStakeholderGenerating] = useState(false);
+  const [deleteStakeholderOpen, setDeleteStakeholderOpen] = useState(false);
+  const [deletingStakeholderId, setDeletingStakeholderId] = useState<number | null>(null);
   const [reportDownloadId, setReportDownloadId] = useState<number | null>(null);
   const [rankResult, setRankResult] = useState<RankResult | null>(null);
   const [rankResultOpen, setRankResultOpen] = useState(false);
@@ -697,19 +1063,38 @@ function IdeaGenerator({
   const [decisionSelectOpen, setDecisionSelectOpen] = useState(false);
   const [usageRefreshing, setUsageRefreshing] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SavedResultSummary | null>(null);
+  const [deleteAllGeneratedOpen, setDeleteAllGeneratedOpen] = useState(false);
+  const [deletingAllGenerated, setDeletingAllGenerated] = useState(false);
+  const [deletingGeneratedIds, setDeletingGeneratedIds] = useState<number[]>([]);
   const [loadedSavedMeta, setLoadedSavedMeta] = useState<SavedResultSummary | null>(null);
+  const [deleteAllComparisonsOpen, setDeleteAllComparisonsOpen] = useState(false);
+  const [deletingAllComparisons, setDeletingAllComparisons] = useState(false);
+  const [deletingComparisonIds, setDeletingComparisonIds] = useState<number[]>([]);
   const [deleteComparisonOpen, setDeleteComparisonOpen] = useState(false);
   const [deletingComparisonId, setDeletingComparisonId] = useState<number | null>(null);
   const [decisionReport, setDecisionReport] = useState<DecisionSummaryReport | null>(null);
+  const [deleteAllReportsOpen, setDeleteAllReportsOpen] = useState(false);
+  const [deletingAllReports, setDeletingAllReports] = useState(false);
+  const [deletingReportIds, setDeletingReportIds] = useState<number[]>([]);
   const [deleteDecisionOpen, setDeleteDecisionOpen] = useState(false);
   const [deletingDecisionId, setDeletingDecisionId] = useState<number | null>(null);
   const savedPanelOpen = savedPanelMode !== null;
   const savedPanelLocked =
-    (savedPanelMode === "compare" && compareLoading) || (savedPanelMode === "decision" && reportLoading);
+    (savedPanelMode === "generated" && deletingAllGenerated) ||
+    (savedPanelMode === "compare" && (compareLoading || deletingAllComparisons)) ||
+    (savedPanelMode === "decision" && (reportLoading || deletingAllReports));
   const savedPanelStyle: React.CSSProperties = savedPanelPos
     ? { top: savedPanelPos.top, left: savedPanelPos.left, width: savedPanelPos.width }
     : {
         top: "50%",
+        left: "50%",
+        width: "min(768px, calc(100vw - 32px))",
+        transform: "translate(-50%, -50%)",
+      };
+  const executionPlanPickerStyle: React.CSSProperties = executionPlanPickerPos
+    ? { top: executionPlanPickerPos.top, left: executionPlanPickerPos.left, width: executionPlanPickerPos.width }
+    : {
+        top: "46%",
         left: "50%",
         width: "min(768px, calc(100vw - 32px))",
         transform: "translate(-50%, -50%)",
@@ -740,10 +1125,73 @@ function IdeaGenerator({
     if (value >= 1024) return `${Math.round(value / 1024)}KB`;
     return `${value}B`;
   };
+  const formatCurrency = (value?: number, currencyCode?: string) => {
+    const amount = Number(value || 0);
+    const code = (currencyCode || "USD").toUpperCase();
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  };
+  const formatCurrencyOrNA = (value: number | null | undefined, currencyCode?: string) =>
+    typeof value === "number" ? formatCurrency(value, currencyCode) : "N/A";
+  const executionDecision = stakeholderReport?.dossier?.decision?.go_no_go || "conditional_go";
+  const executionSupport = stakeholderReport?.dossier?.decision_support;
+  const executionRecovery = executionSupport?.profitability_recovery;
+  const executionGates = executionSupport?.gates;
+  const executionReportTitle = stakeholderReport?.dossier?.decision?.winner?.title || "Untitled execution plan";
+  const executionIndustryAssumption = Array.isArray(stakeholderReport?.assumptions)
+    ? stakeholderReport?.assumptions?.find((item) => String(item?.key || "").toLowerCase() === "industry")
+    : undefined;
+  const executionIndustry = String(executionIndustryAssumption?.value || "").trim();
+  const executionDecisionTone =
+    executionDecision === "go"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+      : executionDecision === "no_go"
+      ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+      : "border-amber-500/40 bg-amber-500/10 text-amber-200";
+  const executionDecisionLabel =
+    executionDecision === "go" ? "Go" : executionDecision === "no_go" ? "No-Go" : "Conditional Go";
+  const formatUsageCompact = (value: number) =>
+    new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 0 }).format(value);
   const storageTone = usageTone(savedUsageBytes, savedLimitBytes);
   const storagePercent = savedLimitBytes > 0
     ? Math.min(100, Math.round((savedUsageBytes / savedLimitBytes) * 100))
     : 0;
+
+  const isUsageLimitMessage = (message: string) => {
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("limit") ||
+      text.includes("quota") ||
+      text.includes("too many requests") ||
+      text.includes("rate")
+    );
+  };
+
+  const ensureOk = async (response: Response, fallbackMessage: string) => {
+    if (response.ok) return;
+    const data = await response.json().catch(() => ({}));
+    const message =
+      (typeof data?.detail === "string" && data.detail) ||
+      (typeof data?.error === "string" && data.error) ||
+      fallbackMessage;
+    const err: any = new Error(message);
+    err.status = response.status;
+    throw err;
+  };
+
+  const handleApiActionError = (error: any, fallbackMessage: string) => {
+    const message = String(error?.message || fallbackMessage);
+    const status = Number(error?.status || 0);
+    if (status === 429 || isUsageLimitMessage(message)) {
+      pushNotice(message);
+      return message;
+    }
+    pushNotice(message);
+    return message;
+  };
 
   const pushNotice = useCallback((message: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -809,6 +1257,8 @@ function IdeaGenerator({
       ? (savedLoading || comparisonsLoading)
       : savedPanelMode === "decision"
       ? (savedLoading || reportsLoading)
+      : savedPanelMode === "stakeholder"
+      ? stakeholderReportsLoading
       : false;
   const getSavedById = (id: number) => savedResults.find((item) => item.id === id);
   const formatRunLabel = (id: number) => {
@@ -847,6 +1297,15 @@ function IdeaGenerator({
   const reportHasSelection = useAllRuns || reportSelection.length > 0;
   const reportEmailRequired = reportOutput === "email" || reportOutput === "both";
   const reportCanSubmit = reportHasSelection && (!reportEmailRequired || reportEmail.trim().length > 0);
+  const stakeholderFooterText = stakeholderReportsLoading
+    ? "Loading execution plans"
+    : stakeholderLoadingId !== null
+    ? "Loading selected execution plan"
+    : deletingStakeholderId !== null
+    ? "Deleting execution plan"
+    : savedStakeholderReports.length === 0
+    ? "No execution plans saved yet."
+    : "Select a saved execution plan, then click View.";
   const formatWinnerLabel = (comparison: SavedComparisonSummary) => {
     if (!comparison.winner_run_id) return "Tie";
     return formatRunLabel(comparison.winner_run_id);
@@ -936,11 +1395,36 @@ function IdeaGenerator({
     }
   }, [getToken]);
 
+  const fetchSavedStakeholderReports = useCallback(async () => {
+    const startedAt = Date.now();
+    try {
+      setStakeholderReportsLoading(true);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) return;
+      const res = await fetch("/api/stakeholder-reports?limit=6", {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`stakeholder_reports_${res.status}`);
+      const data = await res.json();
+      setSavedStakeholderReports(Array.isArray(data?.reports) ? data.reports : []);
+    } catch {
+      setSavedStakeholderReports([]);
+    } finally {
+      const elapsed = Date.now() - startedAt;
+      const remaining = Math.max(0, 350 - elapsed);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+      setStakeholderReportsLoading(false);
+    }
+  }, [getToken]);
+
   useEffect(() => {
     if (isSignedIn) {
       fetchSavedResults();
       fetchSavedComparisons();
       fetchSavedReports();
+      fetchSavedStakeholderReports();
       return;
     }
     setSavedResults([]);
@@ -951,8 +1435,17 @@ function IdeaGenerator({
     setCompareResult(null);
     setSavedComparisons([]);
     setSavedReports([]);
+    setSavedStakeholderReports([]);
+    setStakeholderReport(null);
     setUseAllRuns(false);
-  }, [fetchSavedResults, fetchSavedComparisons, fetchSavedReports, isSignedIn]);
+  }, [fetchSavedResults, fetchSavedComparisons, fetchSavedReports, fetchSavedStakeholderReports, isSignedIn]);
+
+  useEffect(() => {
+    if (decisionReport?.id) return;
+    setExecutionPlanPickerOpen(false);
+    setExecutionPlanSelectedKey(null);
+    setExecutionPlanGeneratedKeys([]);
+  }, [decisionReport?.id]);
 
   useEffect(() => {
     if (initialUsage && typeof initialUsage.total_tokens === 'number') {
@@ -1003,6 +1496,7 @@ function IdeaGenerator({
   const [recoHtml, setRecoHtml] = useState<string>("");
 
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [executionPresentationLoading, setExecutionPresentationLoading] = useState(false);
 
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
@@ -1057,6 +1551,10 @@ function IdeaGenerator({
 
   const clearDecisionReport = () => {
     setDecisionReport(null);
+  };
+
+  const clearStakeholderReport = () => {
+    setStakeholderReport(null);
   };
 
   const buildSavePayload = () => ({
@@ -1255,6 +1753,84 @@ function IdeaGenerator({
     }
   };
 
+  const deleteAllGeneratedResults = async () => {
+    const ids = savedResults.map((item) => item.id);
+    if (!ids.length) {
+      setDeleteAllGeneratedOpen(false);
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      setDeleteAllGeneratedOpen(false);
+      setDeleteTarget(null);
+      setDeletingAllGenerated(true);
+      setDeletingGeneratedIds(ids);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch("/api/saved-results", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`delete_all_saved_failed_${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      const deletedCount = Number(data?.count || ids.length);
+      await ensureMinLoadingTime(startedAt, 500);
+      setSavedResults([]);
+      setCompareSelection({ runA: null, runB: null });
+      setReportSelection([]);
+      setLoadedSavedId(null);
+      setLoadedSavedSnapshot(null);
+      setLoadedSavedMeta(null);
+      setResults({});
+      setActiveTab("");
+      setRankResult(null);
+      setRankResultOpen(false);
+      setSavedUsageBytes(0);
+      pushNotice(`Deleted ${deletedCount} saved result(s).`);
+      fetchSavedResults();
+    } catch {
+      pushNotice("Failed to delete generated results.");
+    } finally {
+      setDeletingGeneratedIds([]);
+      setDeletingAllGenerated(false);
+    }
+  };
+
+  const deleteAllComparisons = async () => {
+    const ids = savedComparisons.map((item) => item.id);
+    if (!ids.length) {
+      setDeleteAllComparisonsOpen(false);
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      setDeleteAllComparisonsOpen(false);
+      setDeleteComparisonOpen(false);
+      setDeletingAllComparisons(true);
+      setDeletingComparisonIds(ids);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch("/api/compare-results", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`delete_all_compare_failed_${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      const deletedCount = Number(data?.count || ids.length);
+      await ensureMinLoadingTime(startedAt, 500);
+      setSavedComparisons([]);
+      setCompareResult(null);
+      setCompareError(null);
+      pushNotice(`Deleted ${deletedCount} comparison(s).`);
+      fetchSavedComparisons();
+    } catch {
+      pushNotice("Failed to delete comparisons.");
+    } finally {
+      setDeletingComparisonIds([]);
+      setDeletingAllComparisons(false);
+    }
+  };
+
   const deleteComparison = async (comparisonId: number) => {
     try {
       setDeletingComparisonId(comparisonId);
@@ -1266,12 +1842,46 @@ function IdeaGenerator({
       });
       if (!res.ok) throw new Error(`delete_compare_failed_${res.status}`);
       pushNotice("Comparison deleted.");
-      setCompareResult(null);
+      setCompareResult((prev) => (prev?.comparison_id === comparisonId ? null : prev));
       fetchSavedComparisons();
     } catch {
       pushNotice("Failed to delete comparison.");
     } finally {
       setDeletingComparisonId(null);
+    }
+  };
+
+  const deleteAllDecisionReports = async () => {
+    const ids = savedReports.map((item) => item.id);
+    if (!ids.length) {
+      setDeleteAllReportsOpen(false);
+      return;
+    }
+    const startedAt = Date.now();
+    try {
+      setDeleteAllReportsOpen(false);
+      setDeleteDecisionOpen(false);
+      setDeletingAllReports(true);
+      setDeletingReportIds(ids);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch("/api/rank-reports", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error(`delete_all_reports_failed_${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      const deletedCount = Number(data?.count || ids.length);
+      await ensureMinLoadingTime(startedAt, 500);
+      setSavedReports([]);
+      setDecisionReport(null);
+      pushNotice(`Deleted ${deletedCount} decision report(s).`);
+      fetchSavedReports();
+    } catch {
+      pushNotice("Failed to delete decision reports.");
+    } finally {
+      setDeletingReportIds([]);
+      setDeletingAllReports(false);
     }
   };
 
@@ -1286,7 +1896,7 @@ function IdeaGenerator({
       });
       if (!res.ok) throw new Error(`delete_report_failed_${res.status}`);
       pushNotice("Decision report deleted.");
-      setDecisionReport(null);
+      setDecisionReport((prev) => (prev?.id === reportId ? null : prev));
       fetchSavedReports();
     } catch {
       pushNotice("Failed to delete decision report.");
@@ -1314,10 +1924,7 @@ function IdeaGenerator({
         headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
         body: JSON.stringify({ run_a_id: resolvedA, run_b_id: resolvedB }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "Compare failed.");
-      }
+      await ensureOk(res, "Compare failed.");
       const data = await res.json();
       setCompareError(null);
       await ensureMinLoadingTime(startedAt, fromSavedView ? 600 : 350);
@@ -1327,9 +1934,9 @@ function IdeaGenerator({
       if (!fromSavedView) setSavedPanelMode(null);
       fetchSavedComparisons();
     } catch (e: any) {
+      handleApiActionError(e, "Failed to compare saved results.");
       const message = e?.message || "Failed to compare saved results.";
       setCompareError(message);
-      pushNotice(message);
     } finally {
       if (fromSavedView) setResultsHydrating(false);
       setCompareLoading(false);
@@ -1389,10 +1996,7 @@ function IdeaGenerator({
           include_all_runs: useAllRuns,
         }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "Failed to generate report.");
-      }
+      await ensureOk(res, "Failed to generate report.");
       const contentType = res.headers.get("content-type") || "";
       const cached = res.headers.get("x-report-cached") === "true";
       if (contentType.includes("application/pdf")) {
@@ -1450,7 +2054,7 @@ function IdeaGenerator({
       setResultsView("decision");
       setSavedPanelMode(null);
     } catch (e: any) {
-      pushNotice(e?.message || "Failed to generate report.");
+      handleApiActionError(e, "Failed to generate report.");
     } finally {
       setReportLoading(false);
     }
@@ -1483,6 +2087,185 @@ function IdeaGenerator({
       pushNotice(e?.message || "Failed to download report.");
     } finally {
       setReportDownloadId(null);
+    }
+  };
+
+  const loadStakeholderReport = async (reportId: number, fromSavedView = false) => {
+    const startedAt = Date.now();
+    let loaded = false;
+    try {
+      if (fromSavedView) {
+        setSavedPanelMode(null);
+        setResultsHydrating(true);
+      }
+      setStakeholderLoadingId(reportId);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch(`/api/stakeholder-reports/${reportId}`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || "Failed to load execution plan.");
+      }
+      const data = await res.json();
+      await ensureMinLoadingTime(startedAt, fromSavedView ? 600 : 350);
+      setStakeholderReport(data);
+      setResultsView("stakeholder");
+      loaded = true;
+    } catch (e: any) {
+      pushNotice(e?.message || "Failed to load execution plan.");
+    } finally {
+      if (fromSavedView) {
+        setResultsHydrating(false);
+      }
+      if (loaded) {
+        pushNotice("Execution plan loaded.");
+      }
+      setStakeholderLoadingId(null);
+    }
+  };
+
+  const openExecutionPlanPicker = async () => {
+    if (!decisionReport?.id) {
+      pushNotice("Generate or load a Decision Summary Report first.");
+      return;
+    }
+    if (!executionPlanOptions.length) {
+      pushNotice("No ranked reports available for Execution Plan generation.");
+      return;
+    }
+    setExecutionPlanPickerOpen(true);
+    setExecutionPlanPickerLoading(true);
+    setExecutionPlanGeneratedKeys([]);
+    setExecutionPlanPickerError(null);
+    try {
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const listRes = await fetch("/api/stakeholder-reports?limit=200", {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!listRes.ok) throw new Error("failed_to_list_execution_plans");
+      const listData = await listRes.json();
+      const allReports: StakeholderReportSummary[] = Array.isArray(listData?.reports) ? listData.reports : [];
+      const relatedReports = allReports.filter(
+        (report: StakeholderReportSummary) =>
+          report.source_type === "decision_report" && Number(report.source_id) === Number(decisionReport.id)
+      );
+      if (!relatedReports.length) return;
+      const optionKeys = await Promise.all(
+        relatedReports.map(async (report: StakeholderReportSummary) => {
+          try {
+            const res = await fetch(`/api/stakeholder-reports/${report.id}`, {
+              headers: { Authorization: `Bearer ${jwt}` },
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            const runId = Number(data?.dossier?.provenance?.selected_run_id);
+            const modelId = String(data?.dossier?.provenance?.selected_model_id || "").trim();
+            if (!Number.isFinite(runId) || runId <= 0 || !modelId) return null;
+            return makeExecutionPlanOptionKey(runId, modelId);
+          } catch {
+            return null;
+          }
+        })
+      );
+      const uniqueKeys = Array.from(
+        new Set(optionKeys.filter((key): key is string => typeof key === "string" && key.length > 0))
+      );
+      setExecutionPlanGeneratedKeys(uniqueKeys);
+    } catch {
+      // Keep picker usable even if we cannot resolve previously generated reports.
+      setExecutionPlanGeneratedKeys([]);
+    } finally {
+      setExecutionPlanPickerLoading(false);
+    }
+  };
+
+  const runStakeholderReport = async (selectedOption?: { runId: number; modelId: string } | null) => {
+    if (!decisionReport?.id) {
+      pushNotice("Generate or load a Decision Summary Report first.");
+      return;
+    }
+    const fallbackOption = executionPlanOptions.find((item) => item.optionKey === executionPlanSelectedKey);
+    const resolvedRunId = Number(
+      selectedOption?.runId ?? fallbackOption?.runId ?? decisionReport.report?.ranked_runs?.[0]?.run_id ?? 0
+    );
+    const resolvedModelId = String(selectedOption?.modelId ?? fallbackOption?.modelId ?? "").trim();
+    if (!Number.isFinite(resolvedRunId) || resolvedRunId <= 0) {
+      pushNotice("Select one ranked report before generating the Execution Plan.");
+      return;
+    }
+    if (!resolvedModelId) {
+      pushNotice("Select one model output before generating the Execution Plan.");
+      return;
+    }
+    let generated = false;
+    try {
+      setStakeholderGenerating(true);
+      setExecutionPlanPickerError(null);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch("/api/stakeholder-report", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: {
+            mode: "decision_report",
+            decision_report_id: decisionReport.id,
+            selected_run_id: resolvedRunId,
+            selected_model_id: resolvedModelId,
+          },
+          scenario_profile: "base",
+          horizon_months: 12,
+          currency: "USD",
+          region: "US",
+          output: "json",
+        }),
+      });
+      await ensureOk(res, "Failed to generate execution plan.");
+      const data = await res.json();
+      await fetchSavedStakeholderReports();
+      if (data?.id) {
+        await loadStakeholderReport(data.id);
+      } else {
+        setStakeholderReport(data);
+        setResultsView("stakeholder");
+      }
+      generated = true;
+      pushNotice("Execution plan generated.");
+    } catch (e: any) {
+      const message = handleApiActionError(e, "Failed to generate execution plan.");
+      setExecutionPlanPickerError(message);
+    } finally {
+      setStakeholderGenerating(false);
+      if (generated) {
+        setExecutionPlanPickerOpen(false);
+      }
+    }
+  };
+
+  const deleteStakeholderReport = async (reportId: number) => {
+    try {
+      setDeletingStakeholderId(reportId);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch(`/api/stakeholder-reports/${reportId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || "Failed to delete execution plan.");
+      }
+      setStakeholderReport((prev) => (prev?.id === reportId ? null : prev));
+      setDeleteStakeholderOpen(false);
+      await fetchSavedStakeholderReports();
+      pushNotice("Execution plan deleted.");
+    } catch (e: any) {
+      pushNotice(e?.message || "Failed to delete execution plan.");
+    } finally {
+      setDeletingStakeholderId(null);
     }
   };
 
@@ -1587,6 +2370,144 @@ function IdeaGenerator({
     [selectedModels]
   );
 
+  const makeExecutionPlanOptionKey = useCallback(
+    (runId: number, modelId: string) => `${runId}::${String(modelId || "").trim()}`,
+    []
+  );
+
+  const executionPlanOptions = useMemo(() => {
+    const rankedRuns = Array.isArray(decisionReport?.report?.ranked_runs)
+      ? decisionReport?.report?.ranked_runs
+      : [];
+    const runSnapshots = Array.isArray(decisionReport?.runs_snapshot)
+      ? decisionReport?.runs_snapshot
+      : [];
+    const rankedItems = rankedRuns
+      .map((item, originalIndex) => {
+        const runId = Number(item?.run_id);
+        if (!Number.isFinite(runId) || runId <= 0) return null;
+        const score = typeof item?.score === "number" ? item.score : null;
+        const run = runSnapshots.find((r) => Number(r?.id) === runId);
+        const outputs = run && run.results && typeof run.results === "object"
+          ? getRunOutputsMeta(run)
+          : [];
+        const rankedModels = Array.isArray(run?.rank_result?.ranked_models)
+          ? run?.rank_result?.ranked_models
+          : [];
+        const modelScoreMap = new Map<string, number>();
+        rankedModels.forEach((rankedItem) => {
+          const modelId = String(rankedItem?.model_id || "").trim();
+          const score = Number(rankedItem?.score);
+          if (modelId && Number.isFinite(score)) {
+            modelScoreMap.set(modelId, score);
+          }
+        });
+        const topModelId = getTopModelIdForRun(run);
+        const personaLabel = run ? labelForPersona(run.tone || "") : "Not specified";
+        const constraintsLabel = run ? formatConstraints(run.constraints || []) : "Not specified";
+        const modelLabel = run ? formatModelList(run.models || []) : "Not specified";
+        const industryLabel = run?.industry || "Saved run";
+        const runLabel = run
+          ? `${run.industry || "Saved run"} • ${formatSavedDate(run.created_at || "")}`
+          : formatRunLabel(runId);
+        return {
+          runId,
+          score,
+          rationale: String(item?.rationale || "").trim(),
+          outputs,
+          modelScoreMap,
+          topModelId,
+          runLabel,
+          industryLabel,
+          personaLabel,
+          constraintsLabel,
+          modelLabel,
+          originalIndex,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    rankedItems.sort((a, b) => {
+      const aHas = typeof a.score === "number";
+      const bHas = typeof b.score === "number";
+      if (aHas && bHas && a.score !== b.score) return (b.score as number) - (a.score as number);
+      if (aHas !== bHas) return bHas ? 1 : -1;
+      return a.originalIndex - b.originalIndex;
+    });
+
+    const expanded: Array<{
+      optionKey: string;
+      runId: number;
+      modelId: string;
+      modelLabel: string;
+      title: string;
+      modelScore?: number;
+      runRank: number;
+      runScore: number | null;
+      isWinnerRun: boolean;
+      isTopOutput: boolean;
+      rationale: string;
+      runLabel: string;
+      industryLabel: string;
+      personaLabel: string;
+      constraintsLabel: string;
+      modelSetLabel: string;
+    }> = [];
+
+    rankedItems.forEach((item, runIndex) => {
+      const orderedOutputs = [...item.outputs].sort((a, b) => {
+        const aTop = a.modelId === item.topModelId ? 1 : 0;
+        const bTop = b.modelId === item.topModelId ? 1 : 0;
+        return bTop - aTop;
+      });
+      const outputs = orderedOutputs.length
+        ? orderedOutputs
+        : [{ modelId: "", modelLabel: "Model", title: item.runLabel }];
+          outputs.forEach((output) => {
+            expanded.push({
+              optionKey: makeExecutionPlanOptionKey(item.runId, output.modelId),
+              runId: item.runId,
+              modelId: output.modelId,
+              modelLabel: output.modelLabel,
+              title: output.title,
+              modelScore: item.modelScoreMap.get(output.modelId),
+              runRank: runIndex + 1,
+              runScore: item.score,
+              isWinnerRun: runIndex === 0,
+              isTopOutput: output.modelId === item.topModelId,
+          rationale: item.rationale,
+          runLabel: item.runLabel,
+          industryLabel: item.industryLabel,
+          personaLabel: item.personaLabel,
+          constraintsLabel: item.constraintsLabel,
+          modelSetLabel: item.modelLabel,
+        });
+      });
+    });
+
+    return expanded;
+  }, [decisionReport, makeExecutionPlanOptionKey]);
+
+  const executionPlanGeneratedKeySet = useMemo(
+    () => new Set(executionPlanGeneratedKeys),
+    [executionPlanGeneratedKeys]
+  );
+
+  const hasSelectableExecutionPlanOption = executionPlanOptions.some(
+    (item) => !executionPlanGeneratedKeySet.has(item.optionKey)
+  );
+
+  useEffect(() => {
+    if (!executionPlanPickerOpen) return;
+    const firstSelectable = executionPlanOptions.find((item) => !executionPlanGeneratedKeySet.has(item.optionKey));
+    setExecutionPlanSelectedKey((prev) => {
+      if (prev && executionPlanOptions.some((item) => item.optionKey === prev && !executionPlanGeneratedKeySet.has(item.optionKey))) {
+        return prev;
+      }
+      return firstSelectable?.optionKey ?? null;
+    });
+  }, [executionPlanPickerOpen, executionPlanOptions, executionPlanGeneratedKeySet]);
+
   const generateIdeas = async () => {
     if (selectedModels.length === 0) return alert("Please select at least one AI model.");
 
@@ -1604,6 +2525,8 @@ function IdeaGenerator({
       .map((id) => MODELS.find((m) => m.id === id)?.label)
       .filter(Boolean);
 
+    // Always return to Generated Results after a new run is requested.
+    setResultsView("generated");
     setIsLoading(true);
     setResults({});
     setActiveTab(safeModels[0]);
@@ -1616,6 +2539,7 @@ function IdeaGenerator({
     setLoadedSavedMeta(null);
     setDeleteComparisonOpen(false);
     setDecisionReport(null);
+    setDeleteStakeholderOpen(false);
 
     const jwt = await getToken(tokenOptions());
 
@@ -1635,7 +2559,7 @@ function IdeaGenerator({
         body: JSON.stringify(payload),
       });
 
-      if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+      await ensureOk(response, "Failed to generate ideas.");
       const data = await response.json();
       
       const resultsData = data.results || data;
@@ -1662,15 +2586,7 @@ function IdeaGenerator({
         { silent: true }
       );
     } catch (e: any) {
-      if (e.message.includes("429")) {
-        setLimitModal({
-          open: true,
-          title: "Rate Limit Reached",
-          message: "You have reached the API call limit for this minute. Please wait a moment before trying again."
-        });
-      } else {
-        alert(`An error occurred: ${e.message}`);
-      }
+      handleApiActionError(e, "Failed to generate ideas.");
     } finally {
       setIsLoading(false);
     }
@@ -1694,8 +2610,8 @@ function IdeaGenerator({
         body: JSON.stringify({ industry, constraints: CONSTRAINTS, personas: PERSONAS }),
       });
 
+      await ensureOk(res, "Failed to recommend combination.");
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.detail || res.statusText);
 
       addUsage(data.usage);
 
@@ -1708,13 +2624,25 @@ function IdeaGenerator({
       if (data?.recommended_persona) setTone(data.recommended_persona);
       if (data?.reason_html) setRecoHtml(data.reason_html);
     } catch (e: any) {
-      alert(`Recommend error: ${e.message}`);
+      handleApiActionError(e, "Failed to recommend combination.");
     } finally {
       setRecoLoading(false);
     }
   };
 
   const getReportPayload = () => ({ industry, constraints, tone, models: Object.keys(results), results, rank_result: rankResult });
+
+  const downloadResponseBlob = async (response: Response, fallbackFilename: string) => {
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const filename = extractFilename(response.headers.get("Content-Disposition")) || fallbackFilename;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
 
   const downloadPDF = async () => {
     if (!isPremium) {
@@ -1725,11 +2653,19 @@ function IdeaGenerator({
     setPdfLoading(true);
     try {
       let response: Response | null = null;
-      if (resultsView === "insights" && !compareResult?.comparison_id) {
+      if (resultsView === "stakeholder") {
+        if (!stakeholderReport?.id) {
+          alert("Generate or load an Execution Plan before exporting.");
+          return;
+        }
+        response = await fetch(`/api/stakeholder-reports/${stakeholderReport.id}/pdf`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${await getToken(tokenOptions())}` },
+        });
+      } else if (resultsView === "insights" && !compareResult?.comparison_id) {
         alert("Run a comparison before exporting the compare report.");
         return;
-      }
-      if (resultsView === "insights" && compareResult?.comparison_id) {
+      } else if (resultsView === "insights" && compareResult?.comparison_id) {
         response = await fetch(`/api/compare-results/${compareResult.comparison_id}/pdf`, {
           method: "GET",
           headers: { Authorization: `Bearer ${await getToken(tokenOptions())}` },
@@ -1751,10 +2687,7 @@ function IdeaGenerator({
         alert("Failed to download PDF.");
         return;
       }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const filename = extractFilename(response.headers.get("Content-Disposition")) || (() => {
+      const fallbackFilename = (() => {
         const safeIndustry = String(industry || "industry")
           .trim()
           .replace(/\s+/g, "_")
@@ -1765,15 +2698,34 @@ function IdeaGenerator({
           `${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`;
         return `IdeaGen_${safeIndustry}_${stamp}.pdf`;
       })();
-
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      await downloadResponseBlob(response, fallbackFilename);
     } finally {
       setPdfLoading(false);
+    }
+  };
+
+  const downloadExecutionPresentation = async () => {
+    if (!isPremium) {
+      if (planLoaded) openUpgrade();
+      return;
+    }
+    if (!stakeholderReport?.id) {
+      alert("Generate or load an Execution Plan before downloading the presentation report.");
+      return;
+    }
+    setExecutionPresentationLoading(true);
+    try {
+      const response = await fetch(`/api/stakeholder-reports/${stakeholderReport.id}/presentation`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${await getToken(tokenOptions())}` },
+      });
+      if (!response.ok) {
+        alert("Failed to download presentation report.");
+        return;
+      }
+      await downloadResponseBlob(response, "IdeaGen_Execution_Presentation.pdf");
+    } finally {
+      setExecutionPresentationLoading(false);
     }
   };
 
@@ -1790,6 +2742,10 @@ function IdeaGenerator({
 
     try {
       const jwt = await getToken(tokenOptions());
+      if (resultsView === "stakeholder") {
+        setEmailStatus("Execution Plan email delivery is not yet available.");
+        return;
+      }
       if (resultsView === "insights" && !compareResult?.comparison_id) {
         setEmailStatus("Run a comparison before emailing the compare report.");
         return;
@@ -1832,9 +2788,11 @@ function IdeaGenerator({
   const canClearGenerated = hasResults || Boolean(loadedSavedMeta);
   const canClearCompare = Boolean(compareResult);
   const canClearDecision = Boolean(decisionReport);
+  const canClearStakeholder = Boolean(stakeholderReport);
   const canDeleteGenerated = Boolean(loadedSavedMeta) && resultsView === "generated";
   const canDeleteCompare = Boolean(compareResult?.comparison_id) && resultsView === "insights";
   const canDeleteDecision = Boolean(decisionReport?.id) && resultsView === "decision";
+  const canDeleteStakeholder = Boolean(stakeholderReport?.id) && resultsView === "stakeholder";
 
   // UI gating values (keeps premium UI; free is locked)
   const maxConstraints = isPremium ? 3 : FREE_MAX_CONSTRAINTS;
@@ -1845,6 +2803,7 @@ function IdeaGenerator({
   const [industryOpen, setIndustryOpen] = useState(false);
   const [industryQuery, setIndustryQuery] = useState("");
   const [industryActive, setIndustryActive] = useState(0);
+  const [industryHoverBubble, setIndustryHoverBubble] = useState<HoverBubbleState | null>(null);
   const industryRef = useRef<HTMLDivElement | null>(null);
 
   const filteredIndustries = useMemo(() => {
@@ -1870,11 +2829,16 @@ function IdeaGenerator({
     setIndustryActive(0);
   }, [industryOpen, industryQuery]);
 
+  useEffect(() => {
+    if (!industryOpen) setIndustryHoverBubble(null);
+  }, [industryOpen]);
+
 
   // AI Persona dropdown (Target-Industry style, single select)
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaQuery, setPersonaQuery] = useState("");
   const [personaActive, setPersonaActive] = useState(0);
+  const [personaHoverBubble, setPersonaHoverBubble] = useState<HoverBubbleState | null>(null);
   const personaRef = useRef<HTMLDivElement | null>(null);
 
   const filteredPersonas = useMemo(() => {
@@ -1898,6 +2862,10 @@ function IdeaGenerator({
   useEffect(() => {
     if (personaOpen) setPersonaActive(0);
   }, [personaOpen, personaQuery]);
+
+  useEffect(() => {
+    if (!personaOpen) setPersonaHoverBubble(null);
+  }, [personaOpen]);
 
   const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -1925,7 +2893,7 @@ function IdeaGenerator({
     });
   }, []);
 
-  const openSavedPanel = (mode: "generated" | "compare" | "decision") => {
+  const openSavedPanel = (mode: "generated" | "compare" | "decision" | "stakeholder") => {
     const isSameMode = savedPanelMode === mode;
     if (isSameMode) {
       setSavedPanelMode(null);
@@ -1942,6 +2910,8 @@ function IdeaGenerator({
       } else if (mode === "decision") {
         fetchSavedResults();
         fetchSavedReports();
+      } else if (mode === "stakeholder") {
+        fetchSavedStakeholderReports();
       }
     }
   };
@@ -1988,6 +2958,73 @@ function IdeaGenerator({
     document.addEventListener("mouseup", onMouseUp);
   };
 
+  const updateExecutionPlanPickerPos = useCallback((forceCenter = false) => {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const width = Math.min(768, viewportWidth - 32);
+    const fallbackHeight = Math.min(520, viewportHeight - 32);
+    const panelHeight = executionPlanPickerRef.current?.getBoundingClientRect().height ?? fallbackHeight;
+    const centerTop = Math.max(16, Math.round((viewportHeight - panelHeight) / 2) - 48);
+
+    setExecutionPlanPickerPos((prev) => {
+      if (forceCenter || !prev) {
+        const left = Math.max(16, Math.round((viewportWidth - width) / 2));
+        const top = centerTop;
+        return { top, left, width };
+      }
+      const maxLeft = Math.max(16, viewportWidth - prev.width - 16);
+      const maxTop = Math.max(16, viewportHeight - panelHeight - 16);
+      const left = clamp(prev.left, 16, maxLeft);
+      const top = clamp(prev.top, 16, maxTop);
+      if (left !== prev.left || top !== prev.top) {
+        return { ...prev, top, left };
+      }
+      return prev;
+    });
+  }, []);
+
+  const startExecutionPlanPickerDrag = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (stakeholderGenerating) return;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button, [data-no-drag='true']")) return;
+    const panel = executionPlanPickerRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    e.preventDefault();
+    executionPlanPickerDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    setIsDraggingExecutionPlanPicker(true);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const drag = executionPlanPickerDragRef.current;
+      if (!drag) return;
+      const dx = moveEvent.clientX - drag.startX;
+      const dy = moveEvent.clientY - drag.startY;
+      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+      const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
+      const left = clamp(drag.originX + dx, 8, maxLeft);
+      const top = clamp(drag.originY + dy, 8, maxTop);
+      setExecutionPlanPickerPos({ top, left, width: drag.width });
+    };
+
+    const onMouseUp = () => {
+      setIsDraggingExecutionPlanPicker(false);
+      executionPlanPickerDragRef.current = null;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  };
+
   useEffect(() => {
     if (!savedPanelOpen) return;
 
@@ -1995,12 +3032,24 @@ function IdeaGenerator({
 
     function onDocDown(e: MouseEvent) {
       if (savedPanelLocked) return;
+      if (
+        deleteTarget ||
+        deleteComparisonOpen ||
+        deleteDecisionOpen ||
+        deleteStakeholderOpen ||
+        deleteAllGeneratedOpen ||
+        deleteAllComparisonsOpen ||
+        deleteAllReportsOpen
+      ) {
+        return;
+      }
       const panel = savedPanelRef.current;
       const target = e.target as Node;
       const triggers = [
         savedGeneratedButtonRef.current,
         savedCompareButtonRef.current,
         savedDecisionButtonRef.current,
+        savedStakeholderButtonRef.current,
       ].filter(Boolean) as HTMLElement[];
       if (panel && panel.contains(target)) return;
       if (triggers.some((trigger) => trigger.contains(target))) return;
@@ -2021,24 +3070,47 @@ function IdeaGenerator({
       document.removeEventListener("mousedown", onDocDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [savedPanelOpen, savedPanelLocked, updateSavedPanelPos]);
+  }, [
+    savedPanelOpen,
+    savedPanelLocked,
+    updateSavedPanelPos,
+    deleteTarget,
+    deleteComparisonOpen,
+    deleteDecisionOpen,
+    deleteStakeholderOpen,
+    deleteAllGeneratedOpen,
+    deleteAllComparisonsOpen,
+    deleteAllReportsOpen,
+  ]);
 
   useEffect(() => {
     if (savedPanelOpen) return;
     setSavedPanelPos(null);
     setIsDraggingSavedPanel(false);
     savedPanelDragRef.current = null;
+    setDeleteAllGeneratedOpen(false);
+    setDeleteAllComparisonsOpen(false);
+    setDeleteAllReportsOpen(false);
   }, [savedPanelOpen]);
 
+  useEffect(() => {
+    if (!executionPlanPickerOpen) return;
+    updateExecutionPlanPickerPos(true);
+    const onResize = () => updateExecutionPlanPickerPos();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [executionPlanPickerOpen, updateExecutionPlanPickerPos]);
+
+  useEffect(() => {
+    if (executionPlanPickerOpen) return;
+    setExecutionPlanPickerPos(null);
+    setIsDraggingExecutionPlanPicker(false);
+    executionPlanPickerDragRef.current = null;
+  }, [executionPlanPickerOpen]);
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6 lg:gap-8">
+    <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[342px_1fr] gap-3 lg:gap-4">
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} onUpgrade={upgradeTo} />
-      <LimitModal 
-        open={limitModal.open} 
-        onClose={() => setLimitModal({ ...limitModal, open: false })} 
-        title={limitModal.title} 
-        message={limitModal.message} 
-      />
       {deleteTarget ? (
         <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
@@ -2072,6 +3144,68 @@ function IdeaGenerator({
                 disabled={deletingSavedId === deleteTarget.id}
               >
                 {deletingSavedId === deleteTarget.id ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {deleteAllGeneratedOpen ? (
+        <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
+            <div className="text-lg font-semibold text-rose-200">Delete all generated results?</div>
+            <p className="mt-2 text-sm text-white/70">
+              This will permanently remove all saved generated results. This action cannot be undone.
+            </p>
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/80">
+              {savedResults.length} result(s) will be deleted.
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                onClick={() => setDeleteAllGeneratedOpen(false)}
+                disabled={deletingAllGenerated}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600 disabled:opacity-60 disabled:cursor-not-allowed"
+                onClick={() => void deleteAllGeneratedResults()}
+                disabled={deletingAllGenerated || savedResults.length === 0}
+              >
+                {deletingAllGenerated ? "Deleting..." : "Delete All"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {deleteAllComparisonsOpen ? (
+        <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
+            <div className="text-lg font-semibold text-rose-200">Delete all comparisons?</div>
+            <p className="mt-2 text-sm text-white/70">
+              This will permanently remove all saved compare results. This action cannot be undone.
+            </p>
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/80">
+              {savedComparisons.length} comparison(s) will be deleted.
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                onClick={() => setDeleteAllComparisonsOpen(false)}
+                disabled={deletingAllComparisons}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600 disabled:opacity-60 disabled:cursor-not-allowed"
+                onClick={() => void deleteAllComparisons()}
+                disabled={deletingAllComparisons || savedComparisons.length === 0}
+              >
+                {deletingAllComparisons ? "Deleting..." : "Delete All"}
               </button>
             </div>
           </div>
@@ -2114,6 +3248,323 @@ function IdeaGenerator({
           </div>
         </div>
       ) : null}
+      {deleteDecisionOpen && decisionReport ? (
+        <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
+            <div className="text-lg font-semibold text-rose-200">Delete decision report?</div>
+            <p className="mt-2 text-sm text-white/70">
+              This will permanently remove the saved decision summary report.
+            </p>
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/80 space-y-1">
+              <div><span className="text-white/50">Saved:</span> {formatSavedDate(decisionReport.created_at)}</div>
+              <div>
+                <span className="text-white/50">Runs:</span>{" "}
+                {Array.isArray(decisionReport.run_ids) && decisionReport.run_ids.length > 0
+                  ? decisionReport.run_ids.map(formatRunLabel).join(" • ")
+                  : "No runs selected"}
+              </div>
+              {decisionReport.report?.summary ? (
+                <div><span className="text-white/50">Summary:</span> {decisionReport.report.summary}</div>
+              ) : null}
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                onClick={() => setDeleteDecisionOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
+                onClick={async () => {
+                  const reportId = decisionReport.id;
+                  setDeleteDecisionOpen(false);
+                  await deleteDecisionReport(reportId);
+                }}
+                disabled={deletingDecisionId === decisionReport.id}
+              >
+                {deletingDecisionId === decisionReport.id ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {deleteStakeholderOpen && stakeholderReport ? (
+        <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
+            <div className="text-lg font-semibold text-rose-200">Delete execution plan?</div>
+            <p className="mt-2 text-sm text-white/70">
+              This will permanently remove the saved execution plan.
+            </p>
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/80 space-y-1">
+              <div><span className="text-white/50">Saved:</span> {formatSavedDate(stakeholderReport.created_at)}</div>
+              <div>
+                <span className="text-white/50">Project:</span>{" "}
+                {stakeholderReport.title || stakeholderReport.dossier?.decision?.winner?.title || "Untitled execution plan"}
+              </div>
+              <div className="inline-flex items-center gap-1.5">
+                <span className="text-white/50">Recommendation:</span>
+                <span
+                  className={cx(
+                    "rounded-full border px-1.5 py-0.5 font-semibold",
+                    recommendationTone(stakeholderReport.recommendation || stakeholderReport.dossier?.decision?.go_no_go)
+                  )}
+                >
+                  {recommendationLabel(stakeholderReport.recommendation || stakeholderReport.dossier?.decision?.go_no_go)}
+                </span>
+              </div>
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                onClick={() => setDeleteStakeholderOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
+                onClick={async () => {
+                  const reportId = stakeholderReport.id;
+                  await deleteStakeholderReport(reportId);
+                }}
+                disabled={deletingStakeholderId === stakeholderReport.id}
+              >
+                {deletingStakeholderId === stakeholderReport.id ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {deleteAllReportsOpen ? (
+        <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
+            <div className="text-lg font-semibold text-rose-200">Delete all decision reports?</div>
+            <p className="mt-2 text-sm text-white/70">
+              This will permanently remove all saved decision summary reports. This action cannot be undone.
+            </p>
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/80">
+              {savedReports.length} report(s) will be deleted.
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold hover:bg-white/10"
+                onClick={() => setDeleteAllReportsOpen(false)}
+                disabled={deletingAllReports}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="flex-1 rounded-xl bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600 disabled:opacity-60 disabled:cursor-not-allowed"
+                onClick={() => void deleteAllDecisionReports()}
+                disabled={deletingAllReports || savedReports.length === 0}
+              >
+                {deletingAllReports ? "Deleting..." : "Delete All"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {executionPlanPickerOpen ? (
+        <div className="fixed inset-0 z-[210]" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-black/60" />
+          <div
+            ref={executionPlanPickerRef}
+            style={executionPlanPickerStyle}
+            className="fixed box-border rounded-2xl border border-white/10 bg-slate-950/95 p-5 text-white shadow-2xl backdrop-blur-xl"
+          >
+            <div
+              className={cx(
+                "flex items-center justify-between gap-3 select-none touch-none",
+                isDraggingExecutionPlanPicker ? "cursor-grabbing" : "cursor-grab"
+              )}
+              onMouseDown={startExecutionPlanPickerDrag}
+            >
+              <div>
+                <div className="text-lg font-semibold text-white">Select 1 report for Execution Plan</div>
+                <p className="mt-1 text-xs text-white/65">
+                  Ordered by run score. You can choose one model output variant per run.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 disabled:opacity-60"
+                onClick={() => {
+                  setExecutionPlanPickerOpen(false);
+                  setExecutionPlanPickerError(null);
+                }}
+                disabled={stakeholderGenerating}
+                data-no-drag="true"
+              >
+                Close
+              </button>
+            </div>
+            {stakeholderGenerating ? (
+              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] font-medium text-amber-300">
+                Processing in progress — modal is temporarily locked.
+              </div>
+            ) : null}
+            <div className="mt-4 max-h-[420px] overflow-y-auto ig-scrollbar pr-1 space-y-2">
+              {executionPlanPickerLoading ? (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/80 inline-flex items-center gap-2">
+                  <Spinner className="h-4 w-4" />
+                  Loading previously generated execution plans...
+                </div>
+              ) : executionPlanOptions.length === 0 ? (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
+                  No ranked reports available from this Decision Summary.
+                </div>
+              ) : (
+                executionPlanOptions.map((item) => {
+                  const alreadyGenerated = executionPlanGeneratedKeySet.has(item.optionKey);
+                  const selected = executionPlanSelectedKey === item.optionKey;
+                  const disabled = alreadyGenerated || stakeholderGenerating;
+                  return (
+                    <button
+                      key={item.optionKey}
+                      type="button"
+                      onClick={() => {
+                        if (disabled) return;
+                        setExecutionPlanPickerError(null);
+                        setExecutionPlanSelectedKey(item.optionKey);
+                      }}
+                      disabled={disabled}
+                      className={cx(
+                        "w-full rounded-xl border p-3 text-left transition",
+                        selected
+                          ? "border-blue-400/50 bg-blue-500/10"
+                          : "border-white/10 bg-white/5",
+                        disabled && "opacity-60 cursor-not-allowed",
+                        !disabled && "hover:bg-white/10"
+                      )}
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                        <span className="rounded-full border border-white/15 bg-white/5 px-2 py-0.5 font-semibold">Run Rank {item.runRank}</span>
+                        {typeof item.runScore === "number" ? (
+                          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-200">
+                            Run score {item.runScore}
+                          </span>
+                        ) : null}
+                        {typeof item.modelScore === "number" ? (
+                          <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 font-semibold text-cyan-200">
+                            Model score {item.modelScore}
+                          </span>
+                        ) : null}
+                        {item.isWinnerRun ? (
+                          <span className="rounded-full border border-indigo-400/40 bg-indigo-500/20 px-2 py-0.5 font-semibold text-indigo-200">
+                            Winner run
+                          </span>
+                        ) : null}
+                        {item.isTopOutput ? (
+                          <span className="rounded-full border border-cyan-400/40 bg-cyan-500/20 px-2 py-0.5 font-semibold text-cyan-200">
+                            Top output
+                          </span>
+                        ) : null}
+                        {alreadyGenerated ? (
+                          <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 font-semibold text-amber-200">
+                            Execution Plan already generated
+                          </span>
+                        ) : null}
+                        {!alreadyGenerated && selected ? (
+                          <span className="rounded-full border border-blue-400/40 bg-blue-500/20 px-2 py-0.5 font-semibold text-blue-200">
+                            Selected
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="mt-2 text-[15px] font-semibold text-white">{item.title}</div>
+                      <div className="mt-0.5 text-[11px] text-cyan-200/90">
+                        {item.modelLabel}
+                      </div>
+                      <div className="mt-1 text-[12px] text-white/75">
+                        {item.runLabel}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-white/60">
+                        Persona: {item.personaLabel}
+                      </div>
+                      <div className="text-[11px] text-white/60">
+                        Constraints: {item.constraintsLabel}
+                      </div>
+                      <div className="text-[11px] text-white/60">
+                        Models in run: {item.modelSetLabel}
+                      </div>
+                      {item.rationale ? (
+                        <div className="mt-1.5 text-[11px] text-white/70 line-clamp-2">
+                          {item.rationale}
+                        </div>
+                      ) : null}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-2 border-t border-white/10 pt-3">
+              <div
+                className={cx(
+                  "min-w-0 text-xs leading-5 whitespace-nowrap truncate py-px",
+                  executionPlanPickerError ? "text-rose-300" : "text-white/70"
+                )}
+              >
+                {executionPlanPickerError ? (
+                  executionPlanPickerError
+                ) : stakeholderGenerating ? (
+                  <span className="inline-flex items-center">
+                    Generating execution plan
+                    <LoadingDots className="ml-1.5" />
+                  </span>
+                ) : isTokenLimited ? (
+                  "Monthly token limit reached. Execution Plan generation is disabled until reset."
+                ) : (
+                  `${executionPlanOptions.length} output report(s) · ${executionPlanOptions.filter((item) => executionPlanGeneratedKeySet.has(item.optionKey)).length} locked`
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/10 disabled:opacity-60"
+                  onClick={() => {
+                    setExecutionPlanPickerOpen(false);
+                    setExecutionPlanPickerError(null);
+                  }}
+                  disabled={stakeholderGenerating}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={cx(
+                    "rounded-xl border px-3 py-1.5 text-xs font-semibold",
+                    !executionPlanSelectedKey || !hasSelectableExecutionPlanOption || stakeholderGenerating || isTokenLimited
+                      ? "border-white/10 bg-white/5 text-white/45 cursor-not-allowed"
+                      : "border-indigo-500/40 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/30"
+                  )}
+                  disabled={!executionPlanSelectedKey || !hasSelectableExecutionPlanOption || stakeholderGenerating || isTokenLimited}
+                  onClick={() => {
+                    const selected = executionPlanOptions.find((item) => item.optionKey === executionPlanSelectedKey);
+                    if (!selected) return;
+                    void runStakeholderReport({ runId: selected.runId, modelId: selected.modelId });
+                  }}
+                >
+                  {stakeholderGenerating ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Spinner className="h-3.5 w-3.5" />
+                      Generating...
+                    </span>
+                  ) : isTokenLimited ? (
+                    "Token Limit Reached"
+                  ) : (
+                    "Generate Execution Plan"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {usageNotices.length ? (
         <div
@@ -2151,7 +3602,7 @@ function IdeaGenerator({
       ) : null}
 
       {/* Sidebar */}
-      <aside className="lg:sticky lg:top-24 h-fit overflow-visible">
+      <aside className="min-w-0 lg:sticky lg:top-24 h-fit overflow-visible">
         <GlassCard className="p-5 overflow-visible">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -2297,7 +3748,11 @@ function IdeaGenerator({
                     </div>
 
                     {/* options */}
-                    <div className="p-2 max-h-64 overflow-y-auto ig-scrollbar bg-slate-950/95" role="listbox">
+                    <div
+                      className="p-2 max-h-64 overflow-y-auto ig-scrollbar bg-slate-950/95"
+                      role="listbox"
+                      onMouseLeave={() => setIndustryHoverBubble(null)}
+                    >
                       {filteredIndustries.length === 0 ? (
                         <div className="px-2 py-3 text-sm text-gray-500 dark:text-gray-300">
                           No matches.
@@ -2311,7 +3766,14 @@ function IdeaGenerator({
                             <button
                               key={ind}
                               type="button"
-                              onMouseEnter={() => setIndustryActive(idx)}
+                              aria-label={`${ind}. ${getIndustryHint(ind)}`}
+                              onMouseEnter={(e) => {
+                                setIndustryActive(idx);
+                                setIndustryHoverBubble(buildHoverBubble(e.currentTarget, getIndustryHint(ind)));
+                              }}
+                              onMouseMove={(e) => setIndustryHoverBubble(buildHoverBubble(e.currentTarget, getIndustryHint(ind)))}
+                              onFocus={(e) => setIndustryHoverBubble(buildHoverBubble(e.currentTarget, getIndustryHint(ind)))}
+                              onBlur={() => setIndustryHoverBubble(null)}
                               onClick={() => {
                                 setIndustry(ind);
                                 setIndustryOpen(false);
@@ -2352,6 +3814,25 @@ function IdeaGenerator({
                         Close
                       </button>
                     </div>
+                    {industryHoverBubble
+                      ? createPortal(
+                          <div
+                            className="fixed z-[120] max-w-[320px] rounded-xl border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[11px] leading-snug text-white/90 shadow-2xl backdrop-blur pointer-events-none"
+                            style={{
+                              top: industryHoverBubble.top,
+                              left: industryHoverBubble.left,
+                              transform:
+                                industryHoverBubble.side === "right"
+                                  ? "translateY(-50%)"
+                                  : "translate(-100%, -50%)",
+                            }}
+                            role="tooltip"
+                          >
+                            {industryHoverBubble.text}
+                          </div>,
+                          document.body
+                        )
+                      : null}
                   </div>
                 )}
               </div>
@@ -2438,13 +3919,17 @@ function IdeaGenerator({
                       </div>
 
                       {/* options */}
-                      <div className="p-2 max-h-64 overflow-y-auto ig-scrollbar bg-slate-950/95">
+                      <div
+                        className="p-2 max-h-64 overflow-y-auto ig-scrollbar bg-slate-950/95"
+                        onMouseLeave={() => setPersonaHoverBubble(null)}
+                      >
                         {filteredPersonas.length === 0 ? (
                           <div className="px-2 py-3 text-sm text-gray-400">No matches.</div>
                         ) : (
                           filteredPersonas.map((p, idx) => {
                             const active = idx === personaActive;
                             const selected = p.id === tone;
+                            const personaHint = getPersonaHint(p.id);
 
                             const originalIdx = PERSONAS.findIndex((x) => x.id === p.id);
                             const locked = !isPremium && originalIdx > 0;
@@ -2453,7 +3938,14 @@ function IdeaGenerator({
                               <button
                                 key={p.id}
                                 type="button"
-                                onMouseEnter={() => setPersonaActive(idx)}
+                                aria-label={`${p.label}. ${personaHint}`}
+                                onMouseEnter={(e) => {
+                                  setPersonaActive(idx);
+                                  setPersonaHoverBubble(buildHoverBubble(e.currentTarget, personaHint));
+                                }}
+                                onMouseMove={(e) => setPersonaHoverBubble(buildHoverBubble(e.currentTarget, personaHint))}
+                                onFocus={(e) => setPersonaHoverBubble(buildHoverBubble(e.currentTarget, personaHint))}
+                                onBlur={() => setPersonaHoverBubble(null)}
                                 onClick={() => {
                                   if (locked) {
                                     if (planLoaded) openUpgrade();
@@ -2509,6 +4001,25 @@ function IdeaGenerator({
                           Close
                         </button>
                       </div>
+                      {personaHoverBubble
+                        ? createPortal(
+                            <div
+                              className="fixed z-[120] max-w-[320px] rounded-xl border border-white/10 bg-slate-900/95 px-2.5 py-2 text-[11px] leading-snug text-white/90 shadow-2xl backdrop-blur pointer-events-none"
+                              style={{
+                                top: personaHoverBubble.top,
+                                left: personaHoverBubble.left,
+                                transform:
+                                  personaHoverBubble.side === "right"
+                                    ? "translateY(-50%)"
+                                    : "translate(-100%, -50%)",
+                              }}
+                              role="tooltip"
+                            >
+                              {personaHoverBubble.text}
+                            </div>,
+                            document.body
+                          )
+                        : null}
                     </div>
                   )}
                 </div>
@@ -2778,49 +4289,49 @@ function IdeaGenerator({
       </aside>
 
       {/* Main content */}
-      <section>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+      <section className="min-w-0">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-2 mb-4">
           <GlassCard className="p-2 sm:p-3 order-2">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Current Usage</h2>
-                <div className="mt-2 grid w-full grid-cols-4 place-items-center gap-x-4 text-[11px]">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
+                <div className="mt-1.5 grid w-full grid-cols-4 items-start gap-x-2 text-[10px] sm:text-[11px]">
+                  <div className="min-w-0 flex w-full flex-col items-center justify-center leading-tight">
                     <UsageLabel
                       label="Tokens"
                       tooltip={`Tokens: ${(tokenUsage.total_tokens || 0).toLocaleString()} / ${tokenLimit.toLocaleString()} • Refresh: monthly`}
                     />
-                    <span className={cx("font-semibold", tokenTone)}>
-                      {(tokenUsage.total_tokens || 0).toLocaleString()}
+                    <span className={cx("font-semibold tabular-nums", tokenTone)}>
+                      {formatUsageCompact(tokenUsage.total_tokens || 0)}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
+                  <div className="min-w-0 flex w-full flex-col items-center justify-center leading-tight">
                     <UsageLabel
                       label="API"
                       tooltip={`API calls: ${(tokenUsage.api_calls_count || 0).toLocaleString()} / ${apiLimit} • Refresh: per minute`}
                     />
-                    <span className={cx("font-semibold", apiTone)}>
-                      {(tokenUsage.api_calls_count || 0)}
+                    <span className={cx("font-semibold tabular-nums", apiTone)}>
+                      {formatUsageCompact(tokenUsage.api_calls_count || 0)}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
+                  <div className="min-w-0 flex w-full flex-col items-center justify-center leading-tight">
                     <UsageLabel
                       label="Email"
                       tooltip={`Emails sent: ${(tokenUsage.emails_sent_count || 0).toLocaleString()} / ${emailLimit} • Refresh: daily`}
                     />
-                    <span className={cx("font-semibold", emailTone)}>
-                      {(tokenUsage.emails_sent_count || 0)}
+                    <span className={cx("font-semibold tabular-nums", emailTone)}>
+                      {formatUsageCompact(tokenUsage.emails_sent_count || 0)}
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
+                  <div className="min-w-0 flex w-full flex-col items-center justify-center leading-tight">
                     <UsageLabel
                       label="Storage"
                       tooltip={`Storage: ${formatBytes(savedUsageBytes)} / ${savedLimitBytes ? formatBytes(savedLimitBytes) : "Unknown"} • Refresh: persistent`}
                     />
-                    <span className={cx("font-semibold", storageTone)}>
+                    <span className={cx("font-semibold tabular-nums", storageTone)}>
                       {storagePercent}%
                     </span>
                   </div>
@@ -2858,7 +4369,7 @@ function IdeaGenerator({
             </div>
           </GlassCard>
 
-          <GlassCard className="p-2 sm:p-3 relative order-1">
+          <GlassCard className="p-2 sm:p-3 relative order-1 overflow-hidden">
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Saved Results</h2>
@@ -2866,13 +4377,13 @@ function IdeaGenerator({
                   {savedResults.length} saved
                 </div>
               </div>
-              <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+              <div className="grid grid-cols-4 gap-1.5 min-w-0">
                 <button
                   ref={savedGeneratedButtonRef}
                   type="button"
                   onClick={() => openSavedPanel("generated")}
                   className={cx(
-                    "flex-1 rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap text-center",
+                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "generated"
                       ? "bg-blue-600 text-white"
@@ -2886,7 +4397,7 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("compare")}
                   className={cx(
-                    "flex-1 rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap text-center",
+                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "compare"
                       ? "bg-blue-600 text-white"
@@ -2900,14 +4411,27 @@ function IdeaGenerator({
                   type="button"
                   onClick={() => openSavedPanel("decision")}
                   className={cx(
-                    "flex-1 rounded-lg border px-2.5 py-1 text-[10px] font-semibold whitespace-nowrap text-center",
+                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate",
                     "border-black/10 dark:border-white/10",
                     savedPanelMode === "decision"
                       ? "bg-blue-600 text-white"
                       : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
                   )}
                 >
-                  Decision Summary Report
+                  Decision Summary
+                </button>
+                <button
+                  ref={savedStakeholderButtonRef}
+                  type="button"
+                  onClick={() => openSavedPanel("stakeholder")}
+                  className={cx(
+                    "min-w-0 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold whitespace-nowrap text-center truncate transition-colors",
+                    savedPanelMode === "stakeholder"
+                      ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
+                      : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
+                  )}
+                >
+                  Execution Plan
                 </button>
               </div>
             </div>
@@ -2941,7 +4465,9 @@ function IdeaGenerator({
                               ? "Generated Results"
                               : savedPanelMode === "compare"
                               ? "Compare Results"
-                              : "Decision Summary Report"}
+                              : savedPanelMode === "decision"
+                              ? "Decision Summary Report"
+                              : "Execution Plan"}
                           </div>
                           {savedPanelMode === "generated" ? (
                             <HelpTooltip content="Load a saved run to revisit its outputs or delete it to free up space." />
@@ -2958,7 +4484,7 @@ function IdeaGenerator({
                                 </>
                               }
                             />
-                          ) : (
+                          ) : savedPanelMode === "decision" ? (
                             <HelpTooltip
                               content={
                                 <>
@@ -2969,6 +4495,17 @@ function IdeaGenerator({
                                   <div>Step 5: Click Decision Summary Report to generate the summary.</div>
                                   <div>Step 6: Review the ranked runs, insights, and next steps.</div>
                                   <div>Step 7: Export or email the report if needed.</div>
+                                </>
+                              }
+                            />
+                          ) : (
+                            <HelpTooltip
+                              content={
+                                <>
+                                  <div>Step 1: Open Execution Plan.</div>
+                                  <div>Step 2: Click Generate Execution Plan from the Decision Summary tab.</div>
+                                  <div>Step 3: View saved execution plans here and reload when needed.</div>
+                                  <div>Step 4: Use the plan to brief stakeholders on execution, cost, and risk.</div>
                                 </>
                               }
                             />
@@ -2987,6 +4524,8 @@ function IdeaGenerator({
                               } else if (savedPanelMode === "decision") {
                                 fetchSavedResults();
                                 fetchSavedReports();
+                              } else if (savedPanelMode === "stakeholder") {
+                                fetchSavedStakeholderReports();
                               }
                             }}
                             disabled={savedPanelLoading || savedPanelLocked}
@@ -3019,6 +4558,38 @@ function IdeaGenerator({
                             ) : null}
                             {savedPanelLoading ? "Loading..." : "Refresh"}
                           </button>
+                          {savedPanelMode === "generated" ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (savedResults.length === 0) return;
+                                setDeleteAllGeneratedOpen(true);
+                              }}
+                              disabled={savedPanelLoading || savedPanelLocked || savedResults.length === 0}
+                              aria-disabled={savedPanelLoading || savedPanelLocked || savedResults.length === 0}
+                              title={savedResults.length === 0 ? "No saved results to delete." : undefined}
+                              className={cx(
+                                "rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
+                                "border-rose-300/40 dark:border-rose-400/30",
+                                "bg-rose-500/10 text-rose-700 dark:text-rose-300 inline-flex items-center gap-1.5",
+                                savedPanelLoading || savedPanelLocked || savedResults.length === 0
+                                  ? "opacity-60 cursor-not-allowed"
+                                  : "hover:bg-rose-500/20"
+                              )}
+                            >
+                              {deletingAllGenerated ? (
+                                <>
+                                  <Spinner className="h-3.5 w-3.5" />
+                                  <span className="inline-flex items-center">
+                                    Deleting
+                                    <LoadingDots className="ml-1" />
+                                  </span>
+                                </>
+                              ) : (
+                                "Delete All"
+                              )}
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => setSavedPanelMode(null)}
@@ -3060,54 +4631,68 @@ function IdeaGenerator({
                           ) : savedResults.length === 0 ? (
                             <div className="text-xs text-gray-500 dark:text-gray-400">No saved results yet.</div>
                           ) : (
-                            savedResults.map((item) => (
-                              <div
-                                key={item.id}
-                                className="rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-3.5 py-3 space-y-2 shadow-sm"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="text-xs font-semibold text-gray-900 dark:text-white truncate">
-                                    {formatSavedDate(item.created_at)}
+                            <>
+                              {deletingAllGenerated ? (
+                                <div className="inline-flex items-center gap-2 text-xs text-rose-600 dark:text-rose-300">
+                                  <Spinner className="h-3.5 w-3.5" />
+                                  <span className="inline-flex items-center">
+                                    Deleting saved results
+                                    <LoadingDots className="ml-1.5" />
+                                  </span>
+                                </div>
+                              ) : null}
+                              {savedResults.map((item) => (
+                                <div
+                                  key={item.id}
+                                  className={cx(
+                                    "rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-3.5 py-3 space-y-2 shadow-sm transition-all duration-300",
+                                    deletingGeneratedIds.includes(item.id) && "opacity-40 translate-x-1 scale-[0.99] animate-pulse"
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-xs font-semibold text-gray-900 dark:text-white truncate">
+                                      {formatSavedDate(item.created_at)}
+                                    </div>
+                                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => loadSavedResult(item.id)}
+                                        disabled={loadingSavedId === item.id || deletingSavedId === item.id || deletingAllGenerated}
+                                        className={cx(
+                                          "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                                          "bg-blue-600 text-white",
+                                          loadingSavedId === item.id || deletingSavedId === item.id || deletingAllGenerated
+                                            ? "opacity-60 cursor-wait"
+                                            : "hover:bg-blue-700"
+                                        )}
+                                      >
+                                        {loadingSavedId === item.id ? "Loading" : "Load"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setDeleteTarget(item)}
+                                        disabled={loadingSavedId === item.id || deletingSavedId === item.id || deletingAllGenerated}
+                                        className={cx(
+                                          "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                                          "bg-rose-500 text-white",
+                                          loadingSavedId === item.id || deletingSavedId === item.id || deletingAllGenerated
+                                            ? "opacity-60 cursor-wait"
+                                            : "hover:bg-rose-600"
+                                        )}
+                                      >
+                                        {deletingSavedId === item.id ? "Deleting" : "Delete"}
+                                      </button>
+                                    </div>
                                   </div>
-                                  <div className="flex flex-wrap items-center justify-end gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => loadSavedResult(item.id)}
-                                      disabled={loadingSavedId === item.id || deletingSavedId === item.id}
-                                      className={cx(
-                                        "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
-                                        "bg-blue-600 text-white",
-                                        loadingSavedId === item.id || deletingSavedId === item.id
-                                          ? "opacity-60 cursor-wait"
-                                          : "hover:bg-blue-700"
-                                      )}
-                                    >
-                                      {loadingSavedId === item.id ? "Loading" : "Load"}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setDeleteTarget(item)}
-                                      disabled={loadingSavedId === item.id || deletingSavedId === item.id}
-                                      className={cx(
-                                        "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
-                                        "bg-rose-500 text-white",
-                                        loadingSavedId === item.id || deletingSavedId === item.id
-                                          ? "opacity-60 cursor-wait"
-                                          : "hover:bg-rose-600"
-                                      )}
-                                    >
-                                      {deletingSavedId === item.id ? "Deleting" : "Delete"}
-                                    </button>
+                                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                                    {item.industry || "Saved result"} · {formatModelList(item.models || [])}
+                                  </div>
+                                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                                    {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
                                   </div>
                                 </div>
-                                <div className="text-xs text-gray-500 dark:text-gray-400">
-                                  {item.industry || "Saved result"} · {formatModelList(item.models || [])}
-                                </div>
-                                <div className="text-xs text-gray-500 dark:text-gray-400">
-                                  {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
-                                </div>
-                              </div>
-                            ))
+                              ))}
+                            </>
                           )
                         ) : savedPanelMode === "compare" ? (
                           <div className="flex flex-col gap-3 flex-1 min-h-0">
@@ -3180,7 +4765,28 @@ function IdeaGenerator({
                             </div>
 
                             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 flex-1 min-h-0 flex flex-col">
-                              <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved comparisons</div>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved comparisons</div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (savedComparisons.length === 0) return;
+                                    setDeleteAllComparisonsOpen(true);
+                                  }}
+                                  disabled={comparisonsLoading || deletingAllComparisons || savedComparisons.length === 0 || savedPanelLocked}
+                                  aria-disabled={comparisonsLoading || deletingAllComparisons || savedComparisons.length === 0 || savedPanelLocked}
+                                  title={savedComparisons.length === 0 ? "No comparisons to delete." : undefined}
+                                  className={cx(
+                                    "rounded-lg border px-2 py-0.5 text-[10px] font-semibold",
+                                    "border-rose-300/40 dark:border-rose-400/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                                    comparisonsLoading || deletingAllComparisons || savedComparisons.length === 0 || savedPanelLocked
+                                      ? "opacity-60 cursor-not-allowed"
+                                      : "hover:bg-rose-500/20"
+                                  )}
+                                >
+                                  {deletingAllComparisons ? "Deleting..." : "Delete All"}
+                                </button>
+                              </div>
                               <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
                                 {comparisonsLoading ? (
                                   <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
@@ -3190,46 +4796,77 @@ function IdeaGenerator({
                                 ) : savedComparisons.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No comparisons yet.</div>
                                 ) : (
-                                  savedComparisons.map((item) => (
-                                    <div
-                                      key={item.id}
-                                      className="flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
-                                    >
-                                      <div className="min-w-0">
-                                        <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
-                                          {formatSavedDate(item.created_at)}
-                                        </div>
-                                        <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                          Winner: {formatWinnerLabel(item)}
-                                        </div>
-                                        {item.top_outputs ? (
-                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                            A: {item.top_outputs.run_a?.title || "Untitled"}
-                                            {item.top_outputs.run_a?.model_label ? ` (${item.top_outputs.run_a.model_label})` : ""} · B:{" "}
-                                            {item.top_outputs.run_b?.title || "Untitled"}
-                                            {item.top_outputs.run_b?.model_label ? ` (${item.top_outputs.run_b.model_label})` : ""}
-                                          </div>
-                                        ) : null}
+                                  <>
+                                    {deletingAllComparisons ? (
+                                      <div className="inline-flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-300">
+                                        <Spinner className="h-3.5 w-3.5" />
+                                        <span className="inline-flex items-center">
+                                          Deleting comparisons
+                                          <LoadingDots className="ml-1.5" />
+                                        </span>
                                       </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setCompareSelection({ runA: item.run_a_id, runB: item.run_b_id });
-                                          setCompareResult(null);
-                                          runCompare(item.run_a_id, item.run_b_id, true);
-                                        }}
-                                        disabled={isTokenLimited || compareLoading || savedPanelLocked}
+                                    ) : null}
+                                    {savedComparisons.map((item) => (
+                                      <div
+                                        key={item.id}
                                         className={cx(
-                                          "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
-                                          isTokenLimited || compareLoading || savedPanelLocked
-                                            ? "bg-slate-400 cursor-not-allowed"
-                                            : "bg-emerald-600 hover:bg-emerald-700"
+                                          "flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2 transition-all duration-300",
+                                          deletingComparisonIds.includes(item.id) && "opacity-40 translate-x-1 scale-[0.99] animate-pulse"
                                         )}
                                       >
-                                        View
-                                      </button>
-                                    </div>
-                                  ))
+                                        <div className="min-w-0">
+                                          <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                            {formatSavedDate(item.created_at)}
+                                          </div>
+                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                            Winner: {formatWinnerLabel(item)}
+                                          </div>
+                                          {item.top_outputs ? (
+                                            <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                              A: {item.top_outputs.run_a?.title || "Untitled"}
+                                              {item.top_outputs.run_a?.model_label ? ` (${item.top_outputs.run_a.model_label})` : ""}
+                                              {typeof item.top_outputs.run_a?.score === "number" ? ` · Score ${item.top_outputs.run_a.score}` : ""} · B:{" "}
+                                              {item.top_outputs.run_b?.title || "Untitled"}
+                                              {item.top_outputs.run_b?.model_label ? ` (${item.top_outputs.run_b.model_label})` : ""}
+                                              {typeof item.top_outputs.run_b?.score === "number" ? ` · Score ${item.top_outputs.run_b.score}` : ""}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setCompareSelection({ runA: item.run_a_id, runB: item.run_b_id });
+                                              setCompareResult(null);
+                                              runCompare(item.run_a_id, item.run_b_id, true);
+                                            }}
+                                            disabled={isTokenLimited || compareLoading || savedPanelLocked || deletingAllComparisons}
+                                            className={cx(
+                                              "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                              isTokenLimited || compareLoading || savedPanelLocked || deletingAllComparisons
+                                                ? "bg-slate-400 cursor-not-allowed"
+                                                : "bg-emerald-600 hover:bg-emerald-700"
+                                            )}
+                                          >
+                                            View
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => void deleteComparison(item.id)}
+                                            disabled={deletingComparisonId === item.id || compareLoading || savedPanelLocked || deletingAllComparisons}
+                                            className={cx(
+                                              "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                              deletingComparisonId === item.id || compareLoading || savedPanelLocked || deletingAllComparisons
+                                                ? "bg-slate-400 cursor-not-allowed"
+                                                : "bg-rose-500 hover:bg-rose-600"
+                                            )}
+                                          >
+                                            {deletingComparisonId === item.id ? "Deleting..." : "Delete"}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -3303,7 +4940,28 @@ function IdeaGenerator({
                             </div>
 
                             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 flex-1 min-h-0 flex flex-col">
-                              <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved decision summary reports</div>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved decision summary reports</div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (savedReports.length === 0) return;
+                                    setDeleteAllReportsOpen(true);
+                                  }}
+                                  disabled={reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked}
+                                  aria-disabled={reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked}
+                                  title={savedReports.length === 0 ? "No reports to delete." : undefined}
+                                  className={cx(
+                                    "rounded-lg border px-2 py-0.5 text-[10px] font-semibold",
+                                    "border-rose-300/40 dark:border-rose-400/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                                    reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked
+                                      ? "opacity-60 cursor-not-allowed"
+                                      : "hover:bg-rose-500/20"
+                                  )}
+                                >
+                                  {deletingAllReports ? "Deleting..." : "Delete All"}
+                                </button>
+                              </div>
                               <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
                                 {reportsLoading ? (
                                   <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
@@ -3313,71 +4971,100 @@ function IdeaGenerator({
                                 ) : savedReports.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No reports yet.</div>
                                 ) : (
-                                  savedReports.map((item) => {
-                                    const runSummary = Array.isArray(item.run_ids)
-                                      ? item.run_ids.map(formatRunLabel).join(" • ")
-                                      : "";
-                                    return (
-                                      <div
-                                        key={item.id}
-                                        className="flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
-                                      >
-                                        <div className="min-w-0">
-                                          <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
-                                            {formatSavedDate(item.created_at)}
-                                          </div>
-                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                            {runSummary || "Saved report"}
-                                          </div>
-                                          {item.top_run_id ? (
-                                            <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                              Top: {formatRunLabel(item.top_run_id)}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                        <button
-                                          type="button"
-                                          onClick={async () => {
-                                            const startedAt = Date.now();
-                                            let loaded = false;
-                                            try {
-                                              setSavedPanelMode(null);
-                                              setResultsHydrating(true);
-                                              setReportDownloadId(item.id);
-                                              const jwt = await getToken(tokenOptions());
-                                              if (!jwt) throw new Error("no_token");
-                                              const res = await fetch(`/api/rank-reports/${item.id}`, {
-                                                headers: { Authorization: `Bearer ${jwt}` },
-                                              });
-                                              if (!res.ok) throw new Error("load_report_failed");
-                                              const data = await res.json();
-                                              await ensureMinLoadingTime(startedAt, 600);
-                                              setDecisionReport(data);
-                                              setResultsView("decision");
-                                              loaded = true;
-                                            } catch {
-                                              pushNotice("Failed to load report.");
-                                            } finally {
-                                              setResultsHydrating(false);
-                                              if (loaded) {
-                                                pushNotice("Decision summary report loaded.");
-                                              }
-                                              setReportDownloadId(null);
-                                            }
-                                          }}
-                                          disabled={reportDownloadId === item.id || reportLoading || savedPanelLocked}
+                                  <>
+                                    {deletingAllReports ? (
+                                      <div className="inline-flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-300">
+                                        <Spinner className="h-3.5 w-3.5" />
+                                        <span className="inline-flex items-center">
+                                          Deleting decision reports
+                                          <LoadingDots className="ml-1.5" />
+                                        </span>
+                                      </div>
+                                    ) : null}
+                                    {savedReports.map((item) => {
+                                      const runSummary = Array.isArray(item.run_ids)
+                                        ? item.run_ids.map(formatRunLabel).join(" • ")
+                                        : "";
+                                      return (
+                                        <div
+                                          key={item.id}
                                           className={cx(
-                                            "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
-                                            reportDownloadId === item.id || reportLoading || savedPanelLocked
-                                              ? "bg-slate-400 cursor-not-allowed"
-                                              : "bg-blue-600 hover:bg-blue-700"
+                                            "flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2 transition-all duration-300",
+                                            deletingReportIds.includes(item.id) && "opacity-40 translate-x-1 scale-[0.99] animate-pulse"
                                           )}
                                         >
-                                          {reportDownloadId === item.id ? "Loading..." : "View"}
-                                        </button>
-                                      </div>
-                                    );
-                                  })
+                                          <div className="min-w-0">
+                                            <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                              {formatSavedDate(item.created_at)}
+                                            </div>
+                                            <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                              {runSummary || "Saved report"}
+                                            </div>
+                                            {item.top_run_id ? (
+                                              <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                                Top: {formatRunLabel(item.top_run_id)}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            <button
+                                              type="button"
+                                              onClick={async () => {
+                                                const startedAt = Date.now();
+                                                let loaded = false;
+                                                try {
+                                                  setSavedPanelMode(null);
+                                                  setResultsHydrating(true);
+                                                  setReportDownloadId(item.id);
+                                                  const jwt = await getToken(tokenOptions());
+                                                  if (!jwt) throw new Error("no_token");
+                                                  const res = await fetch(`/api/rank-reports/${item.id}`, {
+                                                    headers: { Authorization: `Bearer ${jwt}` },
+                                                  });
+                                                  if (!res.ok) throw new Error("load_report_failed");
+                                                  const data = await res.json();
+                                                  await ensureMinLoadingTime(startedAt, 600);
+                                                  setDecisionReport(data);
+                                                  setResultsView("decision");
+                                                  loaded = true;
+                                                } catch {
+                                                  pushNotice("Failed to load report.");
+                                                } finally {
+                                                  setResultsHydrating(false);
+                                                  if (loaded) {
+                                                    pushNotice("Decision summary report loaded.");
+                                                  }
+                                                  setReportDownloadId(null);
+                                                }
+                                              }}
+                                              disabled={reportDownloadId === item.id || reportLoading || savedPanelLocked || deletingAllReports}
+                                              className={cx(
+                                                "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                                reportDownloadId === item.id || reportLoading || savedPanelLocked || deletingAllReports
+                                                  ? "bg-slate-400 cursor-not-allowed"
+                                                  : "bg-blue-600 hover:bg-blue-700"
+                                              )}
+                                            >
+                                              {reportDownloadId === item.id ? "Loading..." : "View"}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => void deleteDecisionReport(item.id)}
+                                              disabled={deletingDecisionId === item.id || reportLoading || savedPanelLocked || deletingAllReports}
+                                              className={cx(
+                                                "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                                deletingDecisionId === item.id || reportLoading || savedPanelLocked || deletingAllReports
+                                                  ? "bg-slate-400 cursor-not-allowed"
+                                                  : "bg-rose-500 hover:bg-rose-600"
+                                              )}
+                                            >
+                                              {deletingDecisionId === item.id ? "Deleting..." : "Delete"}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -3387,6 +5074,92 @@ function IdeaGenerator({
                                 Token limit reached. Diff Mode and rank reports are disabled until the monthly reset.
                               </div>
                             ) : null}
+                          </div>
+                        ) : savedPanelMode === "stakeholder" ? (
+                          <div className="flex flex-col gap-3 flex-1 min-h-0">
+                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 flex-1 min-h-0 flex flex-col">
+                              <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">
+                                Saved execution plans
+                              </div>
+                              <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
+                                {stakeholderReportsLoading ? (
+                                  <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                    <Spinner className="h-3.5 w-3.5" />
+                                    <span>Loading execution plans…</span>
+                                  </div>
+                                ) : savedStakeholderReports.length === 0 ? (
+                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                    No execution plans yet.
+                                  </div>
+                                ) : (
+                                  savedStakeholderReports.map((item) => (
+                                    <div
+                                      key={item.id}
+                                      className="flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                          {formatSavedDate(item.created_at)}
+                                        </div>
+                                        <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                          Project: {item.title || "Untitled execution plan"}
+                                        </div>
+                                        <div className="mt-1 inline-flex items-center gap-1.5 text-[11px]">
+                                          <span className="text-gray-500 dark:text-gray-400">Recommendation:</span>
+                                          <span className={cx("rounded-full border px-1.5 py-0.5 font-semibold", recommendationTone(item.recommendation))}>
+                                            {recommendationLabel(item.recommendation)}
+                                          </span>
+                                          <span className="text-gray-500 dark:text-gray-400">· {item.horizon_months} months</span>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => void loadStakeholderReport(item.id, true)}
+                                          disabled={stakeholderLoadingId === item.id || deletingStakeholderId === item.id || savedPanelLocked}
+                                          className={cx(
+                                            "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                            stakeholderLoadingId === item.id || deletingStakeholderId === item.id || savedPanelLocked
+                                              ? "bg-slate-400 cursor-not-allowed"
+                                              : "bg-blue-600 hover:bg-blue-700"
+                                          )}
+                                        >
+                                          {stakeholderLoadingId === item.id ? "Loading..." : "View"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setStakeholderReport((prev) => (prev?.id === item.id ? prev : ({
+                                              id: item.id,
+                                              created_at: item.created_at,
+                                              source_type: item.source_type,
+                                              source_id: item.source_id,
+                                              title: item.title,
+                                              recommendation: item.recommendation,
+                                              scenario_profile: item.scenario_profile,
+                                              horizon_months: item.horizon_months,
+                                              currency: item.currency,
+                                              region: item.region,
+                                              model: item.model,
+                                            } as StakeholderReport)));
+                                            setDeleteStakeholderOpen(true);
+                                          }}
+                                          disabled={deletingStakeholderId === item.id || stakeholderLoadingId === item.id || savedPanelLocked}
+                                          className={cx(
+                                            "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
+                                            deletingStakeholderId === item.id || stakeholderLoadingId === item.id || savedPanelLocked
+                                              ? "bg-slate-400 cursor-not-allowed"
+                                              : "bg-rose-500 hover:bg-rose-600"
+                                          )}
+                                        >
+                                          {deletingStakeholderId === item.id ? "Deleting..." : "Delete"}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
                           </div>
                         ) : null}
                         </div>
@@ -3399,7 +5172,18 @@ function IdeaGenerator({
                                   compareError ? "text-rose-500 dark:text-rose-300" : "text-gray-600 dark:text-gray-300"
                                 )}
                               >
-                                {compareError ?? (compareReady ? "Ready to compare." : "Select two runs with the same configuration.")}
+                                {compareError ? (
+                                  compareError
+                                ) : compareLoading ? (
+                                  <span className="inline-flex items-center">
+                                    Comparing selected runs
+                                    <LoadingDots className="ml-1.5" />
+                                  </span>
+                                ) : compareReady ? (
+                                  "Ready to compare."
+                                ) : (
+                                  "Select two runs with the same configuration."
+                                )}
                               </div>
                               <button
                                 type="button"
@@ -3509,11 +5293,44 @@ function IdeaGenerator({
                                 )}
                               </button>
                               <div className="ml-auto hidden md:block text-[11px] leading-none text-gray-600 dark:text-gray-300 whitespace-nowrap">
-                                {useAllRuns
-                                  ? "All saved runs selected"
-                                  : reportSelection.length > 0
-                                  ? `${reportSelection.length} run(s) selected`
-                                  : "No runs selected"}
+                                {reportLoading ? (
+                                  <span className="inline-flex items-center">
+                                    Generating decision summary
+                                    <LoadingDots className="ml-1.5" />
+                                  </span>
+                                ) : useAllRuns ? (
+                                  "All saved runs selected"
+                                ) : reportSelection.length > 0 ? (
+                                  `${reportSelection.length} run(s) selected`
+                                ) : (
+                                  "No runs selected"
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                        {savedPanelMode === "stakeholder" ? (
+                          <div className="h-9 border-t border-white/10 bg-white/90 px-4 dark:bg-slate-950/90">
+                            <div className="flex h-full items-center justify-between gap-3 overflow-hidden">
+                              <div
+                                className={cx(
+                                  "min-w-0 text-[11px] leading-none whitespace-nowrap truncate",
+                                  deletingStakeholderId !== null
+                                    ? "text-rose-500 dark:text-rose-300"
+                                    : "text-gray-600 dark:text-gray-300"
+                                )}
+                              >
+                                {stakeholderReportsLoading || stakeholderLoadingId !== null || deletingStakeholderId !== null ? (
+                                  <span className="inline-flex items-center">
+                                    {stakeholderFooterText}
+                                    <LoadingDots className="ml-1.5" />
+                                  </span>
+                                ) : (
+                                  stakeholderFooterText
+                                )}
+                              </div>
+                              <div className="text-[11px] leading-none text-gray-600 dark:text-gray-300 whitespace-nowrap">
+                                {savedStakeholderReports.length} saved
                               </div>
                             </div>
                           </div>
@@ -3529,7 +5346,7 @@ function IdeaGenerator({
 
         <GlassCard className="min-h-[680px] p-6 lg:p-8">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-1">
+            <div className="flex w-full lg:w-auto flex-wrap items-center gap-0.5 rounded-full border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-1">
               <button
                 type="button"
                 onClick={() => setResultsView("generated")}
@@ -3542,6 +5359,14 @@ function IdeaGenerator({
               >
                 Generated Results
               </button>
+              <span
+                aria-hidden="true"
+                className="pointer-events-none select-none px-0.5 text-gray-500/75 dark:text-gray-400/75"
+              >
+                <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none">
+                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
               <button
                 type="button"
                 onClick={() => setResultsView("insights")}
@@ -3554,6 +5379,14 @@ function IdeaGenerator({
               >
                 Compare Rank Results
               </button>
+              <span
+                aria-hidden="true"
+                className="pointer-events-none select-none px-0.5 text-gray-500/75 dark:text-gray-400/75"
+              >
+                <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none">
+                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
               <button
                 type="button"
                 onClick={() => setResultsView("decision")}
@@ -3566,6 +5399,26 @@ function IdeaGenerator({
               >
                 Decision Summary Report
               </button>
+              <span
+                aria-hidden="true"
+                className="pointer-events-none select-none px-0.5 text-gray-500/75 dark:text-gray-400/75"
+              >
+                <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none">
+                  <path d="M3 1.5L7 5L3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <button
+                type="button"
+                onClick={() => setResultsView("stakeholder")}
+                className={cx(
+                  "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+                  resultsView === "stakeholder"
+                    ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
+                    : "text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
+                )}
+              >
+                Execution Plan
+              </button>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -3577,6 +5430,8 @@ function IdeaGenerator({
                     if (canClearCompare) clearCompareResults();
                   } else if (resultsView === "decision") {
                     if (canClearDecision) clearDecisionReport();
+                  } else if (resultsView === "stakeholder") {
+                    if (canClearStakeholder) clearStakeholderReport();
                   }
                 }}
                 disabled={
@@ -3584,7 +5439,9 @@ function IdeaGenerator({
                     ? !canClearGenerated
                     : resultsView === "insights"
                     ? !canClearCompare
-                    : !canClearDecision
+                    : resultsView === "decision"
+                    ? !canClearDecision
+                    : !canClearStakeholder
                 }
                 className={cx(
                   "rounded-full px-3 py-1.5 text-xs font-semibold",
@@ -3594,7 +5451,9 @@ function IdeaGenerator({
                     ? (canClearGenerated ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
                     : resultsView === "insights"
                     ? (canClearCompare ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
-                    : (canClearDecision ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
+                    : resultsView === "decision"
+                    ? (canClearDecision ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
+                    : (canClearStakeholder ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
                 )}
               >
                 Clear
@@ -3608,6 +5467,8 @@ function IdeaGenerator({
                     setDeleteTarget(loadedSavedMeta);
                   } else if (canDeleteDecision) {
                     setDeleteDecisionOpen(true);
+                  } else if (canDeleteStakeholder) {
+                    setDeleteStakeholderOpen(true);
                   }
                 }}
                 disabled={
@@ -3615,6 +5476,8 @@ function IdeaGenerator({
                     ? !canDeleteCompare
                     : resultsView === "decision"
                     ? !canDeleteDecision
+                    : resultsView === "stakeholder"
+                    ? !canDeleteStakeholder
                     : !canDeleteGenerated
                 }
                 className={cx(
@@ -3624,12 +5487,16 @@ function IdeaGenerator({
                     ? (canDeleteCompare ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
                     : resultsView === "decision"
                     ? (canDeleteDecision ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
+                    : resultsView === "stakeholder"
+                    ? (canDeleteStakeholder ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
                     : (canDeleteGenerated ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
                 )}
               >
                 {resultsView === "insights" && deletingComparisonId && compareResult?.comparison_id === deletingComparisonId
                   ? "Deleting..."
                   : resultsView === "decision" && deletingDecisionId && decisionReport?.id === deletingDecisionId
+                  ? "Deleting..."
+                  : resultsView === "stakeholder" && deletingStakeholderId && stakeholderReport?.id === deletingStakeholderId
                   ? "Deleting..."
                   : resultsView === "generated" && deletingSavedId && loadedSavedMeta?.id === deletingSavedId
                   ? "Deleting..."
@@ -3878,12 +5745,22 @@ function IdeaGenerator({
                             <span className="text-gray-500 dark:text-gray-400">
                               ({compareResult.comparison.top_outputs.run_a?.model_label || "Model"})
                             </span>
+                            {typeof compareResult.comparison.top_outputs.run_a?.score === "number" ? (
+                              <span className="text-gray-500 dark:text-gray-400">
+                                {" "}· Score {compareResult.comparison.top_outputs.run_a?.score}
+                              </span>
+                            ) : null}
                           </div>
                           <div className="mt-1">
                             B: {compareResult.comparison.top_outputs.run_b?.title || "Untitled result"}{" "}
                             <span className="text-gray-500 dark:text-gray-400">
                               ({compareResult.comparison.top_outputs.run_b?.model_label || "Model"})
                             </span>
+                            {typeof compareResult.comparison.top_outputs.run_b?.score === "number" ? (
+                              <span className="text-gray-500 dark:text-gray-400">
+                                {" "}· Score {compareResult.comparison.top_outputs.run_b?.score}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       ) : null}
@@ -3927,6 +5804,11 @@ function IdeaGenerator({
                                   <span className="text-gray-500 dark:text-gray-400">
                                     ({top.model_label || "Model"})
                                   </span>
+                                  {typeof top.score === "number" ? (
+                                    <span className="ml-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700 dark:text-cyan-300">
+                                      Score {top.score}
+                                    </span>
+                                  ) : null}
                                 </div>
                                 {isWinner ? (
                                   <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
@@ -3947,7 +5829,7 @@ function IdeaGenerator({
                 ) : null}
 
               </div>
-            ) : (
+            ) : resultsView === "decision" ? (
               <div className="mt-4 space-y-4">
                 {!decisionReport ? (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
@@ -3997,20 +5879,36 @@ function IdeaGenerator({
                           Saved: {formatSavedDate(decisionReport.created_at)}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => decisionReport.id && downloadSavedReport(decisionReport.id)}
-                        disabled={reportDownloadId === decisionReport.id}
-                        className={cx(
-                          "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
-                          reportDownloadId === decisionReport.id
-                            ? "text-gray-500 dark:text-gray-400 cursor-not-allowed"
-                            : "text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
-                        )}
-                      >
-                        {reportDownloadId === decisionReport.id ? <Spinner className="h-3.5 w-3.5" /> : null}
-                        {reportDownloadId === decisionReport.id ? "Preparing PDF..." : "Download PDF"}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={openExecutionPlanPicker}
+                          disabled={stakeholderGenerating || reportLoading}
+                          className={cx(
+                            "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
+                            stakeholderGenerating || reportLoading
+                              ? "text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                              : "text-indigo-700 dark:text-indigo-300 hover:bg-white/80 dark:hover:bg-white/10"
+                          )}
+                        >
+                          {stakeholderGenerating ? <Spinner className="h-3.5 w-3.5" /> : null}
+                          {stakeholderGenerating ? "Generating Plan..." : "Generate Execution Plan"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => decisionReport.id && downloadSavedReport(decisionReport.id)}
+                          disabled={reportDownloadId === decisionReport.id}
+                          className={cx(
+                            "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
+                            reportDownloadId === decisionReport.id
+                              ? "text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                              : "text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                          )}
+                        >
+                          {reportDownloadId === decisionReport.id ? <Spinner className="h-3.5 w-3.5" /> : null}
+                          {reportDownloadId === decisionReport.id ? "Preparing PDF..." : "Download PDF"}
+                        </button>
+                      </div>
                     </div>
                     {decisionReport.report?.summary ? (
                       <div className="mt-3 text-[15px] text-gray-700 dark:text-gray-200">
@@ -4106,6 +6004,671 @@ function IdeaGenerator({
                   </div>
                 )}
               </div>
+            ) : (
+              <div className="mt-4 space-y-4">
+                {!stakeholderReport ? (
+                  <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
+                    <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">No execution plan loaded</p>
+                      <p className="text-sm text-gray-700 dark:text-gray-200">
+                        Generate from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> or open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results → Execution Plan</span>.
+                      </p>
+                    </div>
+
+                    <div className="mt-6 text-left">
+                      <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Execution Plan quick tips</div>
+                        <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
+                          {[
+                            <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> tab.</>,
+                            <>Generate or load a decision report first.</>,
+                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Execution Plan</span>.</>,
+                            "Review execution plan, resources, cost, and profit forecast.",
+                            "Use Saved Results → Execution Plan to reload previous plans.",
+                          ].map((tip, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-[11px] font-semibold text-white/95 shadow-sm">
+                                {idx + 1}
+                              </span>
+                              <span className="leading-tight">{tip}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-amber-500/45 dark:border-amber-400/45 bg-white/60 dark:bg-white/5 p-4 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-[15px] font-semibold text-gray-900 dark:text-white">Execution Plan</div>
+                          <InfoPillTooltip
+                            content="This is your final business-readiness report. It converts one selected model output into a decision package that includes go/no-go recommendation, execution phases, budget, forecast, risks, and stakeholder actions."
+                          />
+                        </div>
+                        <div className="mt-1 text-[14px] font-semibold text-gray-900 dark:text-white">
+                          {executionReportTitle}
+                          {labelForModelId(stakeholderReport?.dossier?.decision?.winner?.model_id || "") ? (
+                            <span className="ml-2 text-[12px] font-medium text-cyan-700 dark:text-cyan-300">
+                              ({labelForModelId(stakeholderReport?.dossier?.decision?.winner?.model_id || "")})
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 text-[13px] text-gray-600 dark:text-gray-300">
+                          Saved: {formatSavedDate(stakeholderReport.created_at)} · Scenario: {stakeholderReport.scenario_profile}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                          Horizon: {stakeholderReport.horizon_months} months
+                        </span>
+                        <button
+                          type="button"
+                          onClick={downloadPDF}
+                          disabled={pdfLoading || executionPresentationLoading}
+                          className={cx(
+                            "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
+                            pdfLoading || executionPresentationLoading
+                              ? "text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                              : "text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                          )}
+                        >
+                          {pdfLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+                          {pdfLoading ? "Preparing PDF..." : "Download PDF"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={downloadExecutionPresentation}
+                          disabled={executionPresentationLoading || pdfLoading}
+                          className={cx(
+                            "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
+                            executionPresentationLoading || pdfLoading
+                              ? "text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                              : "text-indigo-700 dark:text-indigo-300 hover:bg-white/80 dark:hover:bg-white/10"
+                          )}
+                        >
+                          {executionPresentationLoading ? <Spinner className="h-3.5 w-3.5" /> : null}
+                          {executionPresentationLoading ? "Preparing deck..." : "Presentation Report"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {stakeholderReport.dossier?.proposal_disclaimer?.message ? (
+                      <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100">
+                        <div className="font-semibold text-amber-200">
+                          {stakeholderReport.dossier?.proposal_disclaimer?.title || "Proposal estimate notice"}
+                        </div>
+                        <div className="mt-1">{stakeholderReport.dossier?.proposal_disclaimer?.message}</div>
+                        <div className="mt-1 text-[11px] text-amber-200/90">
+                          Basis: {stakeholderReport.dossier?.proposal_disclaimer?.data_basis || "industry benchmarks and deterministic model"}
+                          {stakeholderReport.dossier?.proposal_disclaimer?.updated_at
+                            ? ` · Updated ${stakeholderReport.dossier?.proposal_disclaimer?.updated_at}`
+                            : ""}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                      <div className="flex items-center gap-2">
+                        <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Executive decision</div>
+                        <InfoPillTooltip
+                          content="Use this card as the one-screen summary. It explains whether the plan is Go or No-Go, the financial gates behind that verdict, confidence level, and the most important actions required before approval."
+                        />
+                      </div>
+                      <div className="mt-2 text-[13px] text-gray-600 dark:text-gray-300">
+                        {stakeholderReport.dossier?.decision?.thesis || "No thesis available."}
+                      </div>
+                      <div className={cx("mt-3 rounded-lg border px-3 py-2 text-[12px]", executionDecisionTone)}>
+                        <div className="font-semibold">
+                          {executionDecisionLabel}
+                          {executionSupport?.forced_by_rules ? " (financial gates enforced)" : ""}
+                        </div>
+                        {Array.isArray(executionSupport?.reasons) && executionSupport?.reasons?.length ? (
+                          <ul className="mt-1 space-y-1">
+                            {executionSupport?.reasons?.slice(0, 3).map((reason, idx) => (
+                              <li key={idx}>• {reason}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="mt-1 opacity-90">Financial gates are within acceptable range for this horizon.</div>
+                        )}
+                      </div>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-2">
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                            <TechnicalLabel
+                              label="Recommendation"
+                              tooltip="Final decision status based on execution quality and financial gate checks."
+                            />
+                          </div>
+                          <div className="mt-1 text-[13px] font-semibold text-gray-900 dark:text-white">{executionDecisionLabel}</div>
+                        </div>
+                        <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-2">
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                            <TechnicalLabel
+                              label="Confidence"
+                              tooltip="Confidence in the selected winning output quality; this is not a profit guarantee."
+                            />
+                          </div>
+                          <div className="mt-1 text-[13px] font-semibold text-gray-900 dark:text-white">
+                            {typeof stakeholderReport.dossier?.decision?.confidence === "number"
+                              ? `${Math.round((stakeholderReport.dossier?.decision?.confidence || 0) * 100)}%`
+                              : "N/A"}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-2">
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                            <TechnicalLabel
+                              label="Year 1 Net"
+                              tooltip="Projected first-year net profit after all costs (revenue minus COGS and OpEx)."
+                            />
+                          </div>
+                          <div className="mt-1 text-[13px] font-semibold text-gray-900 dark:text-white">
+                            {formatCurrencyOrNA(executionGates?.year_1_net_profit, stakeholderReport.currency)}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-2">
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                            <TechnicalLabel
+                              label="Break-even"
+                              tooltip="First month where cumulative net profit becomes zero or positive."
+                            />
+                          </div>
+                          <div className="mt-1 text-[13px] font-semibold text-gray-900 dark:text-white">
+                            Month {executionGates?.break_even_month || stakeholderReport.dossier?.revenue_profit?.break_even_month || "N/A"}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-2">
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                            <TechnicalLabel
+                              label="Expected Year 1 Net"
+                              tooltip="Probability-weighted Year 1 net profit across conservative, base, and aggressive scenarios."
+                            />
+                          </div>
+                          <div className="mt-1 text-[13px] font-semibold text-gray-900 dark:text-white">
+                            {formatCurrencyOrNA(executionGates?.expected_year_1_net_profit, stakeholderReport.currency)}
+                          </div>
+                        </div>
+                      </div>
+                      {Array.isArray(executionSupport?.required_actions) && executionSupport?.required_actions?.length ? (
+                        <div className="mt-3 text-[12px] text-gray-600 dark:text-gray-300">
+                          <div className="font-semibold text-gray-800 dark:text-gray-200">Required before approval</div>
+                          <ul className="mt-1 space-y-1">
+                            {executionSupport?.required_actions?.slice(0, 3).map((action, idx) => (
+                              <li key={idx}>• {action}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      <div className="mt-3 text-[12px] text-gray-500 dark:text-gray-400">
+                        Winner: {stakeholderReport.dossier?.decision?.winner?.title || "N/A"} · Model: {labelForModelId(stakeholderReport.dossier?.decision?.winner?.model_id || "")}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-4">
+                      <div className="flex items-center gap-2">
+                        <div className="text-[13px] font-semibold text-sky-100">Business terms and definitions</div>
+                        <InfoPillTooltip
+                          content="This glossary explains finance and strategy terms used across the report (ARPU, COGS, OpEx, break-even, etc.) so non-technical readers can interpret every card without guesswork."
+                        />
+                      </div>
+                      <div className="mt-1 text-[12px] text-sky-100/90">
+                        {executionIndustry
+                          ? `This plan is targeted to ${executionIndustry} buyers.`
+                          : "This plan converts a ranked idea into an implementation and profitability decision."}
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2 text-[12px] text-sky-50/95">
+                        <div><span className="font-semibold">ARPU:</span> average revenue earned from one paying customer each month.</div>
+                        <div><span className="font-semibold">ICP:</span> ideal customer profile; the exact buyer this plan is built for.</div>
+                        <div><span className="font-semibold">OpEx:</span> monthly operating costs (team, tools, cloud, support, marketing).</div>
+                        <div><span className="font-semibold">COGS:</span> service delivery cost per customer (AI usage, support, infra).</div>
+                        <div><span className="font-semibold">Break-even:</span> first month where cumulative profit turns zero or positive.</div>
+                        <div><span className="font-semibold">Confidence:</span> confidence in the selected winner output, not a guarantee of profit.</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                      <div className="flex items-center gap-2">
+                        <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Execution blueprint</div>
+                        <InfoPillTooltip
+                          content="This is the delivery timeline. It shows phase-by-phase work, ownership, deliverables, and dependencies so teams know what must happen first, what can run in parallel, and what blocks launch."
+                        />
+                      </div>
+                      {Array.isArray(stakeholderReport.dossier?.execution_blueprint?.phases) && stakeholderReport.dossier?.execution_blueprint?.phases?.length ? (
+                        <div className="mt-2 space-y-2">
+                          {stakeholderReport.dossier?.execution_blueprint?.phases?.map((phase, idx) => (
+                            <div key={idx} className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-3">
+                              <div className="text-[12px] font-semibold text-gray-900 dark:text-white">
+                                {phase.name || "Phase"} ({phase.start_month || 0}-{phase.end_month || 0})
+                              </div>
+                              <div className="mt-1 text-[12px] text-gray-600 dark:text-gray-300">
+                                Workstreams: {(phase.workstreams || []).join(", ") || "N/A"}
+                              </div>
+                              <div className="text-[12px] text-gray-600 dark:text-gray-300">
+                                Deliverables: {(phase.deliverables || []).join(", ") || "N/A"}
+                              </div>
+                              <div className="text-[12px] text-gray-500 dark:text-gray-400">
+                                Owners: {(phase.owner_roles || []).join(", ") || "N/A"} · Dependencies: {(phase.dependencies || []).join(", ") || "N/A"}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[12px] text-gray-500 dark:text-gray-400">No phase plan available.</div>
+                      )}
+                      {Array.isArray(stakeholderReport.dossier?.execution_blueprint?.critical_path) && stakeholderReport.dossier?.execution_blueprint?.critical_path?.length ? (
+                        <div className="mt-3 text-[12px] text-gray-600 dark:text-gray-300">
+                          <div className="font-semibold text-gray-800 dark:text-gray-200">Critical path</div>
+                          <ul className="mt-1 space-y-1">
+                            {stakeholderReport.dossier?.execution_blueprint?.critical_path?.map((item, idx) => (
+                              <li key={idx}>• {item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Budget and unit economics</div>
+                          <InfoPillTooltip
+                            content="This card combines one-time setup costs with per-customer economics. It helps you check if customer revenue can realistically cover delivery and operating costs as you scale."
+                          />
+                        </div>
+                        <div className="mt-2 space-y-1 text-[12px] text-gray-600 dark:text-gray-300">
+                          <div>Setup total: {formatCurrency(stakeholderReport.dossier?.costs?.setup_cost?.total, stakeholderReport.currency)}</div>
+                          <div>Engineering: {formatCurrency(stakeholderReport.dossier?.costs?.setup_cost?.engineering, stakeholderReport.currency)}</div>
+                          <div>Legal/Compliance: {formatCurrency(stakeholderReport.dossier?.costs?.setup_cost?.legal_compliance, stakeholderReport.currency)}</div>
+                          <div>Launch Marketing: {formatCurrency(stakeholderReport.dossier?.costs?.setup_cost?.launch_marketing, stakeholderReport.currency)}</div>
+                          <div>
+                            <TechnicalLabel
+                              label="ARPU (avg revenue per customer/month)"
+                              tooltip="Average Revenue Per User: expected monthly revenue generated by one paying customer."
+                            />: {formatCurrency(stakeholderReport.dossier?.revenue_profit?.pricing?.arpu_monthly, stakeholderReport.currency)}
+                          </div>
+                          <div>
+                            <TechnicalLabel
+                              label="Service delivery cost (COGS) per customer/month"
+                              tooltip="Cost of Goods Sold: direct monthly cost to serve one customer (AI, support, infrastructure)."
+                            />: {formatCurrency(stakeholderReport.dossier?.costs?.unit_cogs?.per_customer_monthly, stakeholderReport.currency)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Stakeholder ask</div>
+                          <InfoPillTooltip
+                            content="This card states exactly what decision-makers need to approve now: budget, required team support, and immediate next-30-day actions to start execution without delay."
+                          />
+                        </div>
+                        <div className="mt-2 text-[12px] text-gray-600 dark:text-gray-300">
+                          Budget required: {formatCurrency(stakeholderReport.dossier?.stakeholder_ask?.budget_required, stakeholderReport.currency)}
+                        </div>
+                        <div className="mt-1 text-[12px] text-gray-600 dark:text-gray-300">
+                          Decision required: {stakeholderReport.dossier?.stakeholder_ask?.decision_required || "N/A"}
+                        </div>
+                        {Array.isArray(stakeholderReport.dossier?.stakeholder_ask?.team_required) && stakeholderReport.dossier?.stakeholder_ask?.team_required?.length ? (
+                          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">
+                            Team required: {stakeholderReport.dossier?.stakeholder_ask?.team_required?.join(", ")}
+                          </div>
+                        ) : null}
+                        {Array.isArray(stakeholderReport.dossier?.stakeholder_ask?.next_30_days) && stakeholderReport.dossier?.stakeholder_ask?.next_30_days?.length ? (
+                          <div className="mt-2 text-[12px] text-gray-600 dark:text-gray-300">
+                            <div className="font-semibold text-gray-800 dark:text-gray-200">Next 30 days</div>
+                            <ul className="mt-1 space-y-1">
+                              {stakeholderReport.dossier?.stakeholder_ask?.next_30_days?.map((item, idx) => (
+                                <li key={idx}>• {item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {Array.isArray(stakeholderReport.dossier?.scenarios) && stakeholderReport.dossier?.scenarios?.length ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Scenario outcomes (Year 1)</div>
+                          <InfoPillTooltip
+                            content="This compares conservative, base, and aggressive market outcomes. Read it to understand downside risk, expected case, and upside potential before committing resources."
+                          />
+                        </div>
+                        <div className="mt-2 overflow-x-auto">
+                          <table className="min-w-full text-[12px]">
+                            <thead>
+                              <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-black/10 dark:border-white/10">
+                                <th className="py-1 pr-3 font-semibold">Scenario</th>
+                                <th className="py-1 pr-3 font-semibold">
+                                  <TechnicalLabel label="Probability" tooltip="Likelihood assigned to each scenario. All scenario probabilities should sum to about 100%." />
+                                </th>
+                                <th className="py-1 pr-3 font-semibold">
+                                  <TechnicalLabel label="Year 1 Revenue" tooltip="Total projected revenue in the first 12 months for this scenario." />
+                                </th>
+                                <th className="py-1 pr-3 font-semibold">
+                                  <TechnicalLabel label="Year 1 Net Profit" tooltip="Projected first-year net profit after subtracting COGS and OpEx." />
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stakeholderReport.dossier?.scenarios?.map((item, idx) => (
+                                <tr key={idx} className="border-b border-black/5 dark:border-white/5 text-gray-700 dark:text-gray-200">
+                                  <td className="py-1 pr-3 font-semibold">{item.name || "Scenario"}</td>
+                                  <td className="py-1 pr-3">{Math.round(Number(item.probability || 0) * 100)}%</td>
+                                  <td className="py-1 pr-3">{formatCurrency(item.year_1_revenue, stakeholderReport.currency)}</td>
+                                  <td className="py-1 pr-3">{formatCurrency(item.year_1_net_profit, stakeholderReport.currency)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {Array.isArray(stakeholderReport.dossier?.sensitivity_analysis?.tests) &&
+                    stakeholderReport.dossier?.sensitivity_analysis?.tests?.length ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Sensitivity analysis</div>
+                          <InfoPillTooltip
+                            content="This stress-tests the plan by changing key levers like price, conversion, and operating cost. It shows whether your recommendation remains stable when assumptions move."
+                          />
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          Stress tests on ARPU, conversion, and OpEx to evaluate recommendation stability.
+                        </div>
+                        <div className="mt-2 overflow-x-auto">
+                          <table className="min-w-full text-[12px]">
+                            <thead>
+                              <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-black/10 dark:border-white/10">
+                                <th className="py-1 pr-3 font-semibold">Test</th>
+                                <th className="py-1 pr-3 font-semibold">Year 1 Revenue</th>
+                                <th className="py-1 pr-3 font-semibold">Year 1 Net Profit</th>
+                                <th className="py-1 pr-3 font-semibold">Break-even</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stakeholderReport.dossier?.sensitivity_analysis?.tests?.map((item, idx) => (
+                                <tr key={idx} className="border-b border-black/5 dark:border-white/5 text-gray-700 dark:text-gray-200">
+                                  <td className="py-1 pr-3 font-semibold">{item.name || "Test"}</td>
+                                  <td className="py-1 pr-3">{formatCurrency(item.year_1_revenue, stakeholderReport.currency)}</td>
+                                  <td className="py-1 pr-3">{formatCurrency(item.year_1_net_profit, stakeholderReport.currency)}</td>
+                                  <td className="py-1 pr-3">Month {item.break_even_month || "N/A"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {stakeholderReport.dossier?.sensitivity_analysis?.interpretation ? (
+                          <div className="mt-2 text-[12px] text-gray-600 dark:text-gray-300">
+                            {stakeholderReport.dossier?.sensitivity_analysis?.interpretation}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {Array.isArray(stakeholderReport.dossier?.revenue_profit?.monthly_projection) && stakeholderReport.dossier?.revenue_profit?.monthly_projection?.length ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Monthly financial projection</div>
+                          <InfoPillTooltip
+                            content="This month-by-month table explains how customers, revenue, costs, and profit evolve over time. Use it to identify the loss period, improvement trend, and break-even timing."
+                          />
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          Table legend: Revenue = total income · OpEx = operating expenses · Net = revenue minus total costs · Cumulative = running profit or loss.
+                        </div>
+                        <div
+                          className="mt-2 max-h-64 overflow-y-auto overflow-x-auto ig-scrollbar pr-2"
+                          style={{ scrollbarGutter: "stable both-edges" as any }}
+                        >
+                          <table className="min-w-[720px] w-full table-fixed text-[12px]">
+                            <colgroup>
+                              <col className="w-[7%]" />
+                              <col className="w-[15%]" />
+                              <col className="w-[19%]" />
+                              <col className="w-[19%]" />
+                              <col className="w-[19%]" />
+                              <col className="w-[21%]" />
+                            </colgroup>
+                            <thead className="sticky top-0 bg-white/95 dark:bg-slate-900/95">
+                              <tr className="text-gray-500 dark:text-gray-400 border-b border-black/10 dark:border-white/10">
+                                <th className="py-1.5 px-2 font-semibold text-left whitespace-nowrap">Month</th>
+                                <th className="py-1.5 px-2 font-semibold text-right whitespace-nowrap">
+                                  <TechnicalLabel label="Customers" tooltip="Projected paying customers at each month." />
+                                </th>
+                                <th className="py-1.5 px-2 font-semibold text-right whitespace-nowrap">
+                                  <TechnicalLabel label="Revenue" tooltip="Total monthly income from customers." />
+                                </th>
+                                <th className="py-1.5 px-2 font-semibold text-right whitespace-nowrap">
+                                  <TechnicalLabel label="OpEx" tooltip="Operating expenses: salaries, tools, cloud, support, marketing, and other recurring costs." />
+                                </th>
+                                <th className="py-1.5 px-2 font-semibold text-right whitespace-nowrap">
+                                  <TechnicalLabel label="Net" tooltip="Net profit for the month after all costs." />
+                                </th>
+                                <th className="py-1.5 px-2 font-semibold text-right whitespace-nowrap">
+                                  <TechnicalLabel label="Cumulative" tooltip="Running total of net profit/loss from month 1 onward." />
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stakeholderReport.dossier?.revenue_profit?.monthly_projection?.map((row, idx) => (
+                                <tr key={idx} className="border-b border-black/5 dark:border-white/5 text-gray-700 dark:text-gray-200">
+                                  <td className="py-1.5 px-2 text-left tabular-nums whitespace-nowrap">{row.month}</td>
+                                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{Number(row.customers || 0).toLocaleString()}</td>
+                                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{formatCurrency(row.revenue, stakeholderReport.currency)}</td>
+                                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{formatCurrency(row.opex, stakeholderReport.currency)}</td>
+                                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{formatCurrency(row.net_profit, stakeholderReport.currency)}</td>
+                                  <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">{formatCurrency(row.cumulative_net_profit, stakeholderReport.currency)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {Array.isArray(stakeholderReport.dossier?.resources?.roles) && stakeholderReport.dossier?.resources?.roles?.length ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Resource plan</div>
+                          <InfoPillTooltip
+                            content="This staffing plan shows which roles are needed, in what capacity (FTE), and at what cost. It helps align hiring pace with delivery scope and financial limits."
+                          />
+                        </div>
+                        <div className="mt-2 overflow-x-auto">
+                          <table className="w-full table-fixed text-[12px]">
+                            <colgroup>
+                              <col className="w-[33%]" />
+                              <col className="w-[20%]" />
+                              <col className="w-[17%]" />
+                              <col className="w-[30%]" />
+                            </colgroup>
+                            <thead>
+                              <tr className="text-gray-500 dark:text-gray-400 border-b border-black/10 dark:border-white/10">
+                                <th className="py-1 pr-3 font-semibold text-left">Role</th>
+                                <th className="py-1 pr-3 font-semibold text-left">Type</th>
+                                <th className="py-1 pr-3 font-semibold text-right">
+                                  <TechnicalLabel label="Avg FTE" tooltip="Average Full-Time Equivalent staffing level for this role across the horizon." />
+                                </th>
+                                <th className="py-1 pr-3 font-semibold text-right">Avg Monthly Cost</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stakeholderReport.dossier?.resources?.roles?.map((role, idx) => {
+                                const ftes = role.fte_by_month || [];
+                                const costs = role.cost_monthly || [];
+                                const avgFte = ftes.length ? (ftes.reduce((sum, val) => sum + Number(val || 0), 0) / ftes.length) : 0;
+                                const avgCost = costs.length ? (costs.reduce((sum, val) => sum + Number(val || 0), 0) / costs.length) : 0;
+                                return (
+                                  <tr key={idx} className="border-b border-black/5 dark:border-white/5 text-gray-700 dark:text-gray-200">
+                                    <td className="py-1 pr-3 font-semibold">{role.role || "Role"}</td>
+                                    <td className="py-1 pr-3">{role.employment_type || "N/A"}</td>
+                                    <td className="py-1 pr-3 text-right tabular-nums">{avgFte.toFixed(2)}</td>
+                                    <td className="py-1 pr-3 text-right tabular-nums">{formatCurrency(avgCost, stakeholderReport.currency)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        {Array.isArray(stakeholderReport.dossier?.resources?.tooling) && stakeholderReport.dossier?.resources?.tooling?.length ? (
+                          <div className="mt-3 text-[12px] text-gray-600 dark:text-gray-300">
+                            Tooling: {stakeholderReport.dossier?.resources?.tooling?.map((tool) => `${tool.name} (${formatCurrency(tool.monthly_cost, stakeholderReport.currency)}/mo)`).join(" · ")}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {Array.isArray(stakeholderReport.dossier?.risks) && stakeholderReport.dossier?.risks?.length ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Risk register</div>
+                          <InfoPillTooltip
+                            content="This is the risk control sheet. It lists major risks, likely impact and probability, mitigation approach, owner, and trigger conditions to support accountable execution."
+                          />
+                        </div>
+                        <div className="mt-2 space-y-2">
+                          {stakeholderReport.dossier?.risks?.map((risk, idx) => (
+                            <div key={idx} className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 p-2">
+                              <div className="text-[12px] font-semibold text-gray-900 dark:text-white">
+                                {risk.category || "Risk"} · Impact {risk.impact || "N/A"} · Probability {risk.probability || "N/A"}
+                              </div>
+                              <div className="mt-1 text-[12px] text-gray-600 dark:text-gray-300">{risk.description || "No description."}</div>
+                              <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">
+                                Mitigation: {risk.mitigation || "N/A"} · Owner: {risk.owner_role || "N/A"} · Trigger: {risk.trigger || "N/A"}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {Array.isArray(stakeholderReport.assumptions) && stakeholderReport.assumptions.length ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">Assumptions</div>
+                          <InfoPillTooltip
+                            content="These are the input assumptions used to compute the forecast (pricing, customer growth, costs, and constraints). If assumptions change, outputs and recommendation can change."
+                          />
+                        </div>
+                        <div className="mt-2 max-h-56 overflow-auto ig-scrollbar">
+                          <table className="min-w-full text-[12px]">
+                            <thead className="sticky top-0 bg-white/95 dark:bg-slate-900/95">
+                              <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-black/10 dark:border-white/10">
+                                <th className="py-1 pr-3 pl-2 sm:pl-3 font-semibold">Key</th>
+                                <th className="py-1 pr-3 font-semibold">Value</th>
+                                <th className="py-1 pr-3 font-semibold">Unit</th>
+                                <th className="py-1 pr-3 font-semibold">Source</th>
+                                <th className="py-1 pr-3 font-semibold">
+                                  <TechnicalLabel label="Confidence" tooltip="Reliability level of each assumption source (low, medium, high)." />
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stakeholderReport.assumptions.map((item, idx) => (
+                                <tr key={idx} className="border-b border-black/5 dark:border-white/5 text-gray-700 dark:text-gray-200">
+                                  <td className="py-1 pr-3 pl-2 sm:pl-3">{item.key}</td>
+                                  <td className="py-1 pr-3">{String(item.value)}</td>
+                                  <td className="py-1 pr-3">{item.unit}</td>
+                                  <td className="py-1 pr-3">{item.source}</td>
+                                  <td className="py-1 pr-3">{item.confidence}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {executionRecovery?.enabled ? (
+                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <div className="text-[13px] font-semibold text-amber-200">Profitability recovery plan</div>
+                          <InfoPillTooltip
+                            content="This card appears when the plan needs financial correction. It proposes concrete levers, recovery scenarios, and 90-day experiments to close the profit gap and re-qualify for approval."
+                          />
+                        </div>
+                        <div className="text-[12px] text-amber-100/90">
+                          Monthly profit gap to close: <span className="font-semibold">{formatCurrencyOrNA(executionRecovery?.monthly_profit_gap, stakeholderReport.currency)}</span>
+                        </div>
+                        {Array.isArray(executionRecovery?.levers) && executionRecovery?.levers?.length ? (
+                          <div className="grid gap-2 sm:grid-cols-3">
+                            {executionRecovery?.levers?.map((lever, idx) => (
+                              <div key={idx} className="rounded-lg border border-amber-500/20 bg-black/10 p-2">
+                                <div className="text-[12px] font-semibold text-amber-100">{lever.name || "Lever"}</div>
+                                <div className="mt-1 text-[11px] text-amber-50/90">{lever.target || "N/A"}</div>
+                                <div className="mt-1 text-[11px] text-amber-200/90">
+                                  Impact: {formatCurrencyOrNA(lever.estimated_monthly_impact, stakeholderReport.currency)}/month
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {Array.isArray(executionRecovery?.scenarios) && executionRecovery?.scenarios?.length ? (
+                          <div className="overflow-x-auto">
+                            <table className="min-w-full text-[12px]">
+                              <thead>
+                                <tr className="text-left text-amber-100/80 border-b border-amber-500/20">
+                                  <th className="py-1 pr-3 font-semibold">Recovery scenario</th>
+                                  <th className="py-1 pr-3 font-semibold">
+                                    <TechnicalLabel label="Monthly impact" tooltip="Estimated monthly profit uplift if this recovery scenario is executed." />
+                                  </th>
+                                  <th className="py-1 pr-3 font-semibold">
+                                    <TechnicalLabel label="Est. Year 1 Net" tooltip="Estimated first-year net profit after applying the recovery scenario." />
+                                  </th>
+                                  <th className="py-1 pr-3 font-semibold">
+                                    <TechnicalLabel label="Est. break-even" tooltip="Estimated break-even month after applying this recovery scenario." />
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {executionRecovery?.scenarios?.map((scenario, idx) => (
+                                  <tr key={idx} className="border-b border-amber-500/10 text-amber-50/95">
+                                    <td className="py-1 pr-3 font-semibold">
+                                      {scenario.name || "Scenario"}
+                                      {Array.isArray(scenario.moves) && scenario.moves.length ? (
+                                        <div className="font-normal text-[11px] text-amber-100/80 mt-0.5">{scenario.moves.slice(0, 2).join(" • ")}</div>
+                                      ) : null}
+                                    </td>
+                                    <td className="py-1 pr-3">{formatCurrencyOrNA(scenario.estimated_monthly_impact, stakeholderReport.currency)}</td>
+                                    <td className="py-1 pr-3">{formatCurrencyOrNA(scenario.estimated_year_1_net_profit, stakeholderReport.currency)}</td>
+                                    <td className="py-1 pr-3">Month {scenario.estimated_break_even_month || "N/A"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : null}
+                        {Array.isArray(executionRecovery?.experiments_90_days) && executionRecovery?.experiments_90_days?.length ? (
+                          <div className="text-[12px] text-amber-100/95">
+                            <div className="font-semibold text-amber-100">90-day experiments</div>
+                            <ul className="mt-1 space-y-1">
+                              {executionRecovery?.experiments_90_days?.slice(0, 5).map((exp, idx) => (
+                                <li key={idx}>
+                                  • <span className="font-semibold">{exp.name || "Experiment"}</span> ({exp.owner || "Owner"}) — {exp.target_metric || "Target metric"} · D{exp.deadline_days || 0} · {formatCurrencyOrNA(exp.expected_monthly_impact, stakeholderReport.currency)}/month
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {executionRecovery?.approval_gate ? (
+                          <div className="text-[12px] text-amber-100 border-t border-amber-500/20 pt-2">
+                            <span className="font-semibold">Approval gate:</span> {executionRecovery.approval_gate}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                      Source: {stakeholderReport.source_type} #{stakeholderReport.source_id} · Model: {stakeholderReport.model || "N/A"} ·
+                      Generator: {stakeholderReport.dossier?.provenance?.generator_version || "N/A"}
+                    </div>
+                  </div>
+                )}
+
+              </div>
             )}
           </div>
         </GlassCard>
@@ -4179,7 +6742,7 @@ export default function Product() {
   }, [getToken, isLoaded, user]);
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(1200px_circle_at_20%_-10%,rgba(59,130,246,0.25),transparent_55%),radial-gradient(900px_circle_at_90%_20%,rgba(99,102,241,0.22),transparent_55%),linear-gradient(to_bottom,#050814,#040615)]">
+    <main className="min-h-screen overflow-x-hidden bg-[radial-gradient(1200px_circle_at_20%_-10%,rgba(59,130,246,0.25),transparent_55%),radial-gradient(900px_circle_at_90%_20%,rgba(99,102,241,0.22),transparent_55%),linear-gradient(to_bottom,#050814,#040615)]">
       {planLoading ? (
         <FullPageLoader
           title="Checking your plan"
@@ -4218,12 +6781,12 @@ export default function Product() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-[1400px] px-4 py-10">
+      <div className="mx-auto max-w-[1400px] px-4 py-10 overflow-x-hidden">
         <div className="mb-8">
           <h1 className="text-3xl sm:text-4xl font-semibold text-white tracking-tight">Business Idea Generator</h1>
           <p className="mt-2 text-sm sm:text-base text-white/70">
-            Generate, compare, and refine business concepts across multiple AI models
-            —then export a professionally formatted report ready to share with stakeholders.
+            Turn early ideas into confident business decisions in one guided flow—generate concepts, compare the best options,
+            select the strongest direction, and export an executive-ready plan for stakeholder approval.
           </p>
         </div>
 

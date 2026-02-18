@@ -147,6 +147,16 @@ Response:
 
 ---
 
+## DELETE /api/saved-results
+Bulk delete all saved generated runs for the current user.
+
+Response:
+```json
+{"status": "deleted", "count": 6}
+```
+
+---
+
 ## POST /api/compare-results
 Compare two saved runs with the same configuration.
 
@@ -191,6 +201,26 @@ Response:
 
 ---
 
+## DELETE /api/compare-results
+Bulk delete all saved comparisons for the current user.
+
+Response:
+```json
+{"status": "deleted", "count": 4}
+```
+
+---
+
+## DELETE /api/compare-results/{id}
+Delete one saved comparison.
+
+Response:
+```json
+{"status": "deleted"}
+```
+
+---
+
 ## GET /api/compare-results/{id}/pdf
 Download compare report PDF.
 
@@ -227,12 +257,32 @@ Response:
 
 ---
 
+## DELETE /api/rank-reports
+Bulk delete all saved decision summary reports for the current user.
+
+Response:
+```json
+{"status": "deleted", "count": 3}
+```
+
+---
+
 ## GET /api/rank-reports/{id}
 Get a saved decision summary report.
 
 Response:
 ```json
 {"id": 7, "created_at": "...", "run_ids": [10, 11], "report": {"summary": "..."}}
+```
+
+---
+
+## DELETE /api/rank-reports/{id}
+Delete one saved decision summary report.
+
+Response:
+```json
+{"status": "deleted"}
 ```
 
 ---
@@ -278,6 +328,147 @@ Response:
 - If `output=email`, returns JSON:
 ```json
 {"status": "sent", "email_sent": true, "email_failed": false, "cached": false}
+```
+
+---
+
+## POST /api/stakeholder-report
+Create a saved Execution Plan dossier.
+
+Request:
+```json
+{
+  "source": {
+    "mode": "decision_report",
+    "decision_report_id": 42,
+    "selected_run_id": 101,
+    "selected_model_id": "gpt-5-nano"
+  },
+  "scenario_profile": "base",
+  "horizon_months": 12,
+  "currency": "USD",
+  "region": "US",
+  "output": "json",
+  "finance_mode": "grounded_v2"
+}
+```
+
+Response:
+```json
+{
+  "id": 9001,
+  "created_at": "2026-02-14T12:00:00+00:00",
+  "status": "ready",
+  "model": "gpt-5-mini",
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
+  "dossier": { "...": "detailed execution, cost, and profit payload" }
+}
+```
+
+Notes:
+- Supported source modes: `decision_report`, `compare_result`, `saved_run`
+- Supports only `output=json`.
+- `finance_mode` options:
+  - `grounded_v2` (default): deterministic financial model + narrative LLM
+    - baseline from industry assumption pack
+    - deterministic run-conditioned adjustment from selected run constraints/persona/output signals/model confidence
+    - bounded multipliers and deterministic recomputation of projections/scenario mix
+  - `llm_v1`: legacy generation path
+- Currency/region currently supported: `USD` / `US`.
+
+---
+
+## GET /api/stakeholder-reports
+List saved stakeholder reports.
+
+Response:
+```json
+{
+  "reports": [
+    {
+      "id": 9001,
+      "created_at": "...",
+      "source_type": "decision_report",
+      "source_id": 42,
+      "scenario_profile": "base",
+      "horizon_months": 12,
+      "currency": "USD",
+      "region": "US",
+      "model": "gpt-5-mini"
+    }
+  ]
+}
+```
+
+---
+
+## GET /api/stakeholder-reports/{id}
+Get one saved stakeholder report.
+
+Response:
+```json
+{
+  "id": 9001,
+  "created_at": "...",
+  "source_type": "decision_report",
+  "source_id": 42,
+  "scenario_profile": "base",
+  "horizon_months": 12,
+  "currency": "USD",
+  "region": "US",
+  "model": "gpt-5-mini",
+  "assumptions": [
+    { "key": "selected_output_title", "value": "LedgerLatch", "unit": "label", "source": "selected ranked model output", "confidence": "high" },
+    { "key": "scenario_probability_mix", "value": "conservative=0.33,base=0.49,aggressive=0.18", "unit": "mix", "source": "deterministic risk-adjusted probability rules", "confidence": "medium" }
+  ],
+  "dossier": {
+    "decision": {},
+    "decision_support": {},
+    "proposal_disclaimer": {},
+    "sensitivity_analysis": {},
+    "provenance": {}
+  }
+}
+```
+
+---
+
+## GET /api/stakeholder-reports/{id}/pdf
+Download one Execution Plan PDF.
+
+Response:
+- `application/pdf` stream
+
+---
+
+## GET /api/stakeholder-reports/{id}/presentation
+Download one Execution Plan presentation PDF deck.
+
+Response:
+- `application/pdf` stream
+
+---
+
+## DELETE /api/stakeholder-reports/{id}
+Delete one saved stakeholder report.
+
+Response:
+```json
+{"status": "deleted"}
+```
+
+---
+
+## DELETE /api/stakeholder-reports
+Delete all saved stakeholder reports for current user.
+
+Response:
+```json
+{"status": "deleted", "count": 3}
 ```
 
 ---
