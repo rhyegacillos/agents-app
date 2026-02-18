@@ -2106,8 +2106,20 @@ Use this table to verify every variable is connected to the right resource.
 | worker_runner_timeout_seconds | worker env vars | Overall worker run timeout |
 | async_chat_enabled | Lambda env vars | Enable async job flow |
 | async_job_ttl_seconds | Lambda env vars | Async job TTL in Redis |
+| daily_token_limit | Lambda env vars | Per-user daily token quota |
+| app_timezone | Lambda env vars | Default app/log timezone (IANA, default `Asia/Manila`) |
 | upstash_redis_rest_url | Lambda env vars | Upstash Redis endpoint |
 | upstash_redis_rest_token | Lambda env vars | Upstash Redis auth |
+| otel_enabled | Lambda env vars | Enable OpenTelemetry runtime export |
+| OTEL_SERVICE_NAME (derived) | Lambda env vars | OTel service name per function (`<project>-<env>-api/worker`) |
+| OTEL_ENVIRONMENT (derived) | Lambda env vars | OTel environment tag (from `environment`) |
+| otel_traces_sample_rate | Lambda env vars | Trace sampling ratio (0.0-1.0) |
+| otel_exporter_otlp_endpoint | Lambda env vars | OTLP traces endpoint (`.../v1/traces`) |
+| otel_exporter_otlp_headers | Lambda env vars | OTLP traces auth headers |
+| otel_logs_enabled | Lambda env vars | Enable OTel logs export |
+| otel_exporter_otlp_logs_endpoint | Lambda env vars | OTLP logs endpoint (`.../v1/logs`, optional) |
+| otel_exporter_otlp_logs_headers | Lambda env vars | OTLP logs auth headers (optional) |
+| otel_logs_min_level | Lambda env vars | Minimum exported log level (`INFO`, `DEBUG`, etc.) |
 | lambda_image_tag | deploy.sh + ECR | Image tag deployed to Lambda |
 | api_throttle_burst_limit | aws_api_gateway_method_settings.main | API Gateway throttling |
 | api_throttle_rate_limit | aws_api_gateway_method_settings.main | API Gateway throttling |

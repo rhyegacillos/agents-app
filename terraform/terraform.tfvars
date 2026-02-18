@@ -25,7 +25,11 @@ root_domain                        = ""
 async_chat_enabled                 = true
 async_job_ttl_seconds              = 3600
 daily_token_limit                  = 1000000
-sentry_dsn                         = "https://ee8a81b082a6c0a7d11084072379db13@o4510895849472000.ingest.us.sentry.io/4510896623845376"
-sentry_traces_sample_rate          = 0.1
-sentry_profiles_sample_rate        = 0.0
-
+otel_enabled                       = true
+otel_exporter_otlp_endpoint        = "https://o4510895849472000.ingest.us.sentry.io/api/4510896623845376/integration/otlp/v1/traces"
+otel_exporter_otlp_headers         = "x-sentry-auth=sentry sentry_key=ee8a81b082a6c0a7d11084072379db13"
+otel_traces_sample_rate            = 1.0
+otel_logs_enabled                  = true
+otel_exporter_otlp_logs_endpoint   = "https://o4510895849472000.ingest.us.sentry.io/api/4510896623845376/integration/otlp/v1/logs"
+otel_exporter_otlp_logs_headers    = "x-sentry-auth=sentry sentry_key=ee8a81b082a6c0a7d11084072379db13"
+otel_logs_min_level                = "INFO"

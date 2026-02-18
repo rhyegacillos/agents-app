@@ -179,23 +179,60 @@ variable "daily_token_limit" {
   default     = 100000
 }
 
-variable "sentry_dsn" {
-  description = "Sentry DSN for backend error/performance monitoring"
+variable "app_timezone" {
+  description = "Default application timezone (IANA, for example Asia/Manila)"
+  type        = string
+  default     = "Asia/Manila"
+}
+
+variable "otel_enabled" {
+  description = "Enable OpenTelemetry tracing"
+  type        = bool
+  default     = false
+}
+
+variable "otel_exporter_otlp_endpoint" {
+  description = "OTLP HTTP traces endpoint (for example: https://.../v1/traces)"
+  type        = string
+  default     = ""
+}
+
+variable "otel_exporter_otlp_headers" {
+  description = "OTLP HTTP headers as comma-separated key=value pairs"
   type        = string
   default     = ""
   sensitive   = true
 }
 
-variable "sentry_traces_sample_rate" {
-  description = "Sentry traces sample rate (0.0-1.0)"
+variable "otel_traces_sample_rate" {
+  description = "OpenTelemetry traces sample rate (0.0-1.0)"
   type        = number
   default     = 0.1
 }
 
-variable "sentry_profiles_sample_rate" {
-  description = "Sentry profiles sample rate (0.0-1.0)"
-  type        = number
-  default     = 0.0
+variable "otel_logs_enabled" {
+  description = "Enable OpenTelemetry logs export"
+  type        = bool
+  default     = false
+}
+
+variable "otel_exporter_otlp_logs_endpoint" {
+  description = "OTLP HTTP logs endpoint (optional; derived from traces endpoint when empty)"
+  type        = string
+  default     = ""
+}
+
+variable "otel_exporter_otlp_logs_headers" {
+  description = "OTLP HTTP logs headers as comma-separated key=value pairs (optional)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "otel_logs_min_level" {
+  description = "Minimum stdlib log level exported to OTLP (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
+  type        = string
+  default     = "INFO"
 }
 
 variable "upstash_redis_rest_url" {

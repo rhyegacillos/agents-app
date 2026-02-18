@@ -1,29 +1,53 @@
 import logging
 import os
 import re
+import time
 
 import boto3
 from dotenv import load_dotenv
 
 from resources import facts
-from observability import install_logging
-from sentry_observability import init_sentry
 
 
 load_dotenv()
+
+APP_TIMEZONE = (os.getenv("APP_TIMEZONE") or "Asia/Manila").strip() or "Asia/Manila"
+os.environ["APP_TIMEZONE"] = APP_TIMEZONE
+os.environ.setdefault("TZ", APP_TIMEZONE)
+if hasattr(time, "tzset"):
+    try:
+        time.tzset()
+    except Exception:
+        pass
+
+from observability import JsonLogFormatter, install_logging
+from otel_observability import init_otel
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT = os.getenv(
     "LOG_FORMAT",
     "%(asctime)s %(levelname)s [trace=%(trace_id)s job=%(job_id)s] %(message)s",
 )
-logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
+LOG_JSON = os.getenv("LOG_JSON", "true").strip().lower() in {"1", "true", "yes", "on"}
+if LOG_JSON:
+    stream = logging.StreamHandler()
+    stream.setFormatter(JsonLogFormatter())
+    logging.basicConfig(level=LOG_LEVEL, handlers=[stream], force=True)
+else:
+    logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT, force=True)
 logging.getLogger().setLevel(LOG_LEVEL)
 install_logging()
-init_sentry()
+init_otel()
 
 # Silence noisy third-party INFO logs (for example fontTools glyph subsetting chatter).
-for logger_name in ("fontTools", "fontTools.subset", "weasyprint"):
+for logger_name in (
+    "fontTools",
+    "fontTools.subset",
+    "weasyprint",
+    "uvicorn.access",
+    "mangum",
+    "mangum.lifespan",
+):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 # AI provider selection

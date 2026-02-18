@@ -1,4 +1,5 @@
 import os
+import atexit
 from typing import Dict, Any
 
 import sys
@@ -8,7 +9,24 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_tools.status import update_job_status
 from tool_instructions import tool_instructions_for
+
+try:
+    from otel_observability import init_otel, flush_otel
+except Exception:  # pragma: no cover
+    init_otel = None
+    flush_otel = None
+
 logging.basicConfig(stream=sys.stderr, level=os.getenv("BRAVE_LOG_LEVEL", "INFO").upper())
+logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+if init_otel:
+    try:
+        init_otel()
+        if flush_otel:
+            atexit.register(flush_otel)
+    except Exception:
+        logging.exception("[otel] mcp-brave init failed")
 
 
 mcp = FastMCP("Brave-Search-Service")

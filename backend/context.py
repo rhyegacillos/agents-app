@@ -1,5 +1,5 @@
 from resources import linkedin, summary, facts, style
-from datetime import datetime
+from observability import now_local
 
 
 full_name = facts["name"]
@@ -29,7 +29,7 @@ Here are some notes from {name} about their communications style:
 
 
 For reference, here is the current date and time:
-{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+{now_local().strftime("%Y-%m-%d %H:%M:%S")}
 
 ## Your task
 

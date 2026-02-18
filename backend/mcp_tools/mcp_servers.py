@@ -41,14 +41,44 @@ def build_mcp_server_specs(enable_search: bool = True, job_id: Optional[str] = N
         path_parts.insert(0, BACKEND_DIR)
     merged_pythonpath = ":".join(path_parts) if path_parts else BACKEND_DIR
     aws_env = {k: v for k, v in os.environ.items() if k.startswith("AWS_") and v}
+    otel_env = {
+        k: os.getenv(k, "")
+        for k in (
+            "OTEL_ENABLED",
+            "OTEL_ENVIRONMENT",
+            "OTEL_TRACES_SAMPLE_RATE",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_LOGS_ENABLED",
+            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+            "OTEL_LOGS_MIN_LEVEL",
+            "APP_TIMEZONE",
+        )
+    }
+    otel_env = {k: v for k, v in otel_env.items() if v}
+    base_otel_service = os.getenv("OTEL_SERVICE_NAME", "digital-assistant-backend").strip() or "digital-assistant-backend"
     default_region = os.getenv("DEFAULT_AWS_REGION", "").strip()
     if default_region:
         aws_env.setdefault("AWS_REGION", default_region)
         aws_env.setdefault("AWS_DEFAULT_REGION", default_region)
     brave_env = (
-        {"BRAVE_API_KEY": brave_key, "PYTHONPATH": merged_pythonpath, **async_env, **aws_env}
+        {
+            "BRAVE_API_KEY": brave_key,
+            "PYTHONPATH": merged_pythonpath,
+            "OTEL_SERVICE_NAME": f"{base_otel_service}-mcp-brave",
+            **async_env,
+            **aws_env,
+            **otel_env,
+        }
         if brave_key
-        else {"PYTHONPATH": merged_pythonpath, **async_env, **aws_env}
+        else {
+            "PYTHONPATH": merged_pythonpath,
+            "OTEL_SERVICE_NAME": f"{base_otel_service}-mcp-brave",
+            **async_env,
+            **aws_env,
+            **otel_env,
+        }
     )
     resend_key = os.getenv("RESEND_API_KEY", "").strip()
     resend_from = os.getenv("RESEND_FROM", "no-reply@agentairg.site").strip()
@@ -69,8 +99,10 @@ def build_mcp_server_specs(enable_search: bool = True, job_id: Optional[str] = N
         "PDF_MAX_CHARS": os.getenv("PDF_MAX_CHARS", "200000"),
         "PDF_URL_EXPIRES_SECONDS": os.getenv("PDF_URL_EXPIRES_SECONDS", "86400"),
         "PYTHONPATH": merged_pythonpath,
+        "OTEL_SERVICE_NAME": f"{base_otel_service}-mcp-core",
         **async_env,
         **aws_env,
+        **otel_env,
     }
     memory_env = {
         "AI_PROVIDER": os.getenv("AI_PROVIDER", "bedrock"),
@@ -80,8 +112,10 @@ def build_mcp_server_specs(enable_search: bool = True, job_id: Optional[str] = N
         "BEDROCK_MODEL_ID": os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0"),
         "DEFAULT_AWS_REGION": os.getenv("DEFAULT_AWS_REGION", "us-east-1"),
         "PYTHONPATH": merged_pythonpath,
+        "OTEL_SERVICE_NAME": f"{base_otel_service}-mcp-memory",
         **async_env,
         **aws_env,
+        **otel_env,
     }
 
     specs: List[Dict] = []

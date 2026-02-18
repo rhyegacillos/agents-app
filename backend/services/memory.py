@@ -142,7 +142,16 @@ async def _call_memory_extractor(
 async def extract_and_store_memory(user_id: str, session_id: str, conversation: List[Dict[str, Any]]) -> None:
     def parse_dt(v: Any) -> Optional[datetime]:
         try:
-            return datetime.fromisoformat(str(v)) if v else None
+            if not v:
+                return None
+            raw = str(v).strip()
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                # Backward-compat: legacy records were stored as naive UTC timestamps.
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
         except ValueError:
             return None
 

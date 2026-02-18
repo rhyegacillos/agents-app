@@ -1,4 +1,5 @@
 import os
+import atexit
 import re
 import uuid
 import json
@@ -22,10 +23,26 @@ import markdown as md
 from mcp_tools.status import update_job_status
 from tool_instructions import tool_instructions_for
 
+try:
+    from otel_observability import init_otel, flush_otel
+except Exception:  # pragma: no cover - keep MCP tools resilient if OTel deps are unavailable
+    init_otel = None
+    flush_otel = None
+
 
 mcp = FastMCP("Core-Tools-Service")
 
 logging.basicConfig(stream=os.sys.stderr, level=os.getenv("CORE_LOG_LEVEL", "INFO").upper())
+logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+if init_otel:
+    try:
+        init_otel()
+        if flush_otel:
+            atexit.register(flush_otel)
+    except Exception:
+        logging.exception("[otel] mcp-core init failed")
 
 
 def _suppress_noisy_pdf_loggers() -> None:

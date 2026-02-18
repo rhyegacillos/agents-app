@@ -1,4 +1,5 @@
 import os
+import atexit
 import sys
 import json
 import logging
@@ -12,6 +13,12 @@ from openai import AsyncOpenAI
 from mcp_tools.status import update_job_status
 from tool_instructions import tool_instructions_for
 
+try:
+    from otel_observability import init_otel, flush_otel
+except Exception:  # pragma: no cover
+    init_otel = None
+    flush_otel = None
+
 mcp = FastMCP("Memory-Extractor-Service")
 
 AI_PROVIDER = os.getenv("AI_PROVIDER", "bedrock").strip().lower()
@@ -22,6 +29,16 @@ BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0").strip(
 DEFAULT_AWS_REGION = os.getenv("DEFAULT_AWS_REGION", "us-east-1").strip()
 
 logging.basicConfig(stream=sys.stderr, level=os.getenv("MEMORY_LOG_LEVEL", "INFO").upper())
+logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
+logging.getLogger("mcp.server.fastmcp").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+if init_otel:
+    try:
+        init_otel()
+        if flush_otel:
+            atexit.register(flush_otel)
+    except Exception:
+        logging.exception("[otel] mcp-memory init failed")
 
 bedrock_client = boto3.client(
     service_name="bedrock-runtime",

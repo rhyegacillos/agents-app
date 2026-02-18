@@ -53,21 +53,39 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
 - Quota logs:
   - `[quota] ...` summary per turn (backend, increments, before/after, remaining, exceeded)
   - `[quota_s3_cas] ...` conflict/success/error telemetry for S3 optimistic-concurrency writes
+- Log output format defaults to JSON (`LOG_JSON=true`) with keys:
+  - `timestamp`, `level`, `logger`, `message`, `trace_id`, `job_id`
+  - optional `event` and structured `fields`
+- Standard event-key logs (for deterministic filtering in Sentry Logs):
+  - `event=classify`
+  - `event=execute.run_start`, `event=execute.run_done`, `event=execute.tool_summary`
+  - `event=truth_gate.search_context`, `event=render.canonical`, `event=validate.pass`, `event=validate.blocked`
+  - `event=fix_loop.attempt`
+  - `event=quota.increments`, `event=quota.consume_failed`
+  - `event=worker.start`, `event=worker.completed`, `event=worker.timeout`, `event=worker.canceled`
 
-## 6) Sentry Monitoring (Backend)
+## 6) OpenTelemetry (Vendor-Neutral Observability)
 
-Sentry is supported for API + worker monitoring.
+OpenTelemetry traces and logs are implemented for backend API + worker and exported via OTLP HTTP.
 
-- Enable by setting `SENTRY_DSN` in Lambda environment variables.
-- Optional tuning vars:
-  - `SENTRY_ENVIRONMENT` (defaults to `ENVIRONMENT` or `dev`)
-  - `SENTRY_SERVICE` (recommended per function: `...-api`, `...-worker`)
-  - `SENTRY_RELEASE` (for deploy correlation; image tag is a good value)
-  - `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`)
-  - `SENTRY_PROFILES_SAMPLE_RATE` (default `0.0`)
+Enable with environment variables:
 
-Behavior:
+- `APP_TIMEZONE=Asia/Manila` (default app/log timezone)
+- `OTEL_ENABLED=true`
+- `OTEL_EXPORTER_OTLP_ENDPOINT=https://<collector-or-vendor>/v1/traces`
+- `OTEL_EXPORTER_OTLP_HEADERS=key=value,key2=value2` (optional auth headers)
+- `OTEL_SERVICE_NAME=<service-name>`
+- `OTEL_ENVIRONMENT=<dev|prod>`
+- `OTEL_TRACES_SAMPLE_RATE=0.1` (0.0-1.0)
+- `OTEL_LOGS_ENABLED=true`
+- `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://<collector-or-vendor>/v1/logs` (optional; auto-derived from traces endpoint)
+- `OTEL_EXPORTER_OTLP_LOGS_HEADERS=key=value,key2=value2` (optional; falls back to traces headers)
+- `OTEL_LOGS_MIN_LEVEL=INFO`
 
-- Unhandled FastAPI/Lambda errors are captured through Sentry integrations.
-- Worker handled failures are captured explicitly before failure responses are persisted.
-- Request/job tags include `trace_id`, `job_id`, `session_id`, and basic runtime context.
+Implementation notes:
+
+- FastAPI is auto-instrumented.
+- Worker path uses manual spans around async job execution.
+- Span attributes include `trace_id`, `job_id`, `session_id`, and risk/quota context.
+- Python stdlib logs are exported through OTel log pipeline when enabled.
+- OTel export is backend-agnostic; switch provider by changing OTLP endpoint/headers only.

@@ -837,6 +837,16 @@ TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
 TF_VAR_upstash_redis_rest_url: ${{ secrets.UPSTASH_REDIS_REST_URL }}
 TF_VAR_upstash_redis_rest_token: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 TF_VAR_async_chat_enabled: ${{ secrets.ASYNC_CHAT_ENABLED }}
+TF_VAR_daily_token_limit: ${{ secrets.DAILY_TOKEN_LIMIT }}
+TF_VAR_app_timezone: ${{ secrets.APP_TIMEZONE }} # e.g., Asia/Manila
+TF_VAR_otel_enabled: ${{ secrets.OTEL_ENABLED }}
+TF_VAR_otel_exporter_otlp_endpoint: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+TF_VAR_otel_exporter_otlp_headers: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+TF_VAR_otel_traces_sample_rate: ${{ secrets.OTEL_TRACES_SAMPLE_RATE }}
+TF_VAR_otel_logs_enabled: ${{ secrets.OTEL_LOGS_ENABLED }}
+TF_VAR_otel_exporter_otlp_logs_endpoint: ${{ secrets.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT }}
+TF_VAR_otel_exporter_otlp_logs_headers: ${{ secrets.OTEL_EXPORTER_OTLP_LOGS_HEADERS }}
+TF_VAR_otel_logs_min_level: ${{ secrets.OTEL_LOGS_MIN_LEVEL }}
 ```
 
 This means Terraform sees those values without any local tfvars file.

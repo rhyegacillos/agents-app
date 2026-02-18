@@ -14,7 +14,7 @@ Use these as copy-ready bullets and adjust scope/metrics to match your exact con
 - Integrated Upstash Redis for async job state and quota tracking with S3-backed fallback and CAS-style concurrency hardening.
 - Implemented provider-usage-based token accounting instead of heuristic text-length estimation for accurate quota controls.
 - Built operational safeguards for side-effect tools (PDF/email), including canonical URL allowlisting and verifier-driven output blocking on unsafe responses.
-- Implemented Sentry APM/error monitoring for API + worker with OpenTelemetry-aligned trace tags (`trace_id`, `job_id`, `session_id`) for faster incident triage.
+- Implemented OpenTelemetry traces + logs (OTLP export) for API + worker with consistent trace tags (`trace_id`, `job_id`, `session_id`), enabling vendor portability and faster incident triage.
 
 ## Serverless Impact Bullets
 - Replaced always-on backend hosting with on-demand Lambda execution, reducing operational surface area to managed services.
