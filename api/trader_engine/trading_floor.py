@@ -22,7 +22,7 @@ lastnames = ["Patience", "Bold", "Systematic", "Crypto"]
 
 if USE_MANY_MODELS:
     model_names = [
-        "gpt-4o-mini",
+        "gpt-5-nano",
         "deepseek-chat",
         "gemini-2.5-flash",
         "grok-4-1-fast",
