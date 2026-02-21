@@ -2,6 +2,23 @@
 
 This document outlines the architecture and implementation of the user usage tracking system (quotas, rate limits, and token usage) for the IdeaGen application.
 
+## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+
+This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+
+- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
+- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
+- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
+- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
+- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
+- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
+- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
+- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
+- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
+- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
+- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+
+
 ## 1. Database Schema (SQLite)
 
 Data is persisted in a SQLite database located at `data/usage.db` (inside the container volume).

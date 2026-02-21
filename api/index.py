@@ -180,12 +180,12 @@ deepseek_client = AsyncOpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url=os
 grok_client = AsyncOpenAI(api_key=os.getenv("GROK_API_KEY"), base_url=os.getenv("GROK_API_URL"))
 google_client = AsyncOpenAI(api_key=os.getenv("GEMINI_API_KEY"), base_url=os.getenv("GEMINI_API_URL"))
 GROK_MODEL = "grok-4-1-fast-reasoning"
-GEMINI_MODEL = "gemini-2.5-pro"
-OPENAI_MODEL = "gpt-5-mini"
+GEMINI_MODEL = "gemini-2.5-flash"
+OPENAI_MODEL = "gpt-5-nano"
 DEEPSEEK_MODEL = "deepseek-chat"
 GROK_MODEL_FALLBACK = "grok-4-fast-non-reasoning"
-GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
-OPENAI_MODEL_FALLBACK = "gpt-4.1-mini"
+GEMINI_MODEL_FALLBACK = "gemini-2.5-flash-lite"
+OPENAI_MODEL_FALLBACK = "gpt-5-mini"
 DEEPSEEK_MODEL_FALLBACK = "deepseek-chat-v3.1"
 EXECUTION_PLAN_MODEL = os.getenv("EXECUTION_PLAN_MODEL", GEMINI_MODEL)
 EXECUTION_PLAN_MODEL_FALLBACK = os.getenv("EXECUTION_PLAN_MODEL_FALLBACK", GEMINI_MODEL_FALLBACK)

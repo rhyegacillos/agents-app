@@ -6,6 +6,163 @@ import Link from "next/link";
 import { Protect, UserButton, useAuth, useUser, useClerk, PricingTable } from "@clerk/nextjs";
 
 const CLERK_JWT_TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE || "";
+const COMPARE_CONFIG_MISMATCH_MESSAGE =
+  "These runs cannot be compared. They must share the same industry, persona, constraints, and model set.";
+
+type FlowStepKey = "generated" | "insights" | "decision" | "stakeholder";
+type FlowMode = "guided" | "status";
+type GuidedMilestoneKey =
+  | "first_generated_run"
+  | "first_compare"
+  | "first_decision_summary"
+  | "first_execution_plan";
+type GuidedMilestones = Record<GuidedMilestoneKey, boolean>;
+type GuidednessStepState = Record<FlowStepKey, number>;
+type StepGuideContent = {
+  title: string;
+  whatYouDo: string[];
+  whatYouGet: string[];
+  whenToUse: string[];
+  moveForward: string[];
+  ctaLabel?: string;
+};
+
+const GUIDEDNESS_MIN = 0;
+const GUIDEDNESS_MAX = 100;
+const GUIDEDNESS_SWITCH_TO_STATUS = 40;
+const GUIDEDNESS_SWITCH_TO_GUIDED = 60;
+const GUIDEDNESS_STRUGGLE_BOOST = 15;
+const GUIDEDNESS_STRUGGLE_THRESHOLD = 3;
+const GUIDEDNESS_STRUGGLE_WINDOW_MS = 10 * 60 * 1000;
+const GUIDEDNESS_STRUGGLE_COOLDOWN_MS = 10 * 60 * 1000;
+const GUIDEDNESS_TEMP_GUIDANCE_MS = 10 * 60 * 1000;
+const GUIDEDNESS_DEFAULT = 100;
+const GUIDEDNESS_LIBRARY_LOAD_BASE_DELTA = -5;
+const GUIDEDNESS_LIBRARY_LOAD_FOLLOWUP_DELTA = -10;
+const GUIDEDNESS_LIBRARY_FOLLOWUP_WINDOW_MS = 2 * 60 * 1000;
+const SHOW_GUIDEDNESS_DEBUG = process.env.NODE_ENV !== "production";
+
+const defaultGuidednessStepState = (): GuidednessStepState => ({
+  generated: GUIDEDNESS_DEFAULT,
+  insights: GUIDEDNESS_DEFAULT,
+  decision: GUIDEDNESS_DEFAULT,
+  stakeholder: GUIDEDNESS_DEFAULT,
+});
+
+const defaultGuidedMilestones = (): GuidedMilestones => ({
+  first_generated_run: false,
+  first_compare: false,
+  first_decision_summary: false,
+  first_execution_plan: false,
+});
+
+const defaultStepGuideCollapsedByStep = (): Record<FlowStepKey, boolean> => ({
+  generated: false,
+  insights: false,
+  decision: false,
+  stakeholder: false,
+});
+
+const defaultStepGuideTouchedByStep = (): Record<FlowStepKey, boolean> => ({
+  generated: false,
+  insights: false,
+  decision: false,
+  stakeholder: false,
+});
+
+const STEP_GUIDE_CONTENT: Record<FlowStepKey, StepGuideContent> = {
+  generated: {
+    title: "Generate Results",
+    whatYouDo: [
+      "Set Industry, Persona, Constraints, and Models.",
+      "Generate ideas from one or more models.",
+      "Save runs so they can be compared later.",
+    ],
+    whatYouGet: [
+      "Structured outputs per selected model.",
+      "Saved runs you can reload from Library.",
+    ],
+    whenToUse: [
+      "At the start of each new exploration.",
+      "When testing different input setups.",
+    ],
+    moveForward: ["Once you have at least 2 runs, continue to Compare Results."],
+  },
+  insights: {
+    title: "Compare Results",
+    whatYouDo: [
+      "Select 2 saved runs and compare them side-by-side.",
+      "Run Diff Mode to produce a winner using the same scoring criteria shown in the app.",
+      "Save the comparison so you can return to it later.",
+    ],
+    whatYouGet: [
+      "A ranked comparison with strengths/weaknesses and tradeoffs.",
+      "A clear winner you can carry into Decision Summary.",
+    ],
+    whenToUse: [
+      "When you have multiple promising ideas and need to pick the best direction.",
+      "When you want to justify the choice with evidence (not just a gut pick).",
+    ],
+    moveForward: ["If a winner is chosen, the next step is Decision Summary."],
+    ctaLabel: "Generate Decision Summary",
+  },
+  decision: {
+    title: "Decision Summary",
+    whatYouDo: [
+      "Take selected runs (1-5) and turn them into a decision summary.",
+      "Confirm the why (rationale), assumptions, risks, and success criteria.",
+      "Save a decision version you can share or reference later.",
+    ],
+    whatYouGet: [
+      "A stakeholder-ready summary: recommendation, reasoning, constraints, risks, and go/no-go signals.",
+    ],
+    whenToUse: [
+      "When you want a final decision record before planning.",
+      "When you plan to generate an Execution Plan (the plan is built from this decision).",
+    ],
+    moveForward: ["Once a decision summary exists, you can generate an Execution Plan."],
+    ctaLabel: "Generate Execution Plan",
+  },
+  stakeholder: {
+    title: "Execution Plan",
+    whatYouDo: [
+      "Convert the decision into a concrete plan: scope, milestones, resources, timeline, and next actions.",
+      "Review assumptions, financial gates, and risk controls that affect implementation.",
+      "Save/export the plan for execution.",
+    ],
+    whatYouGet: [
+      "An actionable plan: phased milestones, tasks, risks/mitigations, and measurable outcomes.",
+    ],
+    whenToUse: [
+      "When you are ready to build (or delegate) the chosen idea.",
+      "When you need a practical checklist and timeline rather than a concept.",
+    ],
+    moveForward: ["Export/share the plan and iterate as needed (new plan versions can be generated later)."],
+    ctaLabel: "Export Plan",
+  },
+};
+
+const clampGuidedness = (value: number) =>
+  Math.max(GUIDEDNESS_MIN, Math.min(GUIDEDNESS_MAX, Math.round(value)));
+
+const sanitizeInjectedHtml = (html: string) => {
+  const raw = String(html || "");
+  return raw
+    .replace(/<!doctype[^>]*>/gi, "")
+    .replace(/<html[^>]*>/gi, "")
+    .replace(/<\/html>/gi, "")
+    .replace(/<head[\s\S]*?<\/head>/gi, "")
+    .replace(/<body[^>]*>/gi, "")
+    .replace(/<\/body>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<link[^>]*>/gi, "")
+    .replace(/<meta[^>]*>/gi, "")
+    .replace(/<base[^>]*>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?<\/object>/gi, "")
+    .replace(/<embed[^>]*>/gi, "");
+};
 
 function tokenOptions(skipCache?: boolean) {
   const opts: { skipCache?: boolean; template?: string } = {};
@@ -165,6 +322,17 @@ function getIndustryHint(industry: string) {
 
 function getPersonaHint(personaId: string) {
   return PERSONA_HINTS[personaId] || "Changes the point of view used to evaluate and write ideas.";
+}
+
+function labelForModelId(modelId: string) {
+  const byId = MODELS.find((m) => m.id === modelId);
+  if (byId) return byId.label;
+  const lower = String(modelId || "").toLowerCase();
+  if (lower.startsWith("gpt-") || lower.startsWith("o-")) return "OpenAI";
+  if (lower.startsWith("gemini-")) return "Google Gemini";
+  if (lower.startsWith("deepseek-")) return "Deepseek";
+  if (lower.startsWith("grok-")) return "Grok";
+  return "Model";
 }
 
 type HoverBubbleState = {
@@ -974,7 +1142,7 @@ function IdeaGenerator({
 }) {
   const { getToken } = useAuth();
   const { openUserProfile, openSignIn } = useClerk();
-  const { isSignedIn } = useUser();
+  const { isSignedIn, user } = useUser();
 
   const [results, setResults] = useState<IdeaResults>({});
   const [isLoading, setIsLoading] = useState(false);
@@ -988,6 +1156,15 @@ function IdeaGenerator({
   const [tone, setTone] = useState(PERSONAS[0].id);
   const [selectedModels, setSelectedModels] = useState<string[]>([MODELS[0].id]);
   const [generatedQuickStartOpen, setGeneratedQuickStartOpen] = useState(false);
+  const [compareQuickTipsExpanded, setCompareQuickTipsExpanded] = useState(false);
+  const [executionQuickTipsExpanded, setExecutionQuickTipsExpanded] = useState(false);
+  const [stepGuideCollapsedByStep, setStepGuideCollapsedByStep] = useState<Record<FlowStepKey, boolean>>(
+    defaultStepGuideCollapsedByStep
+  );
+  const [stepGuideTouchedByStep, setStepGuideTouchedByStep] = useState<Record<FlowStepKey, boolean>>(
+    defaultStepGuideTouchedByStep
+  );
+  const [stepGuideHydrated, setStepGuideHydrated] = useState(false);
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
   const [tokenUsage, setTokenUsage] = useState<any>(initialUsage);
@@ -1001,8 +1178,19 @@ function IdeaGenerator({
   const [savedUsageBytes, setSavedUsageBytes] = useState(0);
   const [savedLimitBytes, setSavedLimitBytes] = useState(0);
   const [savedPanelMode, setSavedPanelMode] = useState<"generated" | "compare" | "decision" | "stakeholder" | null>(null);
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [librarySort, setLibrarySort] = useState<"newest" | "oldest">("newest");
+  const [libraryGeneratedFilter, setLibraryGeneratedFilter] = useState<"all" | "industry">("all");
+  const [libraryCompareFilter, setLibraryCompareFilter] = useState<"all" | "winner" | "tie">("all");
+  const [libraryDecisionFilter, setLibraryDecisionFilter] = useState<"all" | "single_run" | "multi_run">("all");
+  const [libraryStakeholderFilter, setLibraryStakeholderFilter] = useState<"all" | "go" | "conditional_go" | "no_go">("all");
   const [savedPanelPos, setSavedPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const savedPanelRef = useRef<HTMLDivElement | null>(null);
+  const aiModelsRef = useRef<HTMLDivElement | null>(null);
+  const generateIdeasBtnRef = useRef<HTMLButtonElement | null>(null);
+  const generateIdeasNudgeTimerRef = useRef<number | null>(null);
+  const compareBuilderRef = useRef<HTMLDivElement | null>(null);
+  const compareRunASelectRef = useRef<HTMLSelectElement | null>(null);
   const savedPanelDragRef = useRef<{
     startX: number;
     startY: number;
@@ -1013,11 +1201,45 @@ function IdeaGenerator({
   } | null>(null);
   const [isDraggingSavedPanel, setIsDraggingSavedPanel] = useState(false);
   const savedGeneratedButtonRef = useRef<HTMLButtonElement | null>(null);
-  const savedCompareButtonRef = useRef<HTMLButtonElement | null>(null);
-  const savedDecisionButtonRef = useRef<HTMLButtonElement | null>(null);
-  const savedStakeholderButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mounted, setMounted] = useState(false);
   const [pageBootLoading, setPageBootLoading] = useState(true);
+  const [guidednessGlobal, setGuidednessGlobal] = useState<number>(GUIDEDNESS_DEFAULT);
+  const [guidednessStep, setGuidednessStep] = useState<GuidednessStepState>(defaultGuidednessStepState);
+  const [flowMode, setFlowMode] = useState<FlowMode>("guided");
+  const [guidedMilestones, setGuidedMilestones] = useState<GuidedMilestones>(defaultGuidedMilestones);
+  const [stepGuidanceUntil, setStepGuidanceUntil] = useState<Record<FlowStepKey, number>>({
+    generated: 0,
+    insights: 0,
+    decision: 0,
+    stakeholder: 0,
+  });
+  const guidedMilestonesRef = useRef<GuidedMilestones>(defaultGuidedMilestones());
+  const [guidednessHydrated, setGuidednessHydrated] = useState(false);
+  const struggleEventsRef = useRef<Record<FlowStepKey, number[]>>({
+    generated: [],
+    insights: [],
+    decision: [],
+    stakeholder: [],
+  });
+  const struggleBoostCooldownRef = useRef<Record<FlowStepKey, number>>({
+    generated: 0,
+    insights: 0,
+    decision: 0,
+    stakeholder: 0,
+  });
+  const libraryLoadBaseAppliedRef = useRef<Record<FlowStepKey, boolean>>({
+    generated: false,
+    insights: false,
+    decision: false,
+    stakeholder: false,
+  });
+  const libraryLoadFollowupAppliedRef = useRef<Record<FlowStepKey, boolean>>({
+    generated: false,
+    insights: false,
+    decision: false,
+    stakeholder: false,
+  });
+  const libraryLoadPendingRef = useRef<{ step: FlowStepKey; at: number } | null>(null);
   const [compareSelection, setCompareSelection] = useState<{ runA: number | null; runB: number | null }>({
     runA: null,
     runB: null,
@@ -1025,6 +1247,9 @@ function IdeaGenerator({
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [lastCompareId, setLastCompareId] = useState<number | null>(null);
+  const [dismissedCompareHandoffIds, setDismissedCompareHandoffIds] = useState<number[]>([]);
+  const [lastComparedRunPair, setLastComparedRunPair] = useState<{ runA: number; runB: number } | null>(null);
   const [savedComparisons, setSavedComparisons] = useState<SavedComparisonSummary[]>([]);
   const [comparisonsLoading, setComparisonsLoading] = useState(false);
   const [savedReports, setSavedReports] = useState<SavedReportSummary[]>([]);
@@ -1060,9 +1285,12 @@ function IdeaGenerator({
   const [reportEmail, setReportEmail] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
   const [useAllRuns, setUseAllRuns] = useState(false);
+  const [decisionMatchCurrentConfigOnly, setDecisionMatchCurrentConfigOnly] = useState(true);
   const [compareSelectOpen, setCompareSelectOpen] = useState(false);
   const [decisionSelectOpen, setDecisionSelectOpen] = useState(false);
+  const [decisionSavedReportsOpen, setDecisionSavedReportsOpen] = useState(true);
   const [usageRefreshing, setUsageRefreshing] = useState(false);
+  const [highlightGenerateIdeas, setHighlightGenerateIdeas] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SavedResultSummary | null>(null);
   const [deleteAllGeneratedOpen, setDeleteAllGeneratedOpen] = useState(false);
   const [deletingAllGenerated, setDeletingAllGenerated] = useState(false);
@@ -1089,7 +1317,7 @@ function IdeaGenerator({
     : {
         top: "50%",
         left: "50%",
-        width: "min(768px, calc(100vw - 32px))",
+        width: "min(760px, calc(100vw - 48px))",
         transform: "translate(-50%, -50%)",
       };
   const executionPlanPickerStyle: React.CSSProperties = executionPlanPickerPos
@@ -1203,9 +1431,115 @@ function IdeaGenerator({
     noticeTimeouts.current.push(timeoutId);
   }, []);
 
+  const guidednessStorageKey = useMemo(() => `ideagen.flow.guidedness.v1:${user?.id || "anon"}`, [user?.id]);
+  const stepGuideStorageKey = useMemo(() => `ideagen.flow.step_guide.v1:${user?.id || "anon"}`, [user?.id]);
+  const currentStepKey = resultsView as FlowStepKey;
+
+  const applyGuidednessDelta = useCallback((step: FlowStepKey, globalDelta: number, stepDelta = globalDelta) => {
+    setGuidednessGlobal((prev) => clampGuidedness(prev + globalDelta));
+    setGuidednessStep((prev) => ({
+      ...prev,
+      [step]: clampGuidedness((prev?.[step] ?? GUIDEDNESS_DEFAULT) + stepDelta),
+    }));
+  }, []);
+
+  const markGuidedMilestone = useCallback(
+    (milestone: GuidedMilestoneKey, step: FlowStepKey, delta: number) => {
+      if (guidedMilestonesRef.current[milestone]) return;
+      guidedMilestonesRef.current = { ...guidedMilestonesRef.current, [milestone]: true };
+      setGuidedMilestones(guidedMilestonesRef.current);
+      applyGuidednessDelta(step, delta, delta);
+    },
+    [applyGuidednessDelta]
+  );
+
+  const isSystemFailure = (message: string, status: number) => {
+    const text = String(message || "").toLowerCase();
+    if (status === 429 || status >= 500) return true;
+    return (
+      text.includes("timeout") ||
+      text.includes("provider") ||
+      text.includes("rate limit") ||
+      text.includes("service unavailable") ||
+      text.includes("network")
+    );
+  };
+
+  const isUserCorrectableFailure = (message: string, status: number) => {
+    if (isSystemFailure(message, status)) return false;
+    if ([400, 401, 403, 404, 409, 422].includes(status)) return true;
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("select") ||
+      text.includes("choose") ||
+      text.includes("enter") ||
+      text.includes("required") ||
+      text.includes("must") ||
+      text.includes("before") ||
+      text.includes("same industry") ||
+      text.includes("no run loaded") ||
+      text.includes("at least")
+    );
+  };
+
+  const recordUserCorrectableFailure = useCallback(
+    (step: FlowStepKey, message: string, status = 0) => {
+      if (!isUserCorrectableFailure(message, status)) return;
+      const now = Date.now();
+      const nextEvents = [...(struggleEventsRef.current[step] || []), now].filter(
+        (ts) => now - ts <= GUIDEDNESS_STRUGGLE_WINDOW_MS
+      );
+      struggleEventsRef.current[step] = nextEvents;
+      if (nextEvents.length < GUIDEDNESS_STRUGGLE_THRESHOLD) return;
+      const lastBoostAt = struggleBoostCooldownRef.current[step] || 0;
+      if (now - lastBoostAt < GUIDEDNESS_STRUGGLE_COOLDOWN_MS) return;
+      struggleBoostCooldownRef.current[step] = now;
+      struggleEventsRef.current[step] = [];
+      applyGuidednessDelta(step, 0, GUIDEDNESS_STRUGGLE_BOOST);
+      setStepGuidanceUntil((prev) => ({ ...prev, [step]: now + GUIDEDNESS_TEMP_GUIDANCE_MS }));
+    },
+    [applyGuidednessDelta]
+  );
+
+  const registerLibraryLoad = useCallback(
+    (step: FlowStepKey) => {
+      if (!libraryLoadBaseAppliedRef.current[step]) {
+        libraryLoadBaseAppliedRef.current[step] = true;
+        applyGuidednessDelta(step, GUIDEDNESS_LIBRARY_LOAD_BASE_DELTA, GUIDEDNESS_LIBRARY_LOAD_BASE_DELTA);
+      }
+      libraryLoadPendingRef.current = { step, at: Date.now() };
+    },
+    [applyGuidednessDelta]
+  );
+
+  const registerStepSuccess = useCallback(
+    (step: FlowStepKey) => {
+      const pending = libraryLoadPendingRef.current;
+      if (!pending || pending.step !== step) return;
+      const age = Date.now() - pending.at;
+      if (
+        age <= GUIDEDNESS_LIBRARY_FOLLOWUP_WINDOW_MS &&
+        !libraryLoadFollowupAppliedRef.current[step]
+      ) {
+        libraryLoadFollowupAppliedRef.current[step] = true;
+        applyGuidednessDelta(
+          step,
+          GUIDEDNESS_LIBRARY_LOAD_FOLLOWUP_DELTA,
+          GUIDEDNESS_LIBRARY_LOAD_FOLLOWUP_DELTA
+        );
+      }
+      libraryLoadPendingRef.current = null;
+    },
+    [applyGuidednessDelta]
+  );
+
   useEffect(() => {
     return () => {
       noticeTimeouts.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      if (generateIdeasNudgeTimerRef.current !== null) {
+        window.clearTimeout(generateIdeasNudgeTimerRef.current);
+        generateIdeasNudgeTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -1219,6 +1553,137 @@ function IdeaGenerator({
     }, 700);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    guidedMilestonesRef.current = guidedMilestones;
+  }, [guidedMilestones]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      const raw = window.localStorage.getItem(guidednessStorageKey);
+      if (!raw) {
+        setGuidednessHydrated(true);
+        return;
+      }
+      const parsed = JSON.parse(raw) as {
+        global?: number;
+        step?: Partial<GuidednessStepState>;
+        mode?: FlowMode;
+        milestones?: Partial<GuidedMilestones>;
+      };
+      const nextStep = defaultGuidednessStepState();
+      if (parsed?.step && typeof parsed.step === "object") {
+        (Object.keys(nextStep) as FlowStepKey[]).forEach((key) => {
+          const rawValue = Number((parsed.step as any)[key]);
+          if (Number.isFinite(rawValue)) nextStep[key] = clampGuidedness(rawValue);
+        });
+      }
+      const nextMilestones = {
+        ...defaultGuidedMilestones(),
+        ...(parsed?.milestones || {}),
+      };
+      const nextGlobal = Number.isFinite(Number(parsed?.global))
+        ? clampGuidedness(Number(parsed?.global))
+        : GUIDEDNESS_DEFAULT;
+      setGuidednessGlobal(nextGlobal);
+      setGuidednessStep(nextStep);
+      setGuidedMilestones(nextMilestones);
+      guidedMilestonesRef.current = nextMilestones;
+      setFlowMode(parsed?.mode === "status" ? "status" : "guided");
+    } catch {
+      // ignore malformed persisted state
+    } finally {
+      setGuidednessHydrated(true);
+    }
+  }, [mounted, guidednessStorageKey]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      const raw = window.localStorage.getItem(stepGuideStorageKey);
+      if (!raw) {
+        setStepGuideHydrated(true);
+        return;
+      }
+      const parsed = JSON.parse(raw) as
+        | {
+            collapsedByStep?: Partial<Record<FlowStepKey, boolean>>;
+            touchedByStep?: Partial<Record<FlowStepKey, boolean>>;
+          }
+        | Partial<Record<FlowStepKey, boolean>>;
+      const nextCollapsed = defaultStepGuideCollapsedByStep();
+      const nextTouched = defaultStepGuideTouchedByStep();
+      const hasStructuredPrefs =
+        typeof parsed === "object" &&
+        parsed !== null &&
+        ("collapsedByStep" in parsed || "touchedByStep" in parsed);
+
+      const rawCollapsed = hasStructuredPrefs
+        ? ((parsed as { collapsedByStep?: Partial<Record<FlowStepKey, boolean>> }).collapsedByStep || {})
+        : (parsed as Partial<Record<FlowStepKey, boolean>>);
+      const rawTouched = hasStructuredPrefs
+        ? ((parsed as { touchedByStep?: Partial<Record<FlowStepKey, boolean>> }).touchedByStep || {})
+        : {};
+
+      (Object.keys(nextCollapsed) as FlowStepKey[]).forEach((key) => {
+        if (typeof rawCollapsed?.[key] === "boolean") {
+          nextCollapsed[key] = Boolean(rawCollapsed[key]);
+          if (!hasStructuredPrefs && rawCollapsed[key] === true) {
+            // Legacy format only stored collapsed state; treat explicit collapsed as touched.
+            nextTouched[key] = true;
+          }
+        }
+        if (typeof rawTouched?.[key] === "boolean") {
+          nextTouched[key] = Boolean(rawTouched[key]);
+        }
+      });
+      setStepGuideCollapsedByStep(nextCollapsed);
+      setStepGuideTouchedByStep(nextTouched);
+    } catch {
+      // ignore malformed persisted state
+    } finally {
+      setStepGuideHydrated(true);
+    }
+  }, [mounted, stepGuideStorageKey]);
+
+  useEffect(() => {
+    if (!mounted || !guidednessHydrated) return;
+    const payload = {
+      global: guidednessGlobal,
+      step: guidednessStep,
+      mode: flowMode,
+      milestones: guidedMilestones,
+    };
+    try {
+      window.localStorage.setItem(guidednessStorageKey, JSON.stringify(payload));
+    } catch {
+      // ignore storage write failures
+    }
+  }, [
+    mounted,
+    guidednessHydrated,
+    guidednessGlobal,
+    guidednessStep,
+    flowMode,
+    guidedMilestones,
+    guidednessStorageKey,
+  ]);
+
+  useEffect(() => {
+    if (!mounted || !stepGuideHydrated) return;
+    try {
+      window.localStorage.setItem(
+        stepGuideStorageKey,
+        JSON.stringify({
+          collapsedByStep: stepGuideCollapsedByStep,
+          touchedByStep: stepGuideTouchedByStep,
+        })
+      );
+    } catch {
+      // ignore storage write failures
+    }
+  }, [mounted, stepGuideHydrated, stepGuideStorageKey, stepGuideCollapsedByStep, stepGuideTouchedByStep]);
 
   const formatSavedDate = (value: string) => {
     const parsed = new Date(value);
@@ -1242,6 +1707,51 @@ function IdeaGenerator({
     const extra = labels.length - first.length;
     return extra > 0 ? `${first.join(", ")} +${extra}` : first.join(", ");
   };
+  const normalizeConfigTokens = (items: string[] = []) =>
+    items
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter(Boolean)
+      .sort()
+      .join("|");
+  const normalizeConstraintMatchKey = (items: string[] = []) => {
+    const normalized = items
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter(Boolean)
+      .filter((item) => item !== "none");
+    if (!normalized.length) return "none";
+    return Array.from(new Set(normalized)).sort().join("|");
+  };
+  const normalizePersonaMatchKey = (value: string) => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return "";
+    const matchedPersona = PERSONAS.find(
+      (persona) => persona.id.toLowerCase() === raw || persona.label.toLowerCase() === raw
+    );
+    return matchedPersona ? matchedPersona.id.toLowerCase() : raw;
+  };
+  const getCompareConfigMismatch = (
+    runA: SavedResultSummary | null | undefined,
+    runB: SavedResultSummary | null | undefined
+  ) => {
+    if (!runA || !runB) return null;
+    const industryA = String(runA.industry || "").trim().toLowerCase();
+    const industryB = String(runB.industry || "").trim().toLowerCase();
+    const personaA = normalizePersonaMatchKey(String(runA.tone || ""));
+    const personaB = normalizePersonaMatchKey(String(runB.tone || ""));
+    const constraintsA = normalizeConstraintMatchKey(runA.constraints || []);
+    const constraintsB = normalizeConstraintMatchKey(runB.constraints || []);
+    const modelsA = normalizeConfigTokens(runA.models || []);
+    const modelsB = normalizeConfigTokens(runB.models || []);
+    if (
+      industryA !== industryB ||
+      personaA !== personaB ||
+      constraintsA !== constraintsB ||
+      modelsA !== modelsB
+    ) {
+      return COMPARE_CONFIG_MISMATCH_MESSAGE;
+    }
+    return null;
+  };
   const compareRunA = compareSelection.runA;
   const compareRunB = compareSelection.runB;
   const compareReady = Boolean(compareRunA && compareRunB);
@@ -1251,6 +1761,10 @@ function IdeaGenerator({
   const selectedCompareRunB = compareRunB
     ? savedResults.find((item) => item.id === compareRunB)
     : null;
+  const compareSelectionMismatch = useMemo(
+    () => getCompareConfigMismatch(selectedCompareRunA, selectedCompareRunB),
+    [selectedCompareRunA, selectedCompareRunB]
+  );
   const savedPanelLoading =
     savedPanelMode === "generated"
       ? savedLoading
@@ -1295,9 +1809,6 @@ function IdeaGenerator({
       await new Promise((resolve) => setTimeout(resolve, remaining));
     }
   };
-  const reportHasSelection = useAllRuns || reportSelection.length > 0;
-  const reportEmailRequired = reportOutput === "email" || reportOutput === "both";
-  const reportCanSubmit = reportHasSelection && (!reportEmailRequired || reportEmail.trim().length > 0);
   const stakeholderFooterText = stakeholderReportsLoading
     ? "Loading execution plans"
     : stakeholderLoadingId !== null
@@ -1311,6 +1822,102 @@ function IdeaGenerator({
     if (!comparison.winner_run_id) return "Tie";
     return formatRunLabel(comparison.winner_run_id);
   };
+  const librarySearchQuery = librarySearch.trim().toLowerCase();
+  const sortByCreatedAt = <T extends { created_at: string }>(items: T[]) => {
+    return [...items].sort((a, b) => {
+      const left = new Date(a.created_at).getTime();
+      const right = new Date(b.created_at).getTime();
+      if (librarySort === "oldest") return left - right;
+      return right - left;
+    });
+  };
+  const containsQuery = (parts: Array<string | number | undefined | null>) => {
+    if (!librarySearchQuery) return true;
+    return parts.some((part) => String(part || "").toLowerCase().includes(librarySearchQuery));
+  };
+  const filteredSavedResults = useMemo(() => {
+    let rows = savedResults.filter((item) =>
+      containsQuery([
+        item.industry,
+        labelForPersona(item.tone || ""),
+        formatConstraints(item.constraints || []),
+        formatModelList(item.models || []),
+        formatSavedDate(item.created_at),
+      ])
+    );
+    if (libraryGeneratedFilter === "industry") {
+      rows = rows.filter((item) => String(item.industry || "").toLowerCase() === industry.toLowerCase());
+    }
+    return sortByCreatedAt(rows);
+  }, [savedResults, librarySearchQuery, librarySort, libraryGeneratedFilter, industry]);
+  const filteredSavedComparisons = useMemo(() => {
+    let rows = savedComparisons.filter((item) =>
+      containsQuery([
+        formatSavedDate(item.created_at),
+        formatRunLabel(item.run_a_id),
+        formatRunLabel(item.run_b_id),
+        formatWinnerLabel(item),
+        item.top_outputs?.run_a?.title,
+        item.top_outputs?.run_b?.title,
+      ])
+    );
+    if (libraryCompareFilter === "winner") {
+      rows = rows.filter((item) => Boolean(item.winner_run_id));
+    } else if (libraryCompareFilter === "tie") {
+      rows = rows.filter((item) => !item.winner_run_id);
+    }
+    return sortByCreatedAt(rows);
+  }, [savedComparisons, librarySearchQuery, librarySort, savedResults, libraryCompareFilter]);
+  const filteredSavedReports = useMemo(() => {
+    let rows = savedReports.filter((item) =>
+      containsQuery([
+        formatSavedDate(item.created_at),
+        item.summary,
+        item.top_run_id ? formatRunLabel(item.top_run_id) : "",
+        ...(Array.isArray(item.run_ids) ? item.run_ids.map(formatRunLabel) : []),
+      ])
+    );
+    if (libraryDecisionFilter === "single_run") {
+      rows = rows.filter((item) => (Array.isArray(item.run_ids) ? item.run_ids.length === 1 : false));
+    } else if (libraryDecisionFilter === "multi_run") {
+      rows = rows.filter((item) => (Array.isArray(item.run_ids) ? item.run_ids.length > 1 : false));
+    }
+    return sortByCreatedAt(rows);
+  }, [savedReports, librarySearchQuery, librarySort, savedResults, libraryDecisionFilter]);
+  const filteredSavedStakeholderReports = useMemo(() => {
+    let rows = savedStakeholderReports.filter((item) =>
+      containsQuery([
+        formatSavedDate(item.created_at),
+        item.title,
+        recommendationLabel(item.recommendation),
+        item.scenario_profile,
+        item.horizon_months,
+        item.model,
+      ])
+    );
+    if (libraryStakeholderFilter !== "all") {
+      rows = rows.filter((item) => (item.recommendation || "conditional_go") === libraryStakeholderFilter);
+    }
+    return sortByCreatedAt(rows);
+  }, [savedStakeholderReports, librarySearchQuery, librarySort, libraryStakeholderFilter]);
+  const currentLibraryCount =
+    savedPanelMode === "generated"
+      ? filteredSavedResults.length
+      : savedPanelMode === "compare"
+      ? filteredSavedComparisons.length
+      : savedPanelMode === "decision"
+      ? filteredSavedReports.length
+      : savedPanelMode === "stakeholder"
+      ? filteredSavedStakeholderReports.length
+      : 0;
+  const librarySearchPlaceholder =
+    savedPanelMode === "generated"
+      ? "Search runs by industry, persona, constraints, model..."
+      : savedPanelMode === "compare"
+      ? "Search comparisons by run, winner, or output title..."
+      : savedPanelMode === "decision"
+      ? "Search decision summaries by run set or summary..."
+      : "Search execution plans by project, verdict, or scenario...";
 
   const fetchSavedResults = useCallback(async () => {
     const startedAt = Date.now();
@@ -1439,6 +2046,10 @@ function IdeaGenerator({
     setSavedStakeholderReports([]);
     setStakeholderReport(null);
     setUseAllRuns(false);
+    setStepGuidanceUntil({ generated: 0, insights: 0, decision: 0, stakeholder: 0 });
+    libraryLoadPendingRef.current = null;
+    libraryLoadBaseAppliedRef.current = { generated: false, insights: false, decision: false, stakeholder: false };
+    libraryLoadFollowupAppliedRef.current = { generated: false, insights: false, decision: false, stakeholder: false };
   }, [fetchSavedResults, fetchSavedComparisons, fetchSavedReports, fetchSavedStakeholderReports, isSignedIn]);
 
   useEffect(() => {
@@ -1522,6 +2133,30 @@ function IdeaGenerator({
       return;
     }
     openUserProfile();         // if logged in, open the Clerk profile modal
+  };
+
+  const focusGenerateIdeasAction = () => {
+    setResultsView("generated");
+    setHighlightGenerateIdeas(true);
+    if (generateIdeasNudgeTimerRef.current !== null) {
+      window.clearTimeout(generateIdeasNudgeTimerRef.current);
+    }
+    generateIdeasNudgeTimerRef.current = window.setTimeout(() => {
+      setHighlightGenerateIdeas(false);
+      generateIdeasNudgeTimerRef.current = null;
+    }, 2200);
+    window.setTimeout(() => {
+      generateIdeasBtnRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      generateIdeasBtnRef.current?.focus();
+    }, 80);
+  };
+
+  const focusCompareBuilderAction = () => {
+    setResultsView("insights");
+    window.setTimeout(() => {
+      compareBuilderRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      compareRunASelectRef.current?.focus();
+    }, 80);
   };
 
   const addUsage = (newUsage: any) => {
@@ -1715,6 +2350,7 @@ function IdeaGenerator({
       const nextModels = Array.isArray(data?.models) && data.models.length > 0 ? data.models : resultKeys;
       const normalizedModels = normalizeModelIds(nextModels);
       if (normalizedModels.length > 0) setSelectedModels(normalizedModels);
+      registerLibraryLoad("generated");
       pushNotice("Saved results loaded.");
     } catch {
       pushNotice("Failed to load saved results.");
@@ -1911,6 +2547,14 @@ function IdeaGenerator({
     const resolvedA = runA ?? compareSelection.runA;
     const resolvedB = runB ?? compareSelection.runB;
     if (!resolvedA || !resolvedB) return;
+    const runAItem = savedResults.find((item) => item.id === resolvedA) || null;
+    const runBItem = savedResults.find((item) => item.id === resolvedB) || null;
+    const localMismatch = getCompareConfigMismatch(runAItem, runBItem);
+    if (localMismatch) {
+      setCompareError(localMismatch);
+      recordUserCorrectableFailure("insights", localMismatch, 422);
+      return;
+    }
     try {
       if (fromSavedView) {
         setSavedPanelMode(null);
@@ -1930,14 +2574,25 @@ function IdeaGenerator({
       setCompareError(null);
       await ensureMinLoadingTime(startedAt, fromSavedView ? 600 : 350);
       setCompareResult(data);
+      setLastCompareId(Number(data?.comparison_id) || null);
+      if (data?.comparison_id) {
+        setDismissedCompareHandoffIds((prev) => prev.filter((id) => id !== Number(data.comparison_id)));
+      }
+      if (Number.isFinite(Number(resolvedA)) && Number.isFinite(Number(resolvedB))) {
+        setLastComparedRunPair({ runA: Number(resolvedA), runB: Number(resolvedB) });
+      }
       setResultsView("insights");
       pushNotice(data?.cached ? "Loaded saved comparison." : "Comparison generated and saved.");
+      if (fromSavedView) registerLibraryLoad("insights");
+      markGuidedMilestone("first_compare", "insights", -25);
+      registerStepSuccess("insights");
       if (!fromSavedView) setSavedPanelMode(null);
       fetchSavedComparisons();
     } catch (e: any) {
       handleApiActionError(e, "Failed to compare saved results.");
       const message = e?.message || "Failed to compare saved results.";
       setCompareError(message);
+      recordUserCorrectableFailure("insights", message, Number(e?.status || 0));
     } finally {
       if (fromSavedView) setResultsHydrating(false);
       setCompareLoading(false);
@@ -1947,6 +2602,7 @@ function IdeaGenerator({
   const updateCompareSelection = (slot: "a" | "b", value: string) => {
     const runId = Number(value);
     const nextId = Number.isFinite(runId) && runId > 0 ? runId : null;
+    setCompareError(null);
     setCompareSelection((prev) => {
       let nextA = prev.runA;
       let nextB = prev.runB;
@@ -1975,12 +2631,24 @@ function IdeaGenerator({
   };
 
   const runAgenticReport = async () => {
-    if (!reportHasSelection) {
-      pushNotice("Select runs or choose all saved runs for the report.");
+    const includeAllRunsAcrossLibrary = useAllRuns && !decisionMatchCurrentConfigOnly;
+    const resolvedRunIds = useAllRuns
+      ? decisionMatchCurrentConfigOnly
+        ? decisionSelectableRuns.map((item) => item.id)
+        : []
+      : reportSelection;
+    if (!includeAllRunsAcrossLibrary && resolvedRunIds.length === 0) {
+      const message = decisionMatchCurrentConfigOnly
+        ? "No matching runs selected. Generate a matching run or include non-matching runs."
+        : "Select runs or include all visible runs for the report.";
+      pushNotice(message);
+      recordUserCorrectableFailure("decision", message, 422);
       return;
     }
     if ((reportOutput === "email" || reportOutput === "both") && !reportEmail) {
-      pushNotice("Enter an email address for delivery.");
+      const message = "Enter an email address for delivery.";
+      pushNotice(message);
+      recordUserCorrectableFailure("decision", message, 422);
       return;
     }
     try {
@@ -1991,10 +2659,10 @@ function IdeaGenerator({
         method: "POST",
         headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          run_ids: useAllRuns ? [] : reportSelection,
+          run_ids: includeAllRunsAcrossLibrary ? [] : resolvedRunIds,
           output: reportOutput,
           email: reportEmail || null,
-          include_all_runs: useAllRuns,
+          include_all_runs: includeAllRunsAcrossLibrary,
         }),
       });
       await ensureOk(res, "Failed to generate report.");
@@ -2054,10 +2722,47 @@ function IdeaGenerator({
       }
       setResultsView("decision");
       setSavedPanelMode(null);
+      markGuidedMilestone("first_decision_summary", "decision", -20);
+      registerStepSuccess("decision");
     } catch (e: any) {
-      handleApiActionError(e, "Failed to generate report.");
+      const message = handleApiActionError(e, "Failed to generate report.");
+      recordUserCorrectableFailure("decision", message, Number(e?.status || 0));
     } finally {
       setReportLoading(false);
+    }
+  };
+
+  const loadDecisionReport = async (reportId: number, fromSavedView = false) => {
+    const startedAt = Date.now();
+    let loaded = false;
+    try {
+      if (fromSavedView) {
+        setSavedPanelMode(null);
+        setResultsHydrating(true);
+      }
+      setReportDownloadId(reportId);
+      const jwt = await getToken(tokenOptions());
+      if (!jwt) throw new Error("no_token");
+      const res = await fetch(`/api/rank-reports/${reportId}`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!res.ok) throw new Error("load_report_failed");
+      const data = await res.json();
+      await ensureMinLoadingTime(startedAt, fromSavedView ? 600 : 350);
+      setDecisionReport(data);
+      setResultsView("decision");
+      if (fromSavedView) registerLibraryLoad("decision");
+      loaded = true;
+    } catch {
+      pushNotice("Failed to load report.");
+    } finally {
+      if (fromSavedView) {
+        setResultsHydrating(false);
+      }
+      if (loaded) {
+        pushNotice("Decision summary report loaded.");
+      }
+      setReportDownloadId(null);
     }
   };
 
@@ -2113,6 +2818,7 @@ function IdeaGenerator({
       await ensureMinLoadingTime(startedAt, fromSavedView ? 600 : 350);
       setStakeholderReport(data);
       setResultsView("stakeholder");
+      if (fromSavedView) registerLibraryLoad("stakeholder");
       loaded = true;
     } catch (e: any) {
       pushNotice(e?.message || "Failed to load execution plan.");
@@ -2129,11 +2835,15 @@ function IdeaGenerator({
 
   const openExecutionPlanPicker = async () => {
     if (!decisionReport?.id) {
-      pushNotice("Generate or load a Decision Summary Report first.");
+      const message = "Generate or load a Decision Summary first.";
+      pushNotice(message);
+      recordUserCorrectableFailure("stakeholder", message, 422);
       return;
     }
     if (!executionPlanOptions.length) {
-      pushNotice("No ranked reports available for Execution Plan generation.");
+      const message = "No ranked reports available for Execution Plan generation.";
+      pushNotice(message);
+      recordUserCorrectableFailure("stakeholder", message, 422);
       return;
     }
     setExecutionPlanPickerOpen(true);
@@ -2185,7 +2895,9 @@ function IdeaGenerator({
 
   const runStakeholderReport = async (selectedOption?: { runId: number; modelId: string } | null) => {
     if (!decisionReport?.id) {
-      pushNotice("Generate or load a Decision Summary Report first.");
+      const message = "Generate or load a Decision Summary first.";
+      pushNotice(message);
+      recordUserCorrectableFailure("stakeholder", message, 422);
       return;
     }
     const fallbackOption = executionPlanOptions.find((item) => item.optionKey === executionPlanSelectedKey);
@@ -2194,11 +2906,15 @@ function IdeaGenerator({
     );
     const resolvedModelId = String(selectedOption?.modelId ?? fallbackOption?.modelId ?? "").trim();
     if (!Number.isFinite(resolvedRunId) || resolvedRunId <= 0) {
-      pushNotice("Select one ranked report before generating the Execution Plan.");
+      const message = "Select one ranked report before generating the Execution Plan.";
+      pushNotice(message);
+      recordUserCorrectableFailure("stakeholder", message, 422);
       return;
     }
     if (!resolvedModelId) {
-      pushNotice("Select one model output before generating the Execution Plan.");
+      const message = "Select one model output before generating the Execution Plan.";
+      pushNotice(message);
+      recordUserCorrectableFailure("stakeholder", message, 422);
       return;
     }
     let generated = false;
@@ -2235,9 +2951,12 @@ function IdeaGenerator({
       }
       generated = true;
       pushNotice("Execution plan generated.");
+      markGuidedMilestone("first_execution_plan", "stakeholder", -20);
+      registerStepSuccess("stakeholder");
     } catch (e: any) {
       const message = handleApiActionError(e, "Failed to generate execution plan.");
       setExecutionPlanPickerError(message);
+      recordUserCorrectableFailure("stakeholder", message, Number(e?.status || 0));
     } finally {
       setStakeholderGenerating(false);
       if (generated) {
@@ -2304,17 +3023,6 @@ function IdeaGenerator({
 
       return [...prev, modelId];
     });
-  };
-
-  const labelForModelId = (modelId: string) => {
-    const byId = MODELS.find((m) => m.id === modelId);
-    if (byId) return byId.label;
-    const lower = String(modelId || "").toLowerCase();
-    if (lower.startsWith("gpt-") || lower.startsWith("o-")) return "OpenAI";
-    if (lower.startsWith("gemini-")) return "Google Gemini";
-    if (lower.startsWith("deepseek-")) return "Deepseek";
-    if (lower.startsWith("grok-")) return "Grok";
-    return "Model";
   };
 
   const extractTitleFromHtml = (value: string) => {
@@ -2511,6 +3219,11 @@ function IdeaGenerator({
 
   const generateIdeas = async () => {
     if (selectedModels.length === 0) return alert("Please select at least one AI model.");
+    if (generateIdeasNudgeTimerRef.current !== null) {
+      window.clearTimeout(generateIdeasNudgeTimerRef.current);
+      generateIdeasNudgeTimerRef.current = null;
+    }
+    setHighlightGenerateIdeas(false);
 
     // backend safety: free users send only allowed data
     const safeConstraints = !isPremium
@@ -2578,6 +3291,8 @@ function IdeaGenerator({
         setGeneratedQuickStartOpen(false);
       }
       pushNotice("Ideas generated.");
+      markGuidedMilestone("first_generated_run", "generated", -20);
+      registerStepSuccess("generated");
 
       void saveCurrentResults(
         {
@@ -2591,7 +3306,8 @@ function IdeaGenerator({
         { silent: true }
       );
     } catch (e: any) {
-      handleApiActionError(e, "Failed to generate ideas.");
+      const message = handleApiActionError(e, "Failed to generate ideas.");
+      recordUserCorrectableFailure("generated", message, Number(e?.status || 0));
     } finally {
       setIsLoading(false);
     }
@@ -2756,7 +3472,7 @@ function IdeaGenerator({
         return;
       }
       if (resultsView === "decision" && !decisionReport?.id) {
-        setEmailStatus("Select a Decision Summary Report before emailing.");
+        setEmailStatus("Select a Decision Summary before emailing.");
         return;
       }
       let response: Response | null = null;
@@ -2790,35 +3506,503 @@ function IdeaGenerator({
   const resultsModelCount = Object.keys(results).length;
   const hasResults = !isLoading && resultsModelCount > 0;
   const showInsights = Boolean(compareResult);
-  const canClearGenerated = hasResults || Boolean(loadedSavedMeta);
+  const hasGeneratedContext = hasResults || Boolean(loadedSavedMeta);
+  const hasCompareContext = Boolean(compareResult?.comparison_id);
+  const hasDecisionContext = Boolean(decisionReport?.id);
+  const hasStakeholderContext = Boolean(stakeholderReport?.id);
+  const canClearGenerated = hasGeneratedContext;
   const canClearCompare = Boolean(compareResult);
   const canClearDecision = Boolean(decisionReport);
   const canClearStakeholder = Boolean(stakeholderReport);
-  const canDeleteGenerated = Boolean(loadedSavedMeta) && resultsView === "generated";
-  const canDeleteCompare = Boolean(compareResult?.comparison_id) && resultsView === "insights";
-  const canDeleteDecision = Boolean(decisionReport?.id) && resultsView === "decision";
-  const canDeleteStakeholder = Boolean(stakeholderReport?.id) && resultsView === "stakeholder";
+  const currentCanClear =
+    resultsView === "generated"
+      ? canClearGenerated
+      : resultsView === "insights"
+      ? canClearCompare
+      : resultsView === "decision"
+      ? canClearDecision
+      : canClearStakeholder;
+  const generatedRunsCount = savedResults.length;
+  const generatedComparisonsCount = savedComparisons.length;
+  const generatedDecisionsCount = savedReports.length;
+  const generatedPlansCount = savedStakeholderReports.length;
+  const generatedHasAnySaved =
+    generatedRunsCount > 0 ||
+    generatedComparisonsCount > 0 ||
+    generatedDecisionsCount > 0 ||
+    generatedPlansCount > 0;
+  const selectedGeneratedRunId = loadedSavedId;
+  const generatedScenarioFresh =
+    selectedGeneratedRunId == null &&
+    !generatedHasAnySaved;
+  const generatedScenarioReturning =
+    selectedGeneratedRunId == null &&
+    generatedHasAnySaved;
+  const savedExecutionPlanCount = savedStakeholderReports.length;
+  const totalLibraryItems =
+    savedResults.length + savedComparisons.length + savedReports.length + savedStakeholderReports.length;
+  const contextTitle =
+    resultsView === "generated"
+      ? "Generated Results"
+      : resultsView === "insights"
+      ? "Compare Results"
+      : resultsView === "decision"
+      ? "Decision Summary"
+      : "Execution Plan";
+  const contextIdLabel =
+    resultsView === "generated"
+      ? loadedSavedMeta?.id
+        ? `Run R${loadedSavedMeta.id}`
+        : hasResults
+        ? "Draft run"
+        : "No run loaded"
+      : resultsView === "insights"
+      ? compareResult?.comparison_id
+        ? `Compare C${compareResult.comparison_id}`
+        : "No comparison id"
+      : resultsView === "decision"
+      ? decisionReport?.id
+        ? `Decision D${decisionReport.id}`
+        : "No decision id"
+      : stakeholderReport?.id
+      ? `Plan P${stakeholderReport.id}`
+      : "No plan loaded";
+  const contextSummary =
+    resultsView === "generated"
+      ? loadedSavedMeta
+        ? `${loadedSavedMeta.industry || "Saved run"} • ${formatSavedDate(loadedSavedMeta.created_at)}`
+        : hasResults
+        ? "Draft run (unsaved)"
+        : "No run loaded"
+      : resultsView === "insights"
+      ? compareResult
+        ? `Run A: ${formatRunLabel(compareResult.run_a_id)} · Run B: ${formatRunLabel(compareResult.run_b_id)}`
+        : "No comparison loaded"
+      : resultsView === "decision"
+      ? decisionReport
+        ? `Saved ${formatSavedDate(decisionReport.created_at)} · ${decisionReport.run_ids?.length || 0} run(s)`
+        : "No decision summary loaded"
+      : stakeholderReport
+      ? `${stakeholderReport.title || executionReportTitle} · Saved ${formatSavedDate(stakeholderReport.created_at)}`
+      : "No execution plan loaded";
+  const contextSecondarySummary =
+    resultsView === "generated"
+      ? loadedSavedMeta
+        ? `Persona: ${labelForPersona(loadedSavedMeta.tone || "")} · Constraints: ${formatConstraints(loadedSavedMeta.constraints || [])}`
+        : hasResults
+        ? "Draft run (unsaved)."
+        : generatedScenarioReturning
+        ? "No run selected. Load a saved run from Library or generate a new run."
+        : "Generate your first run to get started."
+      : resultsView === "insights"
+      ? compareResult
+        ? `Winner: ${compareResult.winner_run_id ? formatRunLabel(compareResult.winner_run_id) : "Tie"}`
+        : "Load a saved comparison or compare two saved runs."
+      : resultsView === "decision"
+      ? decisionReport?.run_ids?.length
+        ? `Sources: ${decisionReport.run_ids.length} run(s)`
+        : "Generate a summary from one or more saved runs."
+      : !stakeholderReport && savedExecutionPlanCount > 0
+      ? `${savedExecutionPlanCount} execution plan(s) saved in Library · none loaded.`
+      : stakeholderReport?.source_type === "decision_report" && stakeholderReport?.source_id
+      ? `Source: Decision Summary #${stakeholderReport.source_id}`
+      : "Generate from Decision Summary or load from library.";
+  const contextViewingLabel =
+    resultsView === "generated" && loadedSavedMeta?.id
+      ? `Viewing: Run R${loadedSavedMeta.id} • ${loadedSavedMeta.industry || "Saved run"} • ${formatSavedDate(loadedSavedMeta.created_at)}`
+      : resultsView === "insights" && compareResult?.comparison_id
+      ? `Viewing: Compare C${compareResult.comparison_id}`
+      : resultsView === "decision" && decisionReport?.id
+      ? `Viewing: Decision D${decisionReport.id}`
+      : resultsView === "stakeholder" && stakeholderReport?.id
+      ? `Viewing: Plan P${stakeholderReport.id}`
+      : null;
+  const decisionConfigIndustry = String(industry || loadedSavedMeta?.industry || "").trim().toLowerCase();
+  const decisionConfigTone = normalizePersonaMatchKey(String(tone || loadedSavedMeta?.tone || ""));
+  const decisionConfigConstraints = normalizeConstraintMatchKey(
+    (constraints && constraints.length ? constraints : loadedSavedMeta?.constraints || []) || []
+  );
+  const decisionCandidateRuns = useMemo(
+    () =>
+      savedResults.filter((item) => {
+        const itemIndustry = String(item.industry || "").trim().toLowerCase();
+        const itemTone = normalizePersonaMatchKey(String(item.tone || ""));
+        const itemConstraints = normalizeConstraintMatchKey(item.constraints || []);
+        return (
+          itemIndustry === decisionConfigIndustry &&
+          itemTone === decisionConfigTone &&
+          itemConstraints === decisionConfigConstraints
+        );
+      }),
+    [savedResults, decisionConfigIndustry, decisionConfigTone, decisionConfigConstraints]
+  );
+  const decisionCandidateRunIds = useMemo(
+    () => new Set(decisionCandidateRuns.map((item) => item.id)),
+    [decisionCandidateRuns]
+  );
+  const decisionSelectableRuns = useMemo(
+    () =>
+      decisionMatchCurrentConfigOnly
+        ? savedResults.filter((item) => decisionCandidateRunIds.has(item.id))
+        : savedResults,
+    [savedResults, decisionCandidateRunIds, decisionMatchCurrentConfigOnly]
+  );
+  const decisionCandidateCompareCount = useMemo(
+    () =>
+      savedComparisons.filter(
+        (item) => decisionCandidateRunIds.has(item.run_a_id) && decisionCandidateRunIds.has(item.run_b_id)
+      ).length,
+    [savedComparisons, decisionCandidateRunIds]
+  );
+  const executionCandidateDecisionCount = useMemo(
+    () =>
+      savedReports.filter((report) => {
+        const runIds = Array.isArray(report.run_ids)
+          ? report.run_ids.map((runId) => Number(runId)).filter((runId) => Number.isFinite(runId))
+          : [];
+        if (!runIds.length) return false;
+        return runIds.every((runId) => decisionCandidateRunIds.has(runId));
+      }).length,
+    [savedReports, decisionCandidateRunIds]
+  );
+  const decisionMatchingRunCount = decisionCandidateRuns.length;
+  const decisionTotalSavedRunCount = savedResults.length;
+  const decisionHasSavedSummaries = savedReports.length > 0;
+  const decisionCanOpenLibrary = decisionTotalSavedRunCount > 0 || decisionHasSavedSummaries;
+  const decisionSelectableRunCount = decisionSelectableRuns.length;
+  const decisionSelectedRunCount = useAllRuns ? decisionSelectableRunCount : reportSelection.length;
+  const decisionMatchingRuleLabel = "Industry + Persona + Constraints";
+  const reportHasSelection = useAllRuns
+    ? decisionMatchCurrentConfigOnly
+      ? decisionSelectableRunCount > 0
+      : savedResults.length > 0
+    : reportSelection.length > 0;
+  const reportEmailRequired = reportOutput === "email" || reportOutput === "both";
+  const reportCanSubmit = reportHasSelection && (!reportEmailRequired || reportEmail.trim().length > 0);
+  const hasUnsavedCurrentRun = hasGeneratedContext && !loadedSavedMeta?.id;
+  const compareCandidateRunCount = decisionCandidateRuns.length + (hasUnsavedCurrentRun ? 1 : 0);
+  const needsAnotherRunForCompare = compareCandidateRunCount < 2;
+  const decisionReadySignal = decisionCanOpenLibrary;
+  const decisionReadinessText = decisionTotalSavedRunCount >= 1
+    ? "Ready for Decision Summary"
+    : decisionHasSavedSummaries
+    ? "Saved summaries available"
+    : "No saved runs yet";
+  const decisionReadinessDetail = decisionReadySignal
+    ? decisionTotalSavedRunCount >= 1
+      ? `You have ${decisionTotalSavedRunCount} saved run${decisionTotalSavedRunCount === 1 ? "" : "s"} • select 1–5 runs from Library`
+      : `You have ${savedReports.length} saved decision summar${savedReports.length === 1 ? "y" : "ies"} in Library`
+    : "Generate your first run to start Decision Summary";
+  const isReadyForExecutionPlan = hasDecisionContext || executionCandidateDecisionCount > 0;
+  const executionReadinessText = hasDecisionContext
+    ? "Ready for Execution Plan"
+    : executionCandidateDecisionCount > 0
+    ? "Load a Decision Summary first"
+    : "Decision Summary required";
+  const executionReadinessDetail = hasDecisionContext
+    ? `Decision D${decisionReport?.id} is loaded and ready for plan generation.`
+    : executionCandidateDecisionCount > 0
+    ? `Found ${executionCandidateDecisionCount} matching decision summary report(s). Load one to continue.`
+    : "Generate a Decision Summary from saved runs, then create an Execution Plan.";
+  const compareSourceRunIds = useMemo(() => {
+    if (compareResult) return [compareResult.run_a_id, compareResult.run_b_id];
+    if (lastComparedRunPair) return [lastComparedRunPair.runA, lastComparedRunPair.runB];
+    return [];
+  }, [compareResult, lastComparedRunPair]);
+  const compareMatchedDecisionReports = useMemo(() => {
+    if (!compareSourceRunIds.length) return [] as SavedReportSummary[];
+    const runIdSet = new Set(compareSourceRunIds.map((id) => Number(id)));
+    return [...savedReports]
+      .filter((report) => Array.from(runIdSet).every((runId) => (report.run_ids || []).includes(runId)))
+      .sort((a, b) => {
+        const timeA = Date.parse(String(a.created_at || ""));
+        const timeB = Date.parse(String(b.created_at || ""));
+        if (Number.isFinite(timeA) && Number.isFinite(timeB) && timeA !== timeB) return timeB - timeA;
+        return Number(b.id || 0) - Number(a.id || 0);
+      });
+  }, [savedReports, compareSourceRunIds]);
+  const compareDecisionCount = compareMatchedDecisionReports.length;
+  const latestCompareDecisionReport = compareMatchedDecisionReports[0] || null;
+  const currentCompareId = Number(compareResult?.comparison_id || lastCompareId || 0) || null;
+  const compareHandoffDismissed = currentCompareId
+    ? dismissedCompareHandoffIds.includes(currentCompareId)
+    : false;
+  const showCompareDecisionHandoff =
+    resultsView === "insights" &&
+    Boolean(compareResult?.comparison_id) &&
+    !compareLoading &&
+    !compareHandoffDismissed;
+  const showComparePrereqHint =
+    resultsView === "insights" && !compareResult?.comparison_id && needsAnotherRunForCompare;
+  const shouldShowPostGenerateCompareCta =
+    resultsView === "generated" && hasGeneratedContext && !hasCompareContext;
+  const compareConfigMismatch =
+    Boolean(compareError) &&
+    /(same industry, persona, constraints, and model set|cannot be compared)/i.test(String(compareError || ""));
+  const compareNavigationLocked = compareLoading;
+  const compareInteractionLock = compareLoading;
+  const executionQuickTips = [
+    <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary</span> tab.</>,
+    <>Generate or load a decision report first.</>,
+    <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Execution Plan</span>.</>,
+    "Review execution plan, resources, cost, and profit forecast.",
+    "Use Library → Execution Plan to reload previous plans.",
+  ];
+  const visibleExecutionQuickTips = executionQuickTipsExpanded
+    ? executionQuickTips
+    : executionQuickTips.slice(0, 3);
+  const guidanceBand: "high" | "medium" | "low" =
+    guidednessGlobal >= 70 ? "high" : guidednessGlobal >= 41 ? "medium" : "low";
+  const isGuidedMode = flowMode === "guided";
+  const currentStepGuidedness = clampGuidedness(guidednessStep[currentStepKey] ?? GUIDEDNESS_DEFAULT);
+  const stepTemporaryGuidanceActive = (stepGuidanceUntil[currentStepKey] || 0) > Date.now();
+  const showStepGuidanceAssist = isGuidedMode || stepTemporaryGuidanceActive;
+  const shouldWarnDecisionStep =
+    resultsView === "stakeholder" && !hasDecisionContext && executionCandidateDecisionCount === 0;
   const flowSteps: Array<{
-    key: "generated" | "insights" | "decision" | "stakeholder";
+    key: FlowStepKey;
     label: string;
     hint: string;
+    guidedPrereq: string;
   }> = [
-    { key: "generated", label: "Generate Results", hint: "Create model outputs" },
-    { key: "insights", label: "Compare Rank Results", hint: "Diff two saved runs" },
-    { key: "decision", label: "Decision Summary Report", hint: "Rank and summarize finalists" },
-    { key: "stakeholder", label: "Execution Plan", hint: "Investment readiness assessment" },
+    {
+      key: "generated",
+      label: "Generate Results",
+      hint: "Create model outputs",
+      guidedPrereq: "Start by generating your first run.",
+    },
+    {
+      key: "insights",
+      label: "Compare Results",
+      hint: "Diff two saved runs",
+      guidedPrereq: hasGeneratedContext
+        ? "Generate at least 2 runs first."
+        : "Generate at least 1 run first.",
+    },
+    {
+      key: "decision",
+      label: "Decision Summary",
+      hint: "Rank and summarize finalists",
+      guidedPrereq: hasCompareContext ? "Compare complete. You can summarize now." : "Compare or pick a run first.",
+    },
+    {
+      key: "stakeholder",
+      label: "Execution Plan",
+      hint: "Investment readiness assessment",
+      guidedPrereq: hasDecisionContext ? "Decision summary ready. Build the plan." : "Generate a decision summary first.",
+    },
   ];
+  const currentStepIndex = flowSteps.findIndex((item) => item.key === currentStepKey);
+  const suppressDownstreamCompletion = resultsView === "generated" && !hasGeneratedContext;
   const flowCompletion: Record<"generated" | "insights" | "decision" | "stakeholder", boolean> = {
-    generated: hasResults,
-    insights: Boolean(compareResult?.comparison_id),
-    decision: Boolean(decisionReport?.id),
-    stakeholder: Boolean(stakeholderReport?.id),
+    generated: hasGeneratedContext,
+    insights: !suppressDownstreamCompletion && (hasCompareContext || hasDecisionContext || hasStakeholderContext),
+    decision: !suppressDownstreamCompletion && (hasDecisionContext || hasStakeholderContext),
+    stakeholder: !suppressDownstreamCompletion && hasStakeholderContext,
   };
+  const nextGuidedStep: FlowStepKey | null = !hasGeneratedContext
+    ? "generated"
+    : !hasCompareContext
+    ? "insights"
+    : !hasDecisionContext
+    ? "decision"
+    : !hasStakeholderContext
+    ? "stakeholder"
+    : null;
+  const currentStepPrereqMissing =
+    (currentStepKey === "insights" && !hasGeneratedContext) ||
+    (currentStepKey === "decision" && !hasCompareContext) ||
+    (currentStepKey === "stakeholder" && !hasDecisionContext);
+  const guidedHintText = !showStepGuidanceAssist
+    ? ""
+    : !isGuidedMode
+    ? "Flow overview (temporary guidance)."
+    : guidanceBand === "high"
+    ? "Follow these steps: Generate → Compare → Decide → Plan."
+    : "Flow overview.";
+  const flowNavHint = showStepGuidanceAssist ? "Use tabs below to navigate." : "";
+  const activeFlowStepKey: FlowStepKey = currentStepKey;
+  const nextStepActionLabel =
+    nextGuidedStep === "generated"
+      ? "Next: Generate Results"
+      : nextGuidedStep === "insights"
+      ? "Next: Compare Results"
+      : nextGuidedStep === "decision"
+      ? "Next: Decision Summary"
+      : nextGuidedStep === "stakeholder"
+      ? "Next: Execution Plan"
+      : "";
+  const needsSecondRunForGuidedCompare =
+    shouldShowPostGenerateCompareCta && nextGuidedStep === "insights" && needsAnotherRunForCompare;
+  const canSkipCompareToDecision =
+    shouldShowPostGenerateCompareCta && nextGuidedStep === "insights" && decisionTotalSavedRunCount >= 1;
+  const postGenerateCtaTitle =
+    needsSecondRunForGuidedCompare
+      ? "Step 1 complete. Next: generate another run."
+      : shouldShowPostGenerateCompareCta && nextGuidedStep === "insights"
+      ? "Step 1 complete. Next: Compare Results."
+      : isGuidedMode
+      ? "Guided step: continue in sequence for faster onboarding."
+      : "Need help on this step? Continue with the next recommended action.";
+  const postGenerateCtaSubtext =
+    shouldShowPostGenerateCompareCta && nextGuidedStep === "insights"
+      ? needsAnotherRunForCompare
+        ? "You need 2 runs to compare."
+        : `${compareCandidateRunCount} runs are available. You can compare now.`
+      : null;
+  const showNextStepCta = (showStepGuidanceAssist || shouldShowPostGenerateCompareCta) && Boolean(nextGuidedStep);
+  const compactNextStepCta = !isGuidedMode || guidanceBand === "medium";
+  const stepStatusCounts = useMemo(() => {
+    let runIds: number[] = [];
+    let decisionIds: number[] = [];
+
+    if (resultsView === "generated" && loadedSavedMeta?.id) {
+      runIds = [loadedSavedMeta.id];
+    } else if (resultsView === "insights" && compareResult) {
+      runIds = [compareResult.run_a_id, compareResult.run_b_id];
+    } else if (resultsView === "decision" && decisionReport?.id) {
+      runIds = (decisionReport.run_ids || []).filter((id) => Number.isFinite(Number(id)));
+      decisionIds = [decisionReport.id];
+    } else if (
+      resultsView === "stakeholder" &&
+      stakeholderReport?.source_type === "decision_report" &&
+      stakeholderReport?.source_id
+    ) {
+      const sourceDecisionId = Number(stakeholderReport.source_id);
+      decisionIds = Number.isFinite(sourceDecisionId) ? [sourceDecisionId] : [];
+      const matchedReport = savedReports.find((item) => item.id === sourceDecisionId);
+      if (matchedReport?.run_ids?.length) runIds = matchedReport.run_ids;
+    }
+
+    const uniqueRunIds = Array.from(new Set(runIds.filter((id) => Number.isFinite(Number(id)))));
+    const decisionIdsFromRuns = uniqueRunIds.length
+      ? savedReports
+          .filter((report) => uniqueRunIds.every((runId) => (report.run_ids || []).includes(runId)))
+          .map((report) => report.id)
+      : [];
+    const relevantDecisionIds = Array.from(new Set([...decisionIds, ...decisionIdsFromRuns]));
+
+    if (!uniqueRunIds.length && !relevantDecisionIds.length) {
+      return {
+        generated: savedResults.length,
+        insights: savedComparisons.length,
+        decision: savedReports.length,
+        stakeholder: savedStakeholderReports.length,
+      } as Record<FlowStepKey, number>;
+    }
+
+    const compareCount = uniqueRunIds.length
+      ? savedComparisons.filter((item) => {
+          const compareRunIds = [item.run_a_id, item.run_b_id];
+          return uniqueRunIds.every((runId) => compareRunIds.includes(runId));
+        }).length
+      : 0;
+    const decisionCount = relevantDecisionIds.length;
+    const decisionIdSet = new Set(relevantDecisionIds);
+    const planCount = relevantDecisionIds.length
+      ? savedStakeholderReports.filter(
+          (item) => item.source_type === "decision_report" && decisionIdSet.has(Number(item.source_id))
+        ).length
+      : 0;
+
+    return {
+      generated: savedResults.length,
+      insights: compareCount,
+      decision: decisionCount,
+      stakeholder: planCount,
+    } as Record<FlowStepKey, number>;
+  }, [resultsView, loadedSavedMeta?.id, compareResult, decisionReport, stakeholderReport, savedReports, savedComparisons, savedStakeholderReports]);
+  const showStatusBadges = !isGuidedMode && Boolean(stepStatusCounts);
+  const stepBadgeText = (stepKey: FlowStepKey) => {
+    if (!stepStatusCounts) return "";
+    const value = Number(stepStatusCounts[stepKey] || 0);
+    if (stepKey === "generated") return `Runs saved: ${value}`;
+    if (stepKey === "insights") return `Compare ${value}`;
+    if (stepKey === "decision") return `Decision ${value}`;
+    return `Plan ${value}`;
+  };
+  const stepBadgeTitle = (stepKey: FlowStepKey) => {
+    if (!stepStatusCounts) return "";
+    const value = Number(stepStatusCounts[stepKey] || 0);
+    if (stepKey === "generated") return `${value} saved run(s) available.`;
+    if (stepKey === "insights") return `${value} saved comparison(s) available.`;
+    if (stepKey === "decision") return `${value} saved decision summary report(s) available.`;
+    return `${value} saved execution plan(s) available.`;
+  };
+
+  useEffect(() => {
+    if (!decisionMatchCurrentConfigOnly) return;
+    setReportSelection((prev) => prev.filter((id) => decisionCandidateRunIds.has(id)));
+  }, [decisionMatchCurrentConfigOnly, decisionCandidateRunIds]);
+
+  useEffect(() => {
+    if (!guidednessHydrated) return;
+    setFlowMode((prev) => {
+      if (prev === "guided") {
+        return guidednessGlobal <= GUIDEDNESS_SWITCH_TO_STATUS ? "status" : "guided";
+      }
+      return guidednessGlobal >= GUIDEDNESS_SWITCH_TO_GUIDED ? "guided" : "status";
+    });
+  }, [guidednessGlobal, guidednessHydrated]);
+
+  useEffect(() => {
+    if (!stepGuideHydrated) return;
+    setStepGuideCollapsedByStep((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      (Object.keys(next) as FlowStepKey[]).forEach((key) => {
+        if (stepGuideTouchedByStep[key]) return;
+        const defaultCollapsed = flowMode === "status";
+        if (next[key] !== defaultCollapsed) {
+          next[key] = defaultCollapsed;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [flowMode, stepGuideTouchedByStep, stepGuideHydrated]);
+
+  useEffect(() => {
+    if (!guidednessHydrated) return;
+    if (savedResults.length > 0 || hasGeneratedContext) {
+      markGuidedMilestone("first_generated_run", "generated", -20);
+    }
+  }, [guidednessHydrated, savedResults.length, hasGeneratedContext, markGuidedMilestone]);
+
+  useEffect(() => {
+    if (!guidednessHydrated) return;
+    if (savedComparisons.length > 0 || hasCompareContext) {
+      markGuidedMilestone("first_compare", "insights", -25);
+    }
+  }, [guidednessHydrated, savedComparisons.length, hasCompareContext, markGuidedMilestone]);
+
+  useEffect(() => {
+    if (!guidednessHydrated) return;
+    if (savedReports.length > 0 || hasDecisionContext) {
+      markGuidedMilestone("first_decision_summary", "decision", -20);
+    }
+  }, [guidednessHydrated, savedReports.length, hasDecisionContext, markGuidedMilestone]);
+
+  useEffect(() => {
+    if (!guidednessHydrated) return;
+    if (savedStakeholderReports.length > 0 || hasStakeholderContext) {
+      markGuidedMilestone("first_execution_plan", "stakeholder", -20);
+    }
+  }, [guidednessHydrated, savedStakeholderReports.length, hasStakeholderContext, markGuidedMilestone]);
+  const rankUnavailableForSingleModel = Boolean(
+    rankResult?.skipped && /single model/i.test(String(rankResult?.reason || ""))
+  );
+  const showRankingCard = Boolean(rankResult) && !rankUnavailableForSingleModel;
   const normalizedRichTextClass =
     "prose prose-sm dark:prose-invert max-w-none " +
     "prose-headings:tracking-tight prose-headings:font-semibold " +
     "[&_h1]:text-3xl [&_h1]:leading-tight [&_h2]:text-2xl [&_h3]:text-xl " +
     "[&_p]:text-base [&_li]:text-base";
+  const sanitizedResults = useMemo(() => {
+    const entries = Object.entries(results || {}).map(([modelId, html]) => [modelId, sanitizeInjectedHtml(String(html || ""))]);
+    return Object.fromEntries(entries) as IdeaResults;
+  }, [results]);
+  const sanitizedRecoHtml = useMemo(() => sanitizeInjectedHtml(recoHtml), [recoHtml]);
 
   // UI gating values (keeps premium UI; free is locked)
   const maxConstraints = isPremium ? 3 : FREE_MAX_CONSTRAINTS;
@@ -2919,27 +4103,115 @@ function IdeaGenerator({
     });
   }, []);
 
-  const openSavedPanel = (mode: "generated" | "compare" | "decision" | "stakeholder") => {
+  const openSavedPanel = (
+    mode: "generated" | "compare" | "decision" | "stakeholder",
+    options?: { forceOpen?: boolean }
+  ) => {
+    const forceOpen = Boolean(options?.forceOpen);
     const isSameMode = savedPanelMode === mode;
-    if (isSameMode) {
+    if (isSameMode && !forceOpen) {
       setSavedPanelMode(null);
     } else {
       setSavedPanelPos(null);
       setSavedPanelMode(mode);
     }
-    if (!isSameMode) {
+    if (!isSameMode || forceOpen) {
       if (mode === "generated") {
         fetchSavedResults();
       } else if (mode === "compare") {
         fetchSavedResults();
         fetchSavedComparisons();
       } else if (mode === "decision") {
+        setDecisionMatchCurrentConfigOnly(true);
         fetchSavedResults();
         fetchSavedReports();
       } else if (mode === "stakeholder") {
         fetchSavedStakeholderReports();
       }
     }
+  };
+
+  const panelModeForView = (view: "generated" | "insights" | "decision" | "stakeholder") =>
+    view === "generated"
+      ? "generated"
+      : view === "insights"
+      ? "compare"
+      : view === "decision"
+      ? "decision"
+      : "stakeholder";
+
+  const openLibraryForView = (view: "generated" | "insights" | "decision" | "stakeholder" = resultsView) => {
+    openSavedPanel(panelModeForView(view), { forceOpen: true });
+  };
+
+  const startDecisionFromCompare = useCallback(
+    (options?: { openLibrary?: boolean }) => {
+      const compareRunIds = compareResult
+        ? [compareResult.run_a_id, compareResult.run_b_id]
+        : lastComparedRunPair
+        ? [lastComparedRunPair.runA, lastComparedRunPair.runB]
+        : [];
+      const normalizedIds = Array.from(
+        new Set(
+          compareRunIds
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0)
+        )
+      ).slice(0, 5);
+      setUseAllRuns(false);
+      setDecisionMatchCurrentConfigOnly(true);
+      setReportSelection(normalizedIds);
+      setResultsView("decision");
+      if (options?.openLibrary !== false) {
+        openLibraryForView("decision");
+      }
+    },
+    [compareResult, lastComparedRunPair]
+  );
+
+  const currentStepGuide = STEP_GUIDE_CONTENT[currentStepKey];
+  const isStepGuideCollapsed = stepGuideCollapsedByStep[currentStepKey] ?? false;
+  const toggleStepGuideForCurrentStep = () => {
+    setStepGuideTouchedByStep((prev) => ({
+      ...prev,
+      [currentStepKey]: true,
+    }));
+    setStepGuideCollapsedByStep((prev) => ({
+      ...prev,
+      [currentStepKey]: !(prev[currentStepKey] ?? false),
+    }));
+  };
+  const handleStepGuideCta = () => {
+    if (currentStepKey === "insights") {
+      if (compareResult || lastComparedRunPair) {
+        startDecisionFromCompare({ openLibrary: true });
+      } else {
+        setResultsView("decision");
+        openLibraryForView("decision");
+      }
+      return;
+    }
+    if (currentStepKey === "decision") {
+      if (hasDecisionContext) {
+        setResultsView("stakeholder");
+        void openExecutionPlanPicker();
+      } else {
+        openLibraryForView("decision");
+      }
+      return;
+    }
+    if (currentStepKey === "stakeholder") {
+      if (stakeholderReport) {
+        void downloadPDF();
+      } else if (isReadyForExecutionPlan) {
+        void openExecutionPlanPicker();
+      } else {
+        setResultsView("decision");
+        openLibraryForView("decision");
+      }
+      return;
+    }
+    focusGenerateIdeasAction();
   };
 
   const startSavedPanelDrag = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -3071,12 +4343,7 @@ function IdeaGenerator({
       }
       const panel = savedPanelRef.current;
       const target = e.target as Node;
-      const triggers = [
-        savedGeneratedButtonRef.current,
-        savedCompareButtonRef.current,
-        savedDecisionButtonRef.current,
-        savedStakeholderButtonRef.current,
-      ].filter(Boolean) as HTMLElement[];
+      const triggers = [savedGeneratedButtonRef.current].filter(Boolean) as HTMLElement[];
       if (panel && panel.contains(target)) return;
       if (triggers.some((trigger) => trigger.contains(target))) return;
       setSavedPanelMode(null);
@@ -3120,6 +4387,24 @@ function IdeaGenerator({
   }, [savedPanelOpen]);
 
   useEffect(() => {
+    if (!savedPanelMode) return;
+    setLibrarySearch("");
+  }, [savedPanelMode]);
+
+  useEffect(() => {
+    if (savedPanelMode !== "decision") return;
+    if (decisionReport?.id) return;
+    if (reportSelection.length > 0 || useAllRuns) return;
+    setDecisionSelectOpen(true);
+  }, [savedPanelMode, decisionReport?.id, reportSelection.length, useAllRuns]);
+
+  useEffect(() => {
+    if (resultsView !== "insights") {
+      setCompareQuickTipsExpanded(false);
+    }
+  }, [resultsView]);
+
+  useEffect(() => {
     if (!executionPlanPickerOpen) return;
     updateExecutionPlanPickerPos(true);
     const onResize = () => updateExecutionPlanPickerPos();
@@ -3135,8 +4420,18 @@ function IdeaGenerator({
   }, [executionPlanPickerOpen]);
 
   return (
-    <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[342px_1fr] gap-3 lg:gap-4">
+    <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[minmax(296px,320px)_minmax(0,1fr)] gap-3 lg:gap-4">
       <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} onUpgrade={upgradeTo} />
+      {compareInteractionLock ? (
+        <div className="fixed inset-0 z-[160] bg-black/35 backdrop-blur-[1px]" role="status" aria-live="polite" aria-label="Comparing runs in progress">
+          <div className="absolute top-5 left-1/2 -translate-x-1/2 rounded-xl border border-white/15 bg-slate-950/90 px-3 py-2 text-[12px] font-semibold text-white shadow-xl">
+            <span className="inline-flex items-center gap-2">
+              <Spinner className="h-3.5 w-3.5" />
+              Comparing runs... interactions are temporarily locked.
+            </span>
+          </div>
+        </div>
+      ) : null}
       {deleteTarget ? (
         <div className="fixed inset-0 z-[200] grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/10 backdrop-blur-xl p-6 text-white shadow-2xl">
@@ -3613,7 +4908,7 @@ function IdeaGenerator({
         <FullPageLoader
           title="Loading IdeaGen"
           subtitle="Preparing your workspace..."
-          chips={["Saved Runs & Reports", "Compare Results", "Decision Summary"]}
+          chips={["Library", "Compare Results", "Decision Summary"]}
           note="Please wait while we initialize your dashboard."
           tip="Tip: this only appears on page refresh/load."
         />
@@ -3692,12 +4987,16 @@ function IdeaGenerator({
 
           <div className="mt-4">
             <button
+              ref={generateIdeasBtnRef}
               type="button"
               onClick={generateIdeas}
               disabled={isLoading || isApiLimited || isTokenLimited}
               className={cx(
-                "w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-900/20",
-                (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                "w-full rounded-xl px-3 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-900/20 transition",
+                (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700",
+                highlightGenerateIdeas && !isLoading && !isApiLimited && !isTokenLimited
+                  ? "animate-pulse ring-2 ring-cyan-300/70 shadow-[0_0_0_4px_rgba(59,130,246,0.22)]"
+                  : ""
               )}
             >
               <span className="inline-flex items-center justify-center gap-2">
@@ -3707,6 +5006,11 @@ function IdeaGenerator({
                 </span>
               </span>
             </button>
+            {highlightGenerateIdeas && !isLoading ? (
+              <div className="mt-1.5 text-[11px] font-medium text-cyan-700 dark:text-cyan-300">
+                Review inputs, then click Generate Ideas.
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-5 space-y-5 overflow-visible">
@@ -4097,12 +5401,12 @@ function IdeaGenerator({
                 </span>
               </button>
 
-              {recoHtml && (
+              {sanitizedRecoHtml && (
                 <div className="mt-3 rounded-xl border border-black/10 dark:border-white/10 bg-white/50 dark:bg-white/5 p-4">
                   <div
                     className="max-h-[280px] overflow-y-auto pr-2 text-sm leading-relaxed ig-scrollbar"
                     style={{ scrollbarGutter: "stable" as any }}
-                    dangerouslySetInnerHTML={{ __html: recoHtml }}
+                    dangerouslySetInnerHTML={{ __html: sanitizedRecoHtml }}
                   />
                   <style jsx>{`
                     :global([data-section="recommendation_reason"] ul) {
@@ -4120,7 +5424,7 @@ function IdeaGenerator({
               )}
             </div>
 
-            <div>
+            <div ref={aiModelsRef}>
               <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">AI Models</label>
 
               <div className="space-y-2">
@@ -4232,8 +5536,11 @@ function IdeaGenerator({
                 onClick={generateIdeas}
                 disabled={isLoading || isApiLimited || isTokenLimited}
                 className={cx(
-                  "w-full rounded-xl px-3 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-900/20",
-                  (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                  "w-full rounded-xl px-3 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-900/20 transition",
+                  (isLoading || isApiLimited || isTokenLimited) ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700",
+                  highlightGenerateIdeas && !isLoading && !isApiLimited && !isTokenLimited
+                    ? "animate-pulse ring-2 ring-cyan-300/70 shadow-[0_0_0_4px_rgba(59,130,246,0.22)]"
+                    : ""
                 )}
               >
                 <span className="inline-flex items-center justify-center gap-2">
@@ -4337,12 +5644,12 @@ function IdeaGenerator({
 
       {/* Main content */}
       <section className="min-w-0">
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-2 mb-4">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,1fr)] gap-2 mb-4">
           <GlassCard className="p-2 sm:p-3 order-2">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Current Usage</h2>
-                <div className="mt-1.5 grid w-full grid-cols-4 items-start gap-x-2 text-[10px] sm:text-[11px]">
+                <div className="mt-1.5 grid w-full grid-cols-2 sm:grid-cols-4 items-start gap-x-2 gap-y-1 text-[10px] sm:text-[11px]">
                   <div className="min-w-0 flex w-full flex-col items-center justify-center leading-tight">
                     <UsageLabel
                       label="Tokens"
@@ -4416,70 +5723,59 @@ function IdeaGenerator({
             </div>
           </GlassCard>
 
-          <GlassCard className="p-2 sm:p-3 relative order-1 overflow-hidden">
-            <div className="space-y-2">
+          <GlassCard className="p-2.5 sm:p-3 relative order-1 overflow-hidden">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Saved Runs & Reports</h2>
+                <h2 className="text-xs font-semibold text-gray-900 dark:text-white">Library</h2>
                 <div className="text-[10px] text-gray-500 dark:text-gray-400">
-                  {savedResults.length} saved
+                  {totalLibraryItems} saved
                 </div>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   ref={savedGeneratedButtonRef}
                   type="button"
-                  onClick={() => openSavedPanel("generated")}
+                  onClick={() => openLibraryForView(resultsView)}
                   className={cx(
-                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center",
+                    "h-7 rounded-lg border px-2.5 text-[10px] sm:text-[11px] font-semibold whitespace-nowrap",
                     "border-black/10 dark:border-white/10",
-                    savedPanelMode === "generated"
+                    savedPanelOpen
                       ? "bg-blue-600 text-white"
                       : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
                   )}
                 >
-                  Generated Results
+                  Open Library
                 </button>
-                <button
-                  ref={savedCompareButtonRef}
-                  type="button"
-                  onClick={() => openSavedPanel("compare")}
-                  className={cx(
-                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center",
-                    "border-black/10 dark:border-white/10",
-                    savedPanelMode === "compare"
-                      ? "bg-blue-600 text-white"
-                      : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
-                  )}
-                >
-                  Compare Results
-                </button>
-                <button
-                  ref={savedDecisionButtonRef}
-                  type="button"
-                  onClick={() => openSavedPanel("decision")}
-                  className={cx(
-                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center",
-                    "border-black/10 dark:border-white/10",
-                    savedPanelMode === "decision"
-                      ? "bg-blue-600 text-white"
-                      : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
-                  )}
-                >
-                  Decision Summary Report
-                </button>
-                <button
-                  ref={savedStakeholderButtonRef}
-                  type="button"
-                  onClick={() => openSavedPanel("stakeholder")}
-                  className={cx(
-                    "min-w-0 h-8 rounded-lg border px-1 py-1 text-[9px] sm:text-[10px] font-semibold leading-tight whitespace-normal text-center transition-colors",
-                    savedPanelMode === "stakeholder"
-                      ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
-                      : "bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
-                  )}
-                >
-                  Execution Plan
-                </button>
+                <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => openSavedPanel("generated", { forceOpen: true })}
+                    className="rounded-md border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/5 px-2 py-0.5 text-gray-600 dark:text-gray-300 hover:bg-white/70 dark:hover:bg-white/10"
+                  >
+                    Runs {savedResults.length}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openSavedPanel("compare", { forceOpen: true })}
+                    className="rounded-md border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/5 px-2 py-0.5 text-gray-600 dark:text-gray-300 hover:bg-white/70 dark:hover:bg-white/10"
+                  >
+                    Compare {savedComparisons.length}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openSavedPanel("decision", { forceOpen: true })}
+                    className="rounded-md border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/5 px-2 py-0.5 text-gray-600 dark:text-gray-300 hover:bg-white/70 dark:hover:bg-white/10"
+                  >
+                    Decision {savedReports.length}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openSavedPanel("stakeholder", { forceOpen: true })}
+                    className="rounded-md border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/5 px-2 py-0.5 text-gray-600 dark:text-gray-300 hover:bg-white/70 dark:hover:bg-white/10"
+                  >
+                    Plan {savedStakeholderReports.length}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -4497,25 +5793,32 @@ function IdeaGenerator({
                     <div
                       ref={savedPanelRef}
                       style={savedPanelStyle}
-                      className="fixed z-10 box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-visible flex flex-col h-[520px] max-h-[85vh]"
+                      className="fixed z-10 box-border rounded-2xl border border-white/10 bg-white/95 shadow-2xl backdrop-blur dark:bg-slate-950/95 overflow-hidden flex flex-col h-[min(76vh,740px)] max-h-[calc(100vh-64px)]"
                     >
                       <div
-                        className={cx(
-                          "flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5 select-none touch-none",
-                          isDraggingSavedPanel ? "cursor-grabbing" : "cursor-grab"
-                        )}
                         onMouseDown={startSavedPanelDrag}
+                        className={cx(
+                          "flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5 select-none",
+                          savedPanelLocked
+                            ? ""
+                            : isDraggingSavedPanel
+                            ? "cursor-grabbing"
+                            : "cursor-grab"
+                        )}
                       >
                         <div className="flex items-center gap-2">
                           <div className="text-sm font-semibold text-gray-900 dark:text-white">
+                            Library
+                          </div>
+                          <span className="rounded-full border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-gray-600 dark:text-gray-300">
                             {savedPanelMode === "generated"
                               ? "Generated Results"
                               : savedPanelMode === "compare"
                               ? "Compare Results"
                               : savedPanelMode === "decision"
-                              ? "Decision Summary Report"
+                              ? "Decision Summary"
                               : "Execution Plan"}
-                          </div>
+                          </span>
                           {savedPanelMode === "generated" ? (
                             <HelpTooltip content="Load a saved run to revisit its outputs or delete it to free up space." />
                           ) : savedPanelMode === "compare" ? (
@@ -4535,13 +5838,12 @@ function IdeaGenerator({
                             <HelpTooltip
                               content={
                                 <>
-                                  <div>Step 1: Open Decision Summary Report.</div>
-                                  <div>Step 2: Click Show under Select runs for the report.</div>
-                                  <div>Step 3: Choose 1-5 runs you want to summarize.</div>
-                                  <div>Step 4: Make sure you select the same Industry</div>
-                                  <div>Step 5: Click Decision Summary Report to generate the summary.</div>
-                                  <div>Step 6: Review the ranked runs, insights, and next steps.</div>
-                                  <div>Step 7: Export or email the report if needed.</div>
+                                  <div>Step 1: Open Decision Summary.</div>
+                                  <div>Step 2: Keep Match current configuration on (Industry + Persona + Constraints).</div>
+                                  <div>Step 3: Select 1-5 runs, or include all visible runs.</div>
+                                  <div>Step 4: Turn on Include non-matching runs if you need broader choices.</div>
+                                  <div>Step 5: Click Generate Decision Summary.</div>
+                                  <div>Step 6: Review ranked runs, insights, risks, and next steps.</div>
                                 </>
                               }
                             />
@@ -4658,6 +5960,125 @@ function IdeaGenerator({
                           Processing in progress — modal is temporarily locked.
                         </div>
                       ) : null}
+                      <div className="border-b border-white/10 bg-white/70 px-4 py-2 dark:bg-white/[0.03]">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openSavedPanel("generated", { forceOpen: true })}
+                            className={cx(
+                              "rounded-lg border px-2 py-1 text-[10px] font-semibold",
+                              savedPanelMode === "generated"
+                                ? "border-blue-500/60 bg-blue-600 text-white"
+                                : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                            )}
+                          >
+                            Generated
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSavedPanel("compare", { forceOpen: true })}
+                            className={cx(
+                              "rounded-lg border px-2 py-1 text-[10px] font-semibold",
+                              savedPanelMode === "compare"
+                                ? "border-blue-500/60 bg-blue-600 text-white"
+                                : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                            )}
+                          >
+                            Compare
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSavedPanel("decision", { forceOpen: true })}
+                            className={cx(
+                              "rounded-lg border px-2 py-1 text-[10px] font-semibold",
+                              savedPanelMode === "decision"
+                                ? "border-blue-500/60 bg-blue-600 text-white"
+                                : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                            )}
+                          >
+                            Decision
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSavedPanel("stakeholder", { forceOpen: true })}
+                            className={cx(
+                              "rounded-lg border px-2 py-1 text-[10px] font-semibold",
+                              savedPanelMode === "stakeholder"
+                                ? "border-amber-400/80 bg-amber-500/18 text-amber-900 dark:text-amber-100"
+                                : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/80 dark:hover:bg-white/10"
+                            )}
+                          >
+                            Execution Plan
+                          </button>
+                        </div>
+                      </div>
+                      <div className="border-b border-white/10 bg-white/65 px-4 py-2 dark:bg-white/[0.02]">
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto_auto] md:items-center">
+                          <input
+                            type="text"
+                            value={librarySearch}
+                            onChange={(e) => setLibrarySearch(e.target.value)}
+                            placeholder={librarySearchPlaceholder}
+                            className="h-8 rounded-lg border border-black/10 bg-white/75 px-2.5 text-[11px] outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                          />
+                          <select
+                            value={librarySort}
+                            onChange={(e) => setLibrarySort(e.target.value as "newest" | "oldest")}
+                            className="h-8 rounded-lg border border-black/10 bg-white/75 px-2.5 text-[11px] outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                          >
+                            <option value="newest">Newest first</option>
+                            <option value="oldest">Oldest first</option>
+                          </select>
+                          {savedPanelMode === "generated" ? (
+                            <select
+                              value={libraryGeneratedFilter}
+                              onChange={(e) => setLibraryGeneratedFilter(e.target.value as "all" | "industry")}
+                              className="h-8 rounded-lg border border-black/10 bg-white/75 px-2.5 text-[11px] outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                            >
+                              <option value="all">All runs</option>
+                              <option value="industry">Current industry</option>
+                            </select>
+                          ) : savedPanelMode === "compare" ? (
+                            <select
+                              value={libraryCompareFilter}
+                              onChange={(e) => setLibraryCompareFilter(e.target.value as "all" | "winner" | "tie")}
+                              className="h-8 rounded-lg border border-black/10 bg-white/75 px-2.5 text-[11px] outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                            >
+                              <option value="all">All comparisons</option>
+                              <option value="winner">With winner</option>
+                              <option value="tie">Ties only</option>
+                            </select>
+                          ) : savedPanelMode === "decision" ? (
+                            <select
+                              value={libraryDecisionFilter}
+                              onChange={(e) => setLibraryDecisionFilter(e.target.value as "all" | "single_run" | "multi_run")}
+                              className="h-8 rounded-lg border border-black/10 bg-white/75 px-2.5 text-[11px] outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                            >
+                              <option value="all">All summaries</option>
+                              <option value="single_run">Single-run</option>
+                              <option value="multi_run">Multi-run</option>
+                            </select>
+                          ) : (
+                            <select
+                              value={libraryStakeholderFilter}
+                              onChange={(e) =>
+                                setLibraryStakeholderFilter(
+                                  e.target.value as "all" | "go" | "conditional_go" | "no_go"
+                                )
+                              }
+                              className="h-8 rounded-lg border border-black/10 bg-white/75 px-2.5 text-[11px] outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                            >
+                              <option value="all">All verdicts</option>
+                              <option value="go">Go</option>
+                              <option value="conditional_go">Conditional Go</option>
+                              <option value="no_go">No-Go</option>
+                            </select>
+                          )}
+                        </div>
+                        <div className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+                          Showing {currentLibraryCount} item(s)
+                        </div>
+                      </div>
 
                       <div className="flex-1 min-h-0 flex flex-col">
                         <div
@@ -4666,7 +6087,7 @@ function IdeaGenerator({
                             "flex-1 min-h-0 overflow-y-auto p-4 space-y-3 ig-scrollbar",
                             (savedPanelMode === "compare" || savedPanelMode === "decision") && "flex flex-col",
                             savedPanelMode === "compare" && "pb-1",
-                            savedPanelMode === "decision" && "pb-0"
+                            savedPanelMode === "decision" && "pb-2"
                           )}
                         >
                           {savedPanelMode === "generated" ? (
@@ -4677,6 +6098,8 @@ function IdeaGenerator({
                             </div>
                           ) : savedResults.length === 0 ? (
                             <div className="text-xs text-gray-500 dark:text-gray-400">No saved results yet.</div>
+                          ) : filteredSavedResults.length === 0 ? (
+                            <div className="text-xs text-gray-500 dark:text-gray-400">No matches for current search/filter.</div>
                           ) : (
                             <>
                               {deletingAllGenerated ? (
@@ -4688,7 +6111,7 @@ function IdeaGenerator({
                                   </span>
                                 </div>
                               ) : null}
-                              {savedResults.map((item) => (
+                              {filteredSavedResults.map((item) => (
                                 <div
                                   key={item.id}
                                   className={cx(
@@ -4743,7 +6166,7 @@ function IdeaGenerator({
                           )
                         ) : savedPanelMode === "compare" ? (
                           <div className="flex flex-col gap-3 flex-1 min-h-0">
-                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 shrink-0">
                               <div className="flex items-center justify-between gap-2">
                                 <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Select two runs</div>
                                 <button
@@ -4842,6 +6265,8 @@ function IdeaGenerator({
                                   </div>
                                 ) : savedComparisons.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No comparisons yet.</div>
+                                ) : filteredSavedComparisons.length === 0 ? (
+                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">No matches for current search/filter.</div>
                                 ) : (
                                   <>
                                     {deletingAllComparisons ? (
@@ -4853,7 +6278,7 @@ function IdeaGenerator({
                                         </span>
                                       </div>
                                     ) : null}
-                                    {savedComparisons.map((item) => (
+                                    {filteredSavedComparisons.map((item) => (
                                       <div
                                         key={item.id}
                                         className={cx(
@@ -4919,97 +6344,141 @@ function IdeaGenerator({
                             </div>
                           </div>
                         ) : savedPanelMode === "decision" ? (
-                          <div className="flex flex-col gap-3 flex-1 min-h-0">
+                          <div className="flex flex-col gap-2.5">
                             <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
                               <div className="flex items-center justify-between gap-2">
-                                <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Select runs for the report</div>
+                                <div className="min-w-0">
+                                  <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Select runs for the report</div>
+                                  <div className="text-[10px] text-gray-500 dark:text-gray-400">
+                                    Visible: {decisionSelectableRunCount} • Selected: {decisionSelectedRunCount}
+                                  </div>
+                                </div>
                                 <button
                                   type="button"
                                   onClick={() => setDecisionSelectOpen((prev) => !prev)}
                                   className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
                                 >
-                                  {decisionSelectOpen ? "Hide" : "Show"}
+                                  {decisionSelectOpen ? "Hide setup" : "Select runs"}
                                 </button>
                               </div>
-                              <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-300">
-                                <input
-                                  type="checkbox"
-                                  checked={useAllRuns}
-                                  onChange={(e) => setUseAllRuns(e.target.checked)}
-                                  className="mt-0.5"
-                                />
-                                <span>Include all saved results.</span>
-                              </label>
                               {decisionSelectOpen ? (
-                                savedLoading ? (
-                                  <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
-                                    <Spinner className="h-3.5 w-3.5" />
-                                    <span>Loading saved runs…</span>
+                                <>
+                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                    Pick 1-5 runs for the report.
                                   </div>
-                                ) : savedResults.length === 0 ? (
-                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">No saved runs yet.</div>
-                                ) : (
-                                  <div className={cx("space-y-2", useAllRuns && "opacity-60 pointer-events-none")}>
-                                    {savedResults.map((item) => (
-                                      <label
-                                        key={item.id}
-                                        className="flex items-start gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={reportSelection.includes(item.id)}
-                                          onChange={() => toggleReportSelection(item.id)}
-                                        />
-                                        <div className="min-w-0">
-                                          <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
-                                            {formatSavedDate(item.created_at)}
-                                          </div>
-                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                            {item.industry || "Saved result"} · {formatModelList(item.models || [])}
-                                          </div>
-                                          <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                            {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
-                                          </div>
-                                        </div>
-                                      </label>
-                                    ))}
+                                  <div className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                                    {decisionMatchCurrentConfigOnly ? "Matching mode (recommended)" : "All runs mode"}
                                   </div>
-                                )
-                              ) : (
-                                <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                                  {useAllRuns
-                                    ? "All saved runs selected"
-                                    : reportSelection.length > 0
-                                    ? `${reportSelection.length} run(s) selected`
-                                    : "No runs selected"}
-                                </div>
-                              )}
+                                  <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                                    <input
+                                      type="checkbox"
+                                      checked={decisionMatchCurrentConfigOnly}
+                                      onChange={(e) => setDecisionMatchCurrentConfigOnly(e.target.checked)}
+                                      className="mt-0.5"
+                                    />
+                                    <span>Match current configuration (recommended) ({decisionMatchingRuleLabel}).</span>
+                                  </label>
+                                  <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                                    <input
+                                      type="checkbox"
+                                      checked={useAllRuns}
+                                      onChange={(e) => setUseAllRuns(e.target.checked)}
+                                      className="mt-0.5"
+                                    />
+                                    <span>Auto-select all visible runs.</span>
+                                  </label>
+                                  {decisionMatchCurrentConfigOnly ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => setDecisionMatchCurrentConfigOnly(false)}
+                                      className="text-[10px] font-semibold text-indigo-700 hover:text-indigo-800 dark:text-indigo-300"
+                                    >
+                                      Switch to all runs mode (include non-matching)
+                                    </button>
+                                  ) : null}
+                                  {savedLoading ? (
+                                    <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                      <Spinner className="h-3.5 w-3.5" />
+                                      <span>Loading saved runs…</span>
+                                    </div>
+                                  ) : savedResults.length === 0 ? (
+                                    <div className="text-[11px] text-gray-500 dark:text-gray-400">No saved runs yet.</div>
+                                  ) : decisionSelectableRuns.length === 0 ? (
+                                    <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                      No runs match current configuration. Switch to all runs mode to include non-matching runs.
+                                    </div>
+                                  ) : (
+                                    <div className={cx("space-y-1.5", useAllRuns && "opacity-60 pointer-events-none")}>
+                                      {decisionSelectableRuns.map((item) => (
+                                        <label
+                                          key={item.id}
+                                          className="flex items-start gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-1.5"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={reportSelection.includes(item.id)}
+                                            onChange={() => toggleReportSelection(item.id)}
+                                          />
+                                          <div className="min-w-0">
+                                            <div className="text-[11px] font-semibold text-gray-900 dark:text-white truncate">
+                                              {formatSavedDate(item.created_at)}
+                                            </div>
+                                            <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                              {item.industry || "Saved result"} · {formatModelList(item.models || [])}
+                                            </div>
+                                            <div className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                              {labelForPersona(item.tone || "")} · {formatConstraints(item.constraints || [])}
+                                            </div>
+                                          </div>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              ) : null}
                             </div>
 
-                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2 flex-1 min-h-0 flex flex-col">
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Saved decision summary reports</div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (savedReports.length === 0) return;
-                                    setDeleteAllReportsOpen(true);
-                                  }}
-                                  disabled={reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked}
-                                  aria-disabled={reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked}
-                                  title={savedReports.length === 0 ? "No reports to delete." : undefined}
-                                  className={cx(
-                                    "rounded-lg border px-2 py-0.5 text-[10px] font-semibold",
-                                    "border-rose-300/40 dark:border-rose-400/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
-                                    reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked
-                                      ? "opacity-60 cursor-not-allowed"
-                                      : "hover:bg-rose-500/20"
-                                  )}
-                                >
-                                  {deletingAllReports ? "Deleting..." : "Delete All"}
-                                </button>
+                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 p-3 space-y-2">
+                              <div className="space-y-1 pt-0.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-[11px] leading-5 font-semibold text-gray-700 dark:text-gray-300">
+                                    Saved decision summary reports
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => setDecisionSavedReportsOpen((prev) => !prev)}
+                                    className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                                  >
+                                    {decisionSavedReportsOpen ? "Hide list" : "Show list"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (savedReports.length === 0) return;
+                                      setDeleteAllReportsOpen(true);
+                                    }}
+                                    disabled={reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked}
+                                    aria-disabled={reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked}
+                                    title={savedReports.length === 0 ? "No reports to delete." : undefined}
+                                    className={cx(
+                                      "rounded-lg border px-2 py-0.5 text-[10px] font-semibold",
+                                      "border-rose-300/40 dark:border-rose-400/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+                                      reportsLoading || deletingAllReports || savedReports.length === 0 || savedPanelLocked
+                                        ? "opacity-60 cursor-not-allowed"
+                                        : "hover:bg-rose-500/20"
+                                    )}
+                                  >
+                                    {deletingAllReports ? "Deleting..." : "Delete All"}
+                                  </button>
+                                  </div>
+                                </div>
+                                <div className="text-[10px] text-gray-500 dark:text-gray-400">
+                                  Showing {filteredSavedReports.length} item(s)
+                                </div>
                               </div>
-                              <div className="flex-1 min-h-0 space-y-2 overflow-y-auto ig-scrollbar pr-1">
+                              {decisionSavedReportsOpen ? (
+                                <div className="space-y-1.5 pr-1">
                                 {reportsLoading ? (
                                   <div className="inline-flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
                                     <Spinner className="h-3.5 w-3.5" />
@@ -5017,6 +6486,8 @@ function IdeaGenerator({
                                   </div>
                                 ) : savedReports.length === 0 ? (
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">No reports yet.</div>
+                                ) : filteredSavedReports.length === 0 ? (
+                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">No matches for current search/filter.</div>
                                 ) : (
                                   <>
                                     {deletingAllReports ? (
@@ -5028,7 +6499,7 @@ function IdeaGenerator({
                                         </span>
                                       </div>
                                     ) : null}
-                                    {savedReports.map((item) => {
+                                    {filteredSavedReports.map((item) => {
                                       const runSummary = Array.isArray(item.run_ids)
                                         ? item.run_ids.map(formatRunLabel).join(" • ")
                                         : "";
@@ -5036,7 +6507,7 @@ function IdeaGenerator({
                                         <div
                                           key={item.id}
                                           className={cx(
-                                            "flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2 transition-all duration-300",
+                                            "flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-1.5 transition-all duration-300",
                                             deletingReportIds.includes(item.id) && "opacity-40 translate-x-1 scale-[0.99] animate-pulse"
                                           )}
                                         >
@@ -5056,34 +6527,7 @@ function IdeaGenerator({
                                           <div className="flex items-center gap-1.5 shrink-0">
                                             <button
                                               type="button"
-                                              onClick={async () => {
-                                                const startedAt = Date.now();
-                                                let loaded = false;
-                                                try {
-                                                  setSavedPanelMode(null);
-                                                  setResultsHydrating(true);
-                                                  setReportDownloadId(item.id);
-                                                  const jwt = await getToken(tokenOptions());
-                                                  if (!jwt) throw new Error("no_token");
-                                                  const res = await fetch(`/api/rank-reports/${item.id}`, {
-                                                    headers: { Authorization: `Bearer ${jwt}` },
-                                                  });
-                                                  if (!res.ok) throw new Error("load_report_failed");
-                                                  const data = await res.json();
-                                                  await ensureMinLoadingTime(startedAt, 600);
-                                                  setDecisionReport(data);
-                                                  setResultsView("decision");
-                                                  loaded = true;
-                                                } catch {
-                                                  pushNotice("Failed to load report.");
-                                                } finally {
-                                                  setResultsHydrating(false);
-                                                  if (loaded) {
-                                                    pushNotice("Decision summary report loaded.");
-                                                  }
-                                                  setReportDownloadId(null);
-                                                }
-                                              }}
+                                              onClick={() => void loadDecisionReport(item.id, true)}
                                               disabled={reportDownloadId === item.id || reportLoading || savedPanelLocked || deletingAllReports}
                                               className={cx(
                                                 "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
@@ -5113,7 +6557,8 @@ function IdeaGenerator({
                                     })}
                                   </>
                                 )}
-                              </div>
+                                </div>
+                              ) : null}
                             </div>
 
                             {isTokenLimited ? (
@@ -5138,8 +6583,12 @@ function IdeaGenerator({
                                   <div className="text-[11px] text-gray-500 dark:text-gray-400">
                                     No execution plans yet.
                                   </div>
+                                ) : filteredSavedStakeholderReports.length === 0 ? (
+                                  <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                                    No matches for current search/filter.
+                                  </div>
                                 ) : (
-                                  savedStakeholderReports.map((item) => (
+                                  filteredSavedStakeholderReports.map((item) => (
                                     <div
                                       key={item.id}
                                       className="flex items-center justify-between gap-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-2.5 py-2"
@@ -5223,8 +6672,23 @@ function IdeaGenerator({
                                   compareError
                                 ) : compareLoading ? (
                                   <span className="inline-flex items-center">
+                                    <svg
+                                      viewBox="0 0 20 20"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="1.5"
+                                      className="mr-1.5 h-3.5 w-3.5 animate-spin"
+                                      aria-hidden="true"
+                                    >
+                                      <path
+                                        d="M15.5 10a5.5 5.5 0 01-9.96 3.25M4.5 10a5.5 5.5 0 019.96-3.25"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                      <path d="M14.5 3.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d="M5.5 16.5v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
                                     Comparing selected runs
-                                    <LoadingDots className="ml-1.5" />
                                   </span>
                                 ) : compareReady ? (
                                   "Ready to compare."
@@ -5261,7 +6725,7 @@ function IdeaGenerator({
                                       <path d="M14.5 3.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
                                       <path d="M5.5 16.5v-3h3" strokeLinecap="round" strokeLinejoin="round" />
                                     </svg>
-                                    Comparing...
+                                    Comparing
                                   </>
                                 ) : (
                                   "Compare"
@@ -5336,7 +6800,7 @@ function IdeaGenerator({
                                     Generating...
                                   </>
                                 ) : (
-                                  "Decision Summary Report"
+                                  "Generate Decision Summary"
                                 )}
                               </button>
                               <div className="ml-auto hidden md:block text-[11px] leading-none text-gray-600 dark:text-gray-300 whitespace-nowrap">
@@ -5345,12 +6809,8 @@ function IdeaGenerator({
                                     Generating decision summary
                                     <LoadingDots className="ml-1.5" />
                                   </span>
-                                ) : useAllRuns ? (
-                                  "All saved runs selected"
-                                ) : reportSelection.length > 0 ? (
-                                  `${reportSelection.length} run(s) selected`
                                 ) : (
-                                  "No runs selected"
+                                  `Visible: ${decisionSelectableRunCount} • Selected: ${decisionSelectedRunCount}`
                                 )}
                               </div>
                             </div>
@@ -5392,55 +6852,90 @@ function IdeaGenerator({
         </div>
 
         <GlassCard className="min-h-[680px] p-4 lg:p-5">
-          <div className="space-y-2">
-            <div className="rounded-xl border border-black/[0.04] dark:border-white/[0.05] bg-transparent px-2.5 py-1">
+          <div className="space-y-1.5">
+            <div className="rounded-xl border border-black/[0.03] dark:border-white/[0.04] bg-transparent px-2 py-0.5">
               <div className="overflow-x-auto sm:overflow-x-visible ig-scrollbar">
-                <div className="inline-flex sm:flex sm:w-full sm:min-w-0 items-center gap-2 py-0.5">
-                  <span className="text-[11px] font-semibold text-gray-500/85 dark:text-gray-400/85">Decision Flow</span>
+                <div className="inline-flex sm:flex sm:w-full sm:min-w-0 items-start gap-1.5 py-0.5">
+                  <span className="text-[10px] font-semibold text-gray-500/75 dark:text-gray-400/75">
+                    {showStepGuidanceAssist ? "Flow overview" : "Flow status"}
+                  </span>
                   {flowSteps.map((step, idx) => {
-                    const isCurrent = resultsView === step.key;
-                    const isDone = flowCompletion[step.key];
+                    const isCurrent = activeFlowStepKey === step.key;
+                    const previousStepKey = idx > 0 ? flowSteps[idx - 1]?.key : null;
+                    const isBlockedInGuided = Boolean(
+                      isGuidedMode && idx > 0 && previousStepKey && !flowCompletion[previousStepKey]
+                    );
                     return (
                       <div key={step.key} className="inline-flex items-center">
-                        <div className="flex min-w-[132px] flex-col">
-                          <div className="inline-flex items-center gap-1.5">
+                        <div className="inline-flex items-start gap-1.5 min-w-[140px]">
+                          <div className="inline-flex items-start gap-1.5">
                             <span
                               className={cx(
                                 "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[9px] font-bold",
+                                isBlockedInGuided
+                                  ? "border-black/10 dark:border-white/10 text-gray-500/75 dark:text-gray-400/75"
+                                  : "",
                                 isCurrent
                                   ? step.key === "stakeholder"
                                     ? "border-amber-500/80 bg-amber-500/20 text-amber-900 dark:text-amber-100"
                                     : "border-blue-500/70 bg-blue-500/20 text-blue-800 dark:text-blue-200"
-                                  : isDone
-                                  ? "border-emerald-500/70 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                                   : "border-black/10 dark:border-white/10 text-gray-500 dark:text-gray-400"
                               )}
                             >
-                              {isDone && !isCurrent ? "✓" : idx + 1}
+                              {idx + 1}
                             </span>
-                            <span
-                              className={cx(
-                                "text-[11px] font-semibold",
-                                isCurrent
-                                  ? step.key === "stakeholder"
-                                    ? "text-amber-800 dark:text-amber-200"
-                                    : "text-blue-700 dark:text-blue-200"
-                                  : isDone
-                                  ? "text-emerald-700 dark:text-emerald-300"
-                                  : "text-gray-500/85 dark:text-gray-400/85"
-                              )}
-                            >
-                              {step.label}
-                            </span>
+                            <div>
+                              <span
+                                className={cx(
+                                  "inline-flex items-center gap-1 block text-[11px] font-semibold leading-tight",
+                                  isBlockedInGuided
+                                    ? "text-gray-500/80 dark:text-gray-400/80"
+                                    : isCurrent
+                                    ? step.key === "stakeholder"
+                                      ? "text-amber-800 dark:text-amber-200"
+                                      : "text-blue-700 dark:text-blue-200"
+                                    : shouldWarnDecisionStep && step.key === "decision"
+                                    ? "text-amber-700 dark:text-amber-300"
+                                    : "text-gray-500/85 dark:text-gray-400/85"
+                                )}
+                                title={
+                                  shouldWarnDecisionStep && step.key === "decision"
+                                    ? "Create a Decision Summary first."
+                                    : undefined
+                                }
+                              >
+                                {step.label}
+                                {shouldWarnDecisionStep && step.key === "decision" ? (
+                                  <span
+                                    aria-hidden="true"
+                                    className="inline-flex h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_0_2px_rgba(245,158,11,0.25)]"
+                                  />
+                                ) : null}
+                              </span>
+                              {isGuidedMode ? (
+                                <span className="mt-0.5 block text-[10px] leading-tight text-gray-500 dark:text-gray-400">
+                                  {step.guidedPrereq}
+                                </span>
+                              ) : null}
+                              {showStatusBadges && stepBadgeText(step.key) ? (
+                                <span
+                                  className="mt-0.5 inline-flex items-center rounded-full border border-white/15 bg-white/10 px-1.5 py-0.5 text-[9px] font-semibold text-gray-300"
+                                  title={stepBadgeTitle(step.key)}
+                                >
+                                  {stepBadgeText(step.key)}
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
-                          <span className="pl-5 text-[10px] text-gray-500/70 dark:text-gray-400/70">{step.hint}</span>
                         </div>
                         {idx < flowSteps.length - 1 ? (
                           <span
                             aria-hidden="true"
                             className={cx(
-                              "mx-2 block h-px w-5",
-                              isDone ? "bg-emerald-500/45" : "bg-white/15"
+                              "mx-1.5 block h-px w-4",
+                              isGuidedMode && guidanceBand === "high" && idx < currentStepIndex
+                                ? "bg-blue-500/25"
+                                : "bg-white/10"
                             )}
                           />
                         ) : null}
@@ -5449,15 +6944,236 @@ function IdeaGenerator({
                   })}
                 </div>
               </div>
+              <div className="mt-1 px-1 text-[10px] text-gray-500 dark:text-gray-400">
+                {guidedHintText}
+              </div>
+              {flowNavHint ? (
+                <div className="mt-0.5 px-1 text-[10px] text-gray-500 dark:text-gray-400">
+                  {flowNavHint}
+                </div>
+              ) : null}
+              {showStepGuidanceAssist && currentStepPrereqMissing ? (
+                <div className="mt-0.5 px-1 text-[10px] text-amber-700 dark:text-amber-300">
+                  To use this step, load from Library or create prerequisites.
+                </div>
+              ) : null}
+              {SHOW_GUIDEDNESS_DEBUG ? (
+                <div className="mt-1 px-1">
+                  <span className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    flow-debug: mode={flowMode} band={guidanceBand} global={guidednessGlobal} step={currentStepGuidedness}
+                  </span>
+                </div>
+              ) : null}
             </div>
+
+            <div className="rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-white/25 dark:bg-white/[0.02] px-2.5 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold text-gray-700 dark:text-gray-200">
+                  Step Guide: {currentStepGuide.title}
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleStepGuideForCurrentStep}
+                  className="inline-flex items-center gap-1 rounded-md border border-black/10 dark:border-white/10 bg-white/65 dark:bg-white/10 px-1.5 py-0.5 text-[9px] font-semibold text-gray-600 dark:text-gray-300 hover:bg-white/85 dark:hover:bg-white/15"
+                >
+                  {isStepGuideCollapsed ? "Expand" : "Collapse"}
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    className={cx("h-3 w-3 transition-transform", isStepGuideCollapsed ? "" : "rotate-180")}
+                    aria-hidden="true"
+                  >
+                    <path d="M5 8l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] text-gray-500 dark:text-gray-400">
+                {["What you do here", "What you get", "When you should use it", "To move forward"].map((label) => (
+                  <span key={label} className="font-medium">
+                    {label}
+                  </span>
+                ))}
+              </div>
+              {!isStepGuideCollapsed ? (
+                <div className="mt-1.5 grid gap-2.5 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div>
+                      <div className="text-[10px] font-semibold text-gray-700 dark:text-gray-200">What you do here</div>
+                      <ul className="mt-0.5 space-y-0.5 text-[10px] text-gray-600 dark:text-gray-300">
+                        {currentStepGuide.whatYouDo.map((item, idx) => (
+                          <li key={`guide-do-${idx}`} className="leading-snug">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-semibold text-gray-700 dark:text-gray-200">What you get</div>
+                      <ul className="mt-0.5 space-y-0.5 text-[10px] text-gray-600 dark:text-gray-300">
+                        {currentStepGuide.whatYouGet.map((item, idx) => (
+                          <li key={`guide-get-${idx}`} className="leading-snug">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div>
+                      <div className="text-[10px] font-semibold text-gray-700 dark:text-gray-200">When you should use it</div>
+                      <ul className="mt-0.5 space-y-0.5 text-[10px] text-gray-600 dark:text-gray-300">
+                        {currentStepGuide.whenToUse.map((item, idx) => (
+                          <li key={`guide-when-${idx}`} className="leading-snug">• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-semibold text-gray-700 dark:text-gray-200">To move forward</div>
+                      <ul className="mt-0.5 space-y-0.5 text-[10px] text-gray-600 dark:text-gray-300">
+                        {currentStepGuide.moveForward.map((item, idx) => (
+                          <li key={`guide-next-${idx}`} className="leading-snug">• {item}</li>
+                        ))}
+                      </ul>
+                      {currentStepGuide.ctaLabel ? (
+                        <div className="mt-1.5">
+                          <button
+                            type="button"
+                            onClick={handleStepGuideCta}
+                            disabled={compareNavigationLocked}
+                            className={cx(
+                              "inline-flex items-center rounded-lg px-2 py-0.5 text-[10px] font-semibold",
+                              compareNavigationLocked
+                                ? "bg-slate-400 text-white cursor-not-allowed"
+                                : "bg-indigo-600 text-white hover:bg-indigo-700"
+                            )}
+                          >
+                            {currentStepGuide.ctaLabel}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-xl border border-black/8 dark:border-white/8 bg-white/35 dark:bg-white/[0.03] px-3 py-1.5">
+              <div className="min-w-0">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500/90 dark:text-gray-400/90">
+                  {contextViewingLabel || `View · ${contextTitle}`}
+                </div>
+                {!contextViewingLabel ? (
+                  <div className="mt-0.5 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">{contextIdLabel}</div>
+                ) : null}
+                <div className="mt-0.5 text-[12px] font-semibold text-gray-900 dark:text-white break-words">{contextSummary}</div>
+                <div className="mt-0.5 text-[11px] text-gray-600 dark:text-gray-300 break-words">{contextSecondarySummary}</div>
+                {resultsView === "stakeholder" && !stakeholderReport ? (
+                  <div className="mt-2 inline-flex items-center gap-2">
+                    <span
+                      className={cx(
+                        "rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                        isReadyForExecutionPlan
+                          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                          : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                      )}
+                    >
+                      {executionReadinessText}
+                    </span>
+                    <span className="text-[10px] text-gray-500 dark:text-gray-400">{executionReadinessDetail}</span>
+                  </div>
+                ) : null}
+                {showComparePrereqHint ? (
+                  <div className="mt-2 inline-flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                      You need 2 runs to compare
+                    </span>
+                    <button
+                      type="button"
+                      onClick={focusGenerateIdeasAction}
+                      className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-white/90 dark:hover:bg-white/15"
+                    >
+                      Generate another run
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            {showNextStepCta && nextGuidedStep ? (
+              <div
+                className={cx(
+                  "rounded-xl px-3 py-2",
+                  compactNextStepCta
+                    ? "border border-black/10 dark:border-white/10 bg-white/40 dark:bg-white/[0.03]"
+                    : "border border-blue-500/25 bg-blue-500/8"
+                )}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div
+                    className={cx(
+                      "text-[11px]",
+                      compactNextStepCta ? "text-gray-700 dark:text-gray-200" : "text-blue-900 dark:text-blue-100"
+                    )}
+                  >
+                    {postGenerateCtaTitle}
+                    {postGenerateCtaSubtext ? (
+                      <div className="mt-0.5 text-[10px] text-gray-600 dark:text-gray-300">{postGenerateCtaSubtext}</div>
+                    ) : null}
+                    {canSkipCompareToDecision ? (
+                      <div className="mt-1">
+                        <button
+                          type="button"
+                          onClick={() => setResultsView("decision")}
+                          disabled={compareNavigationLocked}
+                          className={cx(
+                            "text-[10px] font-semibold underline underline-offset-2",
+                            compareNavigationLocked
+                              ? "text-gray-400 cursor-not-allowed"
+                              : "text-indigo-700 dark:text-indigo-300 hover:text-indigo-800 dark:hover:text-indigo-200"
+                          )}
+                        >
+                          Skip compare (use this run) → Decision Summary
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (needsSecondRunForGuidedCompare) {
+                        focusGenerateIdeasAction();
+                        return;
+                      }
+                      setResultsView(nextGuidedStep);
+                    }}
+                    disabled={compareNavigationLocked}
+                    className={cx(
+                      "rounded-lg px-2.5 py-1 text-[11px] font-semibold",
+                      compactNextStepCta
+                        ? compareNavigationLocked
+                          ? "bg-slate-300 text-white cursor-not-allowed"
+                          : "border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/10 text-gray-800 dark:text-gray-100 hover:bg-white/90 dark:hover:bg-white/15"
+                        : compareNavigationLocked
+                        ? "bg-slate-400 text-white cursor-not-allowed"
+                        : "bg-blue-600 text-white hover:bg-blue-700"
+                    )}
+                  >
+                    {needsSecondRunForGuidedCompare
+                      ? "Generate another run"
+                      : shouldShowPostGenerateCompareCta && nextGuidedStep === "insights"
+                      ? "Go to Compare Results"
+                      : nextStepActionLabel}
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex w-full lg:w-auto flex-wrap items-center gap-0.5 rounded-full border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-1">
                 <button
                   type="button"
                   onClick={() => setResultsView("generated")}
+                  disabled={compareNavigationLocked}
                   className={cx(
                     "rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    compareNavigationLocked ? "opacity-60 cursor-not-allowed" : "",
                     resultsView === "generated"
                       ? "bg-blue-600 text-white"
                       : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
@@ -5468,32 +7184,38 @@ function IdeaGenerator({
                 <button
                   type="button"
                   onClick={() => setResultsView("insights")}
+                  disabled={compareNavigationLocked}
                   className={cx(
                     "rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    compareNavigationLocked ? "opacity-60 cursor-not-allowed" : "",
                     resultsView === "insights"
                       ? "bg-blue-600 text-white"
                       : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
                   )}
                 >
-                  Compare Rank Results
+                  Compare Results
                 </button>
                 <button
                   type="button"
                   onClick={() => setResultsView("decision")}
+                  disabled={compareNavigationLocked}
                   className={cx(
                     "rounded-full px-3 py-1.5 text-xs font-semibold transition",
+                    compareNavigationLocked ? "opacity-60 cursor-not-allowed" : "",
                     resultsView === "decision"
                       ? "bg-blue-600 text-white"
                       : "text-gray-700 dark:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10"
                   )}
                 >
-                  Decision Summary Report
+                  Decision Summary
                 </button>
                 <button
                   type="button"
                   onClick={() => setResultsView("stakeholder")}
+                  disabled={compareNavigationLocked}
                   className={cx(
                     "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+                    compareNavigationLocked ? "opacity-60 cursor-not-allowed" : "",
                     resultsView === "stakeholder"
                       ? "bg-amber-500/18 dark:bg-amber-400/20 text-amber-900 dark:text-amber-100 border-amber-400/90 dark:border-amber-300/90"
                       : "text-gray-700 dark:text-gray-200 border-amber-500/70 dark:border-amber-400/70 hover:bg-amber-500/12 dark:hover:bg-amber-400/12 hover:text-amber-900 dark:hover:text-amber-100 active:bg-amber-500/18 dark:active:bg-amber-400/18"
@@ -5502,89 +7224,33 @@ function IdeaGenerator({
                   Execution Plan
                 </button>
               </div>
-              <div className="flex items-center gap-2 lg:shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  if (resultsView === "generated") {
-                    if (canClearGenerated) clearGeneratedResults();
-                  } else if (resultsView === "insights") {
-                    if (canClearCompare) clearCompareResults();
-                  } else if (resultsView === "decision") {
-                    if (canClearDecision) clearDecisionReport();
-                  } else if (resultsView === "stakeholder") {
-                    if (canClearStakeholder) clearStakeholderReport();
-                  }
-                }}
-                disabled={
-                  resultsView === "generated"
-                    ? !canClearGenerated
-                    : resultsView === "insights"
-                    ? !canClearCompare
-                    : resultsView === "decision"
-                    ? !canClearDecision
-                    : !canClearStakeholder
-                }
-                className={cx(
-                  "rounded-full px-3 py-1.5 text-xs font-semibold",
-                  "border border-black/10 dark:border-white/10",
-                  "bg-white/70 dark:bg-white/5 text-gray-700 dark:text-gray-200",
-                  resultsView === "generated"
-                    ? (canClearGenerated ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
-                    : resultsView === "insights"
-                    ? (canClearCompare ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
-                    : resultsView === "decision"
-                    ? (canClearDecision ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
-                    : (canClearStakeholder ? "hover:bg-white/90 dark:hover:bg-white/10" : "opacity-60 cursor-not-allowed")
-                )}
-              >
-                Clear
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (canDeleteCompare && compareResult?.comparison_id) {
-                    setDeleteComparisonOpen(true);
-                  } else if (canDeleteGenerated && loadedSavedMeta) {
-                    setDeleteTarget(loadedSavedMeta);
-                  } else if (canDeleteDecision) {
-                    setDeleteDecisionOpen(true);
-                  } else if (canDeleteStakeholder) {
-                    setDeleteStakeholderOpen(true);
-                  }
-                }}
-                disabled={
-                  resultsView === "insights"
-                    ? !canDeleteCompare
-                    : resultsView === "decision"
-                    ? !canDeleteDecision
-                    : resultsView === "stakeholder"
-                    ? !canDeleteStakeholder
-                    : !canDeleteGenerated
-                }
-                className={cx(
-                  "rounded-full px-3 py-1.5 text-xs font-semibold",
-                  "border border-rose-500/40 text-rose-200 bg-rose-500/10",
-                  resultsView === "insights"
-                    ? (canDeleteCompare ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
-                    : resultsView === "decision"
-                    ? (canDeleteDecision ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
-                    : resultsView === "stakeholder"
-                    ? (canDeleteStakeholder ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
-                    : (canDeleteGenerated ? "hover:bg-rose-500/20" : "opacity-60 cursor-not-allowed")
-                )}
-              >
-                {resultsView === "insights" && deletingComparisonId && compareResult?.comparison_id === deletingComparisonId
-                  ? "Deleting..."
-                  : resultsView === "decision" && deletingDecisionId && decisionReport?.id === deletingDecisionId
-                  ? "Deleting..."
-                  : resultsView === "stakeholder" && deletingStakeholderId && stakeholderReport?.id === deletingStakeholderId
-                  ? "Deleting..."
-                  : resultsView === "generated" && deletingSavedId && loadedSavedMeta?.id === deletingSavedId
-                  ? "Deleting..."
-                  : "Delete"}
-              </button>
-              </div>
+              {currentCanClear ? (
+                <div className="flex items-center gap-2 lg:shrink-0">
+                  {currentCanClear ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (resultsView === "generated") {
+                          clearGeneratedResults();
+                        } else if (resultsView === "insights") {
+                          clearCompareResults();
+                        } else if (resultsView === "decision") {
+                          clearDecisionReport();
+                        } else if (resultsView === "stakeholder") {
+                          clearStakeholderReport();
+                        }
+                      }}
+                      disabled={compareNavigationLocked}
+                      className={cx(
+                        "rounded-full px-3 py-1.5 text-xs font-semibold border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10",
+                        compareNavigationLocked ? "opacity-60 cursor-not-allowed" : ""
+                      )}
+                    >
+                      Clear view
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
           {hasResults && isStorageLimited ? (
@@ -5598,19 +7264,76 @@ function IdeaGenerator({
             ) : resultsView === "generated" ? (
               <div className="mt-4 space-y-5">
                 {!isLoading && Object.keys(results).length === 0 && (
-                  <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
-                    <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
-                      <p className="text-sm font-semibold text-gray-900 dark:text-white">Your generated ideas will appear here</p>
-                      <p className="text-sm text-gray-700 dark:text-gray-200">
-                        Set your Target Industry, constraints, AI persona, and model selection, then click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Ideas</span>.
+                  <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-8 text-center">
+                    <div className="mx-auto max-w-md text-center space-y-1">
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                        {generatedScenarioFresh
+                          ? "Start by generating ideas"
+                          : "No run selected"}
+                      </p>
+                      <p className="text-[13px] text-gray-700 dark:text-gray-200">
+                        {generatedScenarioFresh ? (
+                          <>
+                            Set Industry, Persona, Constraints, and Models, then click{" "}
+                            <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Ideas</span>.
+                          </>
+                        ) : (
+                          "Load a saved run from Library to view its generated results, or generate a new run."
+                        )}
                       </p>
                     </div>
-                    <div className="mt-3 text-xs text-gray-600 dark:text-gray-300">
-                      To load an older run, open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Generated Results</span>.
+                    <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                      {generatedScenarioFresh ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void generateIdeas()}
+                            disabled={isLoading || isTokenLimited || isApiLimited}
+                            className={cx(
+                              "rounded-lg px-3 py-1.5 text-xs font-semibold text-white",
+                              isLoading || isTokenLimited || isApiLimited
+                                ? "bg-slate-400 cursor-not-allowed"
+                                : "bg-blue-600 hover:bg-blue-700"
+                            )}
+                          >
+                            {isLoading ? "Generating..." : "Generate Ideas"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setGeneratedQuickStartOpen(true)}
+                            className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 hover:underline"
+                          >
+                            Show Quick start
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openLibraryForView("generated")}
+                            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                          >
+                            Load from Library
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void generateIdeas()}
+                            disabled={isLoading || isTokenLimited || isApiLimited}
+                            className={cx(
+                              "rounded-lg px-3 py-1.5 text-xs font-semibold",
+                              isLoading || isTokenLimited || isApiLimited
+                                ? "bg-slate-400 text-white cursor-not-allowed"
+                                : "border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                            )}
+                          >
+                            {isLoading ? "Generating..." : "Generate Ideas"}
+                          </button>
+                        </>
+                      )}
                     </div>
-                    <div className="mt-6 text-left">
+                    <div className="mt-5 text-left">
                       <div className="mx-auto max-w-lg">
-                        {!generatedQuickStartOpen ? (
+                        {generatedScenarioFresh && !generatedQuickStartOpen ? (
                           <div className="mx-auto max-w-md text-center">
                             <button
                               type="button"
@@ -5620,7 +7343,7 @@ function IdeaGenerator({
                               Show Quick start
                             </button>
                           </div>
-                        ) : (
+                        ) : generatedScenarioFresh ? (
                         <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
                           <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Quick start</div>
                           <div className="mt-2 text-center">
@@ -5662,7 +7385,7 @@ function IdeaGenerator({
                             <span className="ml-2 text-gray-800 dark:text-gray-200">— adjust and rerun anytime</span>
                           </div>
                         </div>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -5670,7 +7393,7 @@ function IdeaGenerator({
 
                 {!isLoading && Object.keys(results).length > 0 && (
                   <div className="space-y-5">
-                    {rankResult ? (
+                    {showRankingCard && rankResult ? (
                       <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-4">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
@@ -5692,9 +7415,9 @@ function IdeaGenerator({
                             </button>
                           ) : null}
                         </div>
-                        {rankResult.skipped ? (
+                        {rankResult?.skipped ? (
                           <div className="mt-3 text-[13px] text-gray-500 dark:text-gray-400">
-                            {rankResult.reason || "Ranking not available for a single model."}
+                            {rankResult.reason || "Ranking is temporarily unavailable for this run."}
                           </div>
                         ) : (
                           <>
@@ -5746,8 +7469,20 @@ function IdeaGenerator({
                         )}
                       </div>
                     ) : null}
+                    {rankUnavailableForSingleModel ? (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/[0.04] px-3 py-2 text-[12px] text-gray-700 dark:text-gray-300">
+                        Select 2+ models to enable ranking.
+                        <button
+                          type="button"
+                          onClick={() => aiModelsRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                          className="ml-2 font-semibold text-indigo-700 dark:text-indigo-300 hover:underline"
+                        >
+                          Select models
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="flex flex-wrap gap-2">
-                      {Object.keys(results).map((modelId) => {
+                      {Object.keys(sanitizedResults).map((modelId) => {
                         const label = labelForModelId(modelId);
                         const active = activeTab === modelId;
 
@@ -5771,7 +7506,7 @@ function IdeaGenerator({
                     </div>
 
                     <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-5 lg:p-6">
-                      {Object.entries(results).map(([modelId, htmlContent]) => (
+                      {Object.entries(sanitizedResults).map(([modelId, htmlContent]) => (
                         <div key={modelId} className={activeTab === modelId ? "block" : "hidden"}>
                           <div className={normalizedRichTextClass} dangerouslySetInnerHTML={{ __html: htmlContent }} />
                         </div>
@@ -5784,24 +7519,155 @@ function IdeaGenerator({
               <div className="mt-4 space-y-4">
                 {!showInsights ? (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
-                    <div className="mx-auto max-w-md text-left space-y-4">
-                      <div className="rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
-                        <p className="text-sm font-semibold text-gray-900 dark:text-white">No comparison insights yet</p>
-                      <p className="text-sm text-gray-700 dark:text-gray-200">
-                          Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Compare Results</span>, select two runs, and click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare</span>.
-                      </p>
+                    <div className="mx-auto w-full max-w-4xl text-left space-y-4">
+                      <div className="mx-auto w-full max-w-2xl rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
+                        <p className="text-sm font-semibold text-gray-900 dark:text-white">No comparison loaded</p>
+                        <p className="text-sm text-gray-700 dark:text-gray-200">
+                          Load a saved comparison or select two runs to generate a new comparison.
+                        </p>
+                        <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openLibraryForView("insights")}
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                          >
+                            Load from Library
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (savedResults.length >= 2) {
+                                focusCompareBuilderAction();
+                                return;
+                              }
+                              focusGenerateIdeasAction();
+                            }}
+                            className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                          >
+                            {savedResults.length >= 2 ? "Compare two runs" : "Generate another run"}
+                          </button>
+                        </div>
+                        {savedResults.length < 2 ? (
+                          <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                            You need at least 2 runs to compare.
+                          </p>
+                        ) : null}
                       </div>
 
-                      <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4 text-left">
-                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Compare Results quick tips</div>
+                      {savedResults.length >= 2 ? (
+                        <div
+                          ref={compareBuilderRef}
+                          className="mx-auto w-full max-w-2xl rounded-xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 px-5 py-5"
+                        >
+                          <div className="text-sm font-semibold text-gray-900 dark:text-white">Compare builder</div>
+                          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                            Pick two runs with the same Industry, Persona, Constraints, and model set.
+                          </div>
+                          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] md:items-center">
+                            <select
+                              ref={compareRunASelectRef}
+                              value={compareRunA ?? ""}
+                              onChange={(e) => updateCompareSelection("a", e.target.value)}
+                              className="min-w-0 w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-2.5 py-2 text-xs text-gray-800 dark:text-gray-100"
+                            >
+                              <option value="">Select Run A</option>
+                              {savedResults.map((item) => (
+                                <option key={`compare-a-inline-${item.id}`} value={item.id}>
+                                  {formatRunLabel(item.id)}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => setCompareSelection((prev) => ({ runA: prev.runB, runB: prev.runA }))}
+                              disabled={!compareRunA && !compareRunB}
+                              className={cx(
+                                "rounded-lg border border-black/10 dark:border-white/10 px-3 py-2 text-xs font-semibold w-full md:w-auto",
+                                !compareRunA && !compareRunB
+                                  ? "opacity-60 cursor-not-allowed"
+                                  : "bg-white/70 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                              )}
+                              aria-label="Swap Run A and Run B"
+                              title="Swap runs"
+                            >
+                              Swap
+                            </button>
+                            <select
+                              value={compareRunB ?? ""}
+                              onChange={(e) => updateCompareSelection("b", e.target.value)}
+                              className="min-w-0 w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-2.5 py-2 text-xs text-gray-800 dark:text-gray-100"
+                            >
+                              <option value="">Select Run B</option>
+                              {savedResults.map((item) => (
+                                <option key={`compare-b-inline-${item.id}`} value={item.id}>
+                                  {formatRunLabel(item.id)}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => void runCompare()}
+                              disabled={!compareReady || compareLoading || isTokenLimited}
+                              className={cx(
+                                "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white w-full md:w-auto",
+                                !compareReady || compareLoading || isTokenLimited || Boolean(compareSelectionMismatch)
+                                  ? "bg-slate-400 cursor-not-allowed"
+                                  : "bg-emerald-600 hover:bg-emerald-700"
+                              )}
+                            >
+                              {compareLoading ? (
+                                <>
+                                  <svg
+                                    viewBox="0 0 20 20"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.5"
+                                    className="h-3.5 w-3.5 animate-spin"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      d="M15.5 10a5.5 5.5 0 01-9.96 3.25M4.5 10a5.5 5.5 0 019.96-3.25"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                    <path d="M14.5 3.5v3h-3" strokeLinecap="round" strokeLinejoin="round" />
+                                    <path d="M5.5 16.5v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                  Comparing
+                                </>
+                              ) : (
+                                "Compare"
+                              )}
+                            </button>
+                          </div>
+                          {compareSelectionMismatch && !compareError ? (
+                            <div className="mt-2 rounded-lg border border-rose-300/40 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300">
+                              {compareSelectionMismatch}
+                            </div>
+                          ) : null}
+                          {compareError ? (
+                            <div className="mt-2 rounded-lg border border-rose-300/40 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300">
+                              {compareConfigMismatch
+                                ? COMPARE_CONFIG_MISMATCH_MESSAGE
+                                : compareError}
+                            </div>
+                          ) : null}
+                          {selectedCompareRunA || selectedCompareRunB ? (
+                            <div className="mt-2 text-[11px] text-gray-600 dark:text-gray-300">
+                              {selectedCompareRunA ? `A: ${formatRunLabel(selectedCompareRunA.id)}` : "A: Not selected"} ·{" "}
+                              {selectedCompareRunB ? `B: ${formatRunLabel(selectedCompareRunB.id)}` : "B: Not selected"}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      <div className="mx-auto w-full max-w-2xl rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4 text-left">
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Compare quick tips</div>
                         <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
                           {[
-                            <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare Results</span> from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span>.</>,
-                            "Click Show under Select two runs.",
-                            <>Choose <span className="font-semibold text-indigo-700 dark:text-indigo-300">Run A</span> and <span className="font-semibold text-indigo-700 dark:text-indigo-300">Run B</span> from the list.</>,
-                            "Make sure both runs used the same Industry, Persona, and Constraints.",
-                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare</span> to generate the Diff Insight.</>,
-                            "Review the winner and key changes, then export if needed.",
+                            <>Select <span className="font-semibold text-indigo-700 dark:text-indigo-300">Run A</span> and <span className="font-semibold text-indigo-700 dark:text-indigo-300">Run B</span>.</>,
+                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Compare</span>.</>,
+                            "Review the diff, winner, and key changes.",
                           ].map((tip, idx) => (
                             <div key={idx} className="flex items-center gap-2">
                               <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-[11px] font-semibold text-white/95 shadow-sm">
@@ -5811,6 +7677,21 @@ function IdeaGenerator({
                             </div>
                           ))}
                         </div>
+                        <div className="mt-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => setCompareQuickTipsExpanded((prev) => !prev)}
+                            className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 hover:underline"
+                          >
+                            {compareQuickTipsExpanded ? "Hide extra tips" : "Show extra tips"}
+                          </button>
+                        </div>
+                        {compareQuickTipsExpanded ? (
+                          <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                            <div>• Keep Industry, Persona, and Constraints aligned for fair comparison.</div>
+                            <div>• Save useful comparisons so they can feed Decision Summary.</div>
+                          </div>
+                        ) : null}
                         <div className="mt-3 rounded-lg bg-indigo-600/15 px-3 py-2 text-xs font-semibold text-indigo-900 dark:text-indigo-100">
                           Diff Mode compares two saved runs with the same configuration using their top-ranked outputs, highlights what changed, and explains which one is stronger.
                         </div>
@@ -5821,6 +7702,57 @@ function IdeaGenerator({
 
                 {compareResult ? (
                   <>
+                    {showCompareDecisionHandoff ? (
+                      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
+                        <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
+                          Winner selected. Next: Decision Summary
+                        </div>
+                        <div className="mt-1 text-xs text-emerald-900/85 dark:text-emerald-100/85">
+                          Create a Decision Summary to finalize the recommendation. Execution Plan is generated from it.
+                        </div>
+                        <div className="mt-1 text-[11px] text-emerald-900/80 dark:text-emerald-100/80">
+                          Decision summaries for this comparison: {compareDecisionCount}
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (latestCompareDecisionReport?.id) {
+                                void loadDecisionReport(latestCompareDecisionReport.id, false);
+                                setResultsView("decision");
+                                return;
+                              }
+                              startDecisionFromCompare({ openLibrary: true });
+                            }}
+                            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                          >
+                            {latestCompareDecisionReport?.id
+                              ? `Open Decision Summary (D${latestCompareDecisionReport.id})`
+                              : "Generate Decision Summary"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openLibraryForView("decision")}
+                            className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                          >
+                            Load from Library
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!currentCompareId) return;
+                              setDismissedCompareHandoffIds((prev) =>
+                                prev.includes(currentCompareId) ? prev : [...prev, currentCompareId]
+                              );
+                            }}
+                            title="You’ll need a Decision Summary to generate an Execution Plan."
+                            className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-white/5 p-4">
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
@@ -5828,7 +7760,7 @@ function IdeaGenerator({
                           <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-gray-600 dark:text-gray-300">
                             Compared top-ranked outputs
                           </span>
-                          <HelpTooltip content="Diff Mode compares two saved runs with the same configuration by using the top-ranked output from each run. It highlights key changes, explains why one is stronger, and saves the insight for later. Use Saved Results → Compare Results to generate." />
+                          <HelpTooltip content="Diff Mode compares two saved runs with the same configuration by using the top-ranked output from each run. It highlights key changes, explains why one is stronger, and saves the insight for later. Use Library → Compare Results to generate." />
                         </div>
                         <div className="flex items-center gap-2 text-[12px]">
                           <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">
@@ -5925,7 +7857,7 @@ function IdeaGenerator({
                               </div>
                               <div
                                 className={cx(normalizedRichTextClass, "mt-3")}
-                                dangerouslySetInnerHTML={{ __html: top.output_html }}
+                                dangerouslySetInnerHTML={{ __html: sanitizeInjectedHtml(top.output_html) }}
                               />
                             </div>
                           );
@@ -5941,24 +7873,64 @@ function IdeaGenerator({
                 {!decisionReport ? (
                   <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center">
                     <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
-                      <p className="text-sm font-semibold text-gray-900 dark:text-white">No decision report loaded</p>
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">No decision summary loaded</p>
                       <p className="text-sm text-gray-700 dark:text-gray-200">
-                        Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Decision Summary Report</span> to load or generate a report.
+                        Load an existing decision summary or generate one from saved runs.
                       </p>
+                      <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDecisionMatchCurrentConfigOnly(true);
+                            openLibraryForView("decision");
+                          }}
+                          disabled={!decisionCanOpenLibrary}
+                          title={!decisionCanOpenLibrary ? "No saved runs or summaries yet. Generate a run first." : undefined}
+                          className={cx(
+                            "rounded-lg px-3 py-1.5 text-xs font-semibold text-white",
+                            !decisionCanOpenLibrary
+                              ? "bg-indigo-600/40 cursor-not-allowed opacity-70"
+                              : "bg-indigo-600 hover:bg-indigo-700"
+                          )}
+                        >
+                          Load from Library
+                        </button>
+                        <button
+                          type="button"
+                          onClick={focusGenerateIdeasAction}
+                          className={cx(
+                            "rounded-lg px-3 py-1.5 text-xs font-semibold",
+                            !decisionCanOpenLibrary
+                              ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                              : "border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                          )}
+                        >
+                          Generate matching run
+                        </button>
+                      </div>
+                      <div className="pt-2">
+                        <span
+                          className={cx(
+                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                            decisionReadySignal
+                              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                              : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          )}
+                        >
+                          {decisionReadinessText}
+                        </span>
+                        <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">{decisionReadinessDetail}</div>
+                      </div>
                     </div>
 
                     <div className="mt-6 text-left">
                       <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
-                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Decision Summary quick tips</div>
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Decision quick tips</div>
                         <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
                           {[
-                            <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Results</span>.</>,
-                            <>Click Show under <span className="font-semibold text-indigo-700 dark:text-indigo-300">Select runs for the report</span>.</>,
-                            "Choose 1–5 runs you want to summarize.",
-                            <>Make sure all selected runs share the same <span className="font-semibold text-indigo-700 dark:text-indigo-300">Industry</span>.</>,
-                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> to generate the summary.</>,
-                            "Review ranked runs, insights, risks, and next steps.",
-                            "Export or email the report if needed.",
+                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Load from Library</span> (or <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate matching run</span> first).</>,
+                            "Select 1–5 runs for your report.",
+                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Decision Summary</span>.</>,
                           ].map((tip, idx) => (
                             <div key={idx} className="flex items-center gap-2">
                               <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-[11px] font-semibold text-white/95 shadow-sm">
@@ -5968,9 +7940,6 @@ function IdeaGenerator({
                             </div>
                           ))}
                         </div>
-                        <div className="mt-3 rounded-lg bg-indigo-600/15 px-3 py-2 text-xs font-semibold text-indigo-900 dark:text-indigo-100">
-                          The Decision Summary Report ranks the selected runs, highlights the best choice, and packages insights, risks, and next steps in one shareable summary.
-                        </div>
                       </div>
                     </div>
                   </div>
@@ -5979,18 +7948,34 @@ function IdeaGenerator({
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <div className="flex items-center gap-2">
-                          <div className="text-[15px] font-semibold text-gray-900 dark:text-white">Decision Summary Report</div>
-                          <HelpTooltip content="Decision Summary Report ranks selected runs, highlights the best choice, and packages insights, risks, and next steps in one shareable summary." />
+                          <div className="text-[15px] font-semibold text-gray-900 dark:text-white">Decision Summary</div>
+                          <HelpTooltip content="Decision Summary ranks selected runs, highlights the best choice, and packages insights, risks, and next steps in one shareable summary." />
                         </div>
                         <div className="mt-1 text-[13px] text-gray-600 dark:text-gray-300">
                           Saved: {formatSavedDate(decisionReport.created_at)}
                         </div>
+                        {Array.isArray(decisionReport.run_ids) && decisionReport.run_ids.length ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px]">
+                            <span className="text-gray-500 dark:text-gray-400">Derived from:</span>
+                            {decisionReport.run_ids.map((runId) => (
+                              <button
+                                key={`decision-source-${runId}`}
+                                type="button"
+                                onClick={() => void loadSavedResult(runId)}
+                                className="rounded-full border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-2 py-0.5 font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-white/90 dark:hover:bg-white/10"
+                              >
+                                {formatRunLabel(runId)}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={openExecutionPlanPicker}
                           disabled={stakeholderGenerating || reportLoading}
+                          title="Creates a new execution plan artifact (for example: Plan v1) from this decision summary."
                           className={cx(
                             "inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/10 px-3 py-1.5 text-[12px] font-semibold",
                             stakeholderGenerating || reportLoading
@@ -6118,21 +8103,91 @@ function IdeaGenerator({
                     <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                       <p className="text-sm font-semibold text-gray-900 dark:text-white">No execution plan loaded</p>
                       <p className="text-sm text-gray-700 dark:text-gray-200">
-                        Generate from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> or load from <span className="font-semibold text-indigo-700 dark:text-indigo-300">Saved Runs &amp; Reports → Execution Plan</span>.
+                        Generate from a decision summary or load an existing execution plan.
                       </p>
+                      {resultsView === "stakeholder" && currentCompareId && compareSourceRunIds.length >= 2 && !hasDecisionContext ? (
+                        <div className="pt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                          Source: Compare C{currentCompareId} ({formatRunLabel(compareSourceRunIds[0])} vs {formatRunLabel(compareSourceRunIds[1])})
+                        </div>
+                      ) : null}
+                      <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                        {resultsView === "stakeholder" && currentCompareId && compareSourceRunIds.length >= 2 && !hasDecisionContext ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => startDecisionFromCompare({ openLibrary: true })}
+                              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+                            >
+                              Generate Decision Summary from this Compare
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openLibraryForView("stakeholder")}
+                              className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                            >
+                              Load from Library
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setResultsView("decision");
+                                if (!hasDecisionContext && executionCandidateDecisionCount > 0) {
+                                  openLibraryForView("decision");
+                                }
+                              }}
+                              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+                            >
+                              {hasDecisionContext
+                                ? "Generate Execution Plan"
+                                : executionCandidateDecisionCount > 0
+                                ? "Load Decision Summary"
+                                : "Go to Decision Summary"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openLibraryForView("stakeholder")}
+                              className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
+                            >
+                              Load from Library
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      <div className="pt-2">
+                        <span
+                          className={cx(
+                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                            isReadyForExecutionPlan
+                              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                              : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                          )}
+                        >
+                          {executionReadinessText}
+                        </span>
+                        <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">{executionReadinessDetail}</div>
+                        {!isReadyForExecutionPlan ? (
+                          <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+                            Next step:{" "}
+                            <button
+                              type="button"
+                              onClick={() => setResultsView("decision")}
+                              className="font-semibold text-indigo-700 dark:text-indigo-300 hover:underline"
+                            >
+                              Generate Decision Summary
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
 
                     <div className="mt-6 text-left">
                       <div className="mx-auto max-w-md rounded-xl bg-white/60 dark:bg-white/5 px-4 py-4">
-                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Execution Plan quick tips</div>
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white text-center">Execution quick tips</div>
                         <div className="mt-3 space-y-1.5 text-sm text-gray-800 dark:text-gray-100">
-                          {[
-                            <>Open <span className="font-semibold text-indigo-700 dark:text-indigo-300">Decision Summary Report</span> tab.</>,
-                            <>Generate or load a decision report first.</>,
-                            <>Click <span className="font-semibold text-indigo-700 dark:text-indigo-300">Generate Execution Plan</span>.</>,
-                            "Review execution plan, resources, cost, and profit forecast.",
-                            "Use Saved Results → Execution Plan to reload previous plans.",
-                          ].map((tip, idx) => (
+                          {visibleExecutionQuickTips.map((tip, idx) => (
                             <div key={idx} className="flex items-center gap-2">
                               <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-[11px] font-semibold text-white/95 shadow-sm">
                                 {idx + 1}
@@ -6141,6 +8196,17 @@ function IdeaGenerator({
                             </div>
                           ))}
                         </div>
+                        {executionQuickTips.length > 3 ? (
+                          <div className="mt-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setExecutionQuickTipsExpanded((prev) => !prev)}
+                              className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 hover:underline"
+                            >
+                              {executionQuickTipsExpanded ? "Hide extra tips" : "Show extra tips"}
+                            </button>
+                          </div>
+                        ) : null}
                         <div className="mt-3 rounded-lg bg-indigo-600/15 px-3 py-2 text-xs font-semibold text-indigo-900 dark:text-indigo-100">
                           Execution Plan is your Investment Readiness Assessment: it consolidates the Go / Conditional Go / No-Go verdict, financial gates, budget and unit economics, monthly projection, scenario outcomes, sensitivity checks, resource plan, risk register, and required next actions before stakeholder approval.
                         </div>
@@ -6168,6 +8234,18 @@ function IdeaGenerator({
                         <div className="mt-1 text-[13px] text-gray-600 dark:text-gray-300">
                           Saved: {formatSavedDate(stakeholderReport.created_at)} · Scenario: {stakeholderReport.scenario_profile}
                         </div>
+                        {stakeholderReport.source_type === "decision_report" && stakeholderReport.source_id ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[12px]">
+                            <span className="text-gray-500 dark:text-gray-400">Derived from:</span>
+                            <button
+                              type="button"
+                              onClick={() => void loadDecisionReport(Number(stakeholderReport.source_id))}
+                              className="rounded-full border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-2 py-0.5 font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-white/90 dark:hover:bg-white/10"
+                            >
+                              Decision Summary #{stakeholderReport.source_id}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-gray-600 dark:text-gray-300">

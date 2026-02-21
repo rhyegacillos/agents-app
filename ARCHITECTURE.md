@@ -2,6 +2,23 @@
 
 This document describes the architecture that is **actually implemented** in this repository (`ideagen-saas-aws`), based on the current source code.
 
+## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+
+This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+
+- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
+- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
+- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
+- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
+- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
+- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
+- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
+- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
+- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
+- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
+- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+
+
 It is intentionally detailed and code-aligned, and is written as a technical reference for engineering, debugging, onboarding, and production hardening.
 
 ---
@@ -1510,6 +1527,65 @@ Generated tab includes:
 - optional advanced settings hints.
 
 Compare and Decision tabs mirror this pattern with feature-specific quick-tip steps.
+
+### 10.10b Decision Flow adaptive mode + hysteresis
+
+The flow strip above the tab content uses an adaptive guidance mode:
+
+- `guided` mode for stronger onboarding hints and next-step prompts
+- `status` mode for compact artifact/status signaling
+
+Switching is controlled by a global guidedness score with hysteresis:
+
+- `GUIDEDNESS_SWITCH_TO_STATUS = 40`
+- `GUIDEDNESS_SWITCH_TO_GUIDED = 60`
+
+Applied behavior:
+
+- when current mode is guided, switch to status only if `guidednessGlobal <= 40`
+- when current mode is status, switch to guided only if `guidednessGlobal >= 60`
+- within `41-59`, mode does not change
+
+This prevents rapid mode toggling around a single threshold and keeps UX stable.
+
+### 10.10c Persistent Step Guide panel (all tabs)
+
+A structured Step Guide card is rendered directly below the flow strip in every workspace tab.
+
+Shared structure:
+
+- What you do here
+- What you get
+- When you should use it
+- To move forward
+
+Per-step CTA support:
+
+- Compare tab -> `Generate Decision Summary`
+- Decision tab -> `Generate Execution Plan`
+- Execution tab -> `Export Plan`
+
+Persistence and default policy:
+
+- collapse state is tracked per step (`generated|insights|decision|stakeholder`)
+- user manual toggle marks the step as touched
+- touched steps keep user preference and are not auto-overridden
+- untouched steps use adaptive default:
+  - guided mode => expanded
+  - status mode => collapsed
+
+Storage model:
+
+- key: `ideagen.flow.step_guide.v1:<user_or_anon>`
+- payload includes:
+  - `collapsedByStep`
+  - `touchedByStep`
+- legacy compatibility: older boolean-per-step payloads are still read and upgraded in-memory
+
+Generated tab empty-state scenario policy now aligns with saved-artifact state:
+
+- fresh/no artifacts -> Start by generating ideas
+- saved artifacts exist/no selected run -> load from library or generate new run
 
 ### 10.11a Execution Plan terminology assist
 

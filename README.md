@@ -2,6 +2,23 @@
 
 IdeaGen is a multi-model business idea generator and report engine. It generates ideas, ranks model outputs, compares runs, and produces decision-ready reports for stakeholders.
 
+## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+
+This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+
+- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
+- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
+- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
+- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
+- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
+- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
+- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
+- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
+- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
+- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
+- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+
+
 ## Why this project (LLM engineering focus)
 - Multi-provider orchestration (OpenAI, Gemini, DeepSeek, Grok).
 - Agentic validation loops for structured JSON outputs.
@@ -52,6 +69,50 @@ UI (Next.js) ---> FastAPI API ---> LLM Providers
 - Delete-all actions are disabled when the list is empty and always require confirmation.
 - During compare/report generation and bulk deletion, conflicting modal actions are locked.
 - Delete confirmation dialogs no longer trigger parent modal auto-close from outside-click listeners.
+
+## Decision Flow + Step Guide UX (implemented)
+
+The workspace now uses a dual-mode onboarding system so first-time users are guided while experienced users get a lighter status view.
+
+- **Decision Flow strip** (top of workspace) shows 4 stages:
+  1. Generate Results
+  2. Compare Results
+  3. Decision Summary
+  4. Execution Plan
+- **Adaptive mode switching with hysteresis**:
+  - `guided -> status` only when global guidedness drops to `<= 40`
+  - `status -> guided` only when global guidedness rises to `>= 60`
+  - values between `41-59` keep current mode (prevents rapid mode flip/flop)
+- **Guided mode** emphasizes prerequisites and next-step actions.
+- **Status mode** emphasizes artifact counts and compact navigation context.
+
+### Persistent Step Guide panel
+
+A persistent **Step Guide** panel is rendered directly below the Decision Flow strip in all workspace tabs.
+
+- Same structure on every tab:
+  - What you do here
+  - What you get
+  - When you should use it
+  - To move forward
+- Tab-specific CTA in "To move forward":
+  - Compare -> Generate Decision Summary
+  - Decision -> Generate Execution Plan
+  - Execution Plan -> Export Plan
+- Collapse/expand is remembered per step and per user.
+- Defaults are adaptive:
+  - guided mode: expanded by default
+  - status mode: collapsed by default
+  - once user manually toggles a step guide, that preference is respected and not auto-overridden
+
+### Generated tab onboarding behavior
+
+Generated empty state now follows explicit scenarios:
+
+- Fresh user (no saved artifacts): start with Generate Ideas.
+- Returning user with saved artifacts but no selected run: prompt to Load from Library or Generate Ideas.
+
+This keeps first-run onboarding explicit without blocking expert backtracking from Library.
 
 ## Bulk delete APIs (implemented)
 - `DELETE /api/saved-results` -> bulk delete generated runs, returns `{ status, count }`
@@ -113,7 +174,10 @@ uvicorn index:app --reload --port 8000
 ### Docker (recommended)
 ```bash
 export $(cat .env | grep -v '^#' | xargs)
-docker build --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" -t ideagen-app .
+docker build \
+  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
+  --build-arg NODE_ENV=dev \
+  -t ideagen-app .
 
 docker run -p 8000:8000 \
   -v ideagen_data:/app/data \
@@ -143,7 +207,6 @@ docker run -p 8000:8000 \
 - Stakeholder dossier schema spec: `stakeholder_report_schema.md`
 - Launch checklist: `checklist.md`
 - Roadmap: `roadmap.md`
-
 
 
 ## AWS DEPLOYMENT ECR
