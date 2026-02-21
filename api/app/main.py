@@ -82,6 +82,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def frontend_no_cache(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if (
+        request.method == "GET"
+        and response.status_code == 200
+        and not path.startswith("/api")
+        and path != "/health"
+    ):
+        content_type = response.headers.get("content-type", "")
+        if path == "/" or path.endswith(".html") or "text/html" in content_type:
+            # Ensure clients always fetch fresh HTML so updated JS/CSS bundle references
+            # are picked up immediately after deploy.
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+    return response
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
