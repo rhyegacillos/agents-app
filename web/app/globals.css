@@ -1503,6 +1503,39 @@ body {
   .logPanel {
     order: 3;
   }
+
+  .panelHeaderRow {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .txTableControls {
+    grid-template-columns: 1fr;
+  }
+
+  .txDateRange {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .portfolioTimeline {
+    grid-template-rows: minmax(240px, auto) minmax(170px, auto);
+  }
+
+  .transactionsTableWrap {
+    height: min(58vh, 410px);
+  }
+
+  .txLedger p {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .txLedgerPrice,
+  .txLedgerNotional {
+    text-align: left;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1526,26 +1559,6 @@ body {
   .chartMeta {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .txLedger p {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .txLedgerPrice,
-  .txLedgerNotional {
-    text-align: left;
-  }
-
-  .txTableControls {
-    grid-template-columns: 1fr;
-  }
-
-  .txDateRange {
-    justify-content: flex-start;
-    flex-wrap: wrap;
   }
 
   .helpTip::after {

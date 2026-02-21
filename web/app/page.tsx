@@ -411,7 +411,13 @@ function PortfolioLineChart({
             endDrag();
           }}
         >
-          <svg className="lineChart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Portfolio value chart">
+          <svg
+            className="lineChart"
+            preserveAspectRatio="xMidYMin meet"
+            viewBox={`0 0 ${width} ${height}`}
+            role="img"
+            aria-label="Portfolio value chart"
+          >
           {yTicks.map((value) => {
             const y = yScale(value);
             return (
@@ -891,7 +897,10 @@ export default function HomePage() {
   const startBlockedByClosedMarket = market.status === "closed" && !allowClosedMarketTrading;
   const readOnlyMode = Boolean(scheduler.read_only_mode);
   const traderThemeClass = `theme-${selectedTrader.toLowerCase()}`;
-  const rightPanelHeightStyle = !stackedDeskLayout && leftRailHeight ? { height: `${leftRailHeight}px` } : undefined;
+  const rightPanelHeightStyle =
+    !stackedDeskLayout && leftRailHeight
+      ? { height: `min(${leftRailHeight}px, calc(100vh - 170px))` }
+      : undefined;
   const toggleTxSort = (key: TxSortKey) => {
     setTxSort((prev) =>
       prev.key === key
