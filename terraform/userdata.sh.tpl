@@ -19,11 +19,19 @@ chmod 600 /home/ec2-user/autonomous-trader.env
 aws ecr get-login-password --region ${aws_region} \
   | docker login --username AWS --password-stdin ${image_uri%/*}
 
-docker pull ${image_uri}
-
 if docker ps -a --format '{{.Names}}' | grep -q '^${project_name}$'; then
   docker stop ${project_name} || true
   docker rm ${project_name} || true
+fi
+
+# Reclaim space before pulling a new image revision.
+docker image prune -af || true
+docker builder prune -af || true
+
+if ! docker pull ${image_uri}; then
+  echo "Initial docker pull failed; running aggressive prune and retrying..."
+  docker system prune -af || true
+  docker pull ${image_uri}
 fi
 
 docker run -d --name ${project_name} \

@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getMarketStatus,
   getSchedulerStatus,
@@ -561,6 +561,7 @@ export default function HomePage() {
   const [selectedTrader, setSelectedTrader] = useState<string>("Warren");
   const selectedTraderRef = useRef<string>("Warren");
   const leftRailRef = useRef<HTMLDivElement | null>(null);
+  const leftRailSyncRafRef = useRef<number | null>(null);
   const runInProgressRef = useRef<boolean>(false);
   const [leftRailHeight, setLeftRailHeight] = useState<number | null>(null);
   const [stackedDeskLayout, setStackedDeskLayout] = useState<boolean>(false);
@@ -604,6 +605,19 @@ export default function HomePage() {
     const nextHeight = Math.round(node.getBoundingClientRect().height);
     setLeftRailHeight((prev) => (prev === nextHeight ? prev : nextHeight));
   }, [stackedDeskLayout]);
+
+  const scheduleLeftRailSync = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (leftRailSyncRafRef.current !== null) {
+      return;
+    }
+    leftRailSyncRafRef.current = window.requestAnimationFrame(() => {
+      leftRailSyncRafRef.current = null;
+      syncLeftRailHeight();
+    });
+  }, [syncLeftRailHeight]);
 
   async function refreshDashboard() {
     try {
@@ -706,7 +720,7 @@ export default function HomePage() {
     applyLayout();
     const onChange = () => {
       applyLayout();
-      window.requestAnimationFrame(syncLeftRailHeight);
+      scheduleLeftRailSync();
     };
     if (typeof media.addEventListener === "function") {
       media.addEventListener("change", onChange);
@@ -714,67 +728,35 @@ export default function HomePage() {
     }
     media.addListener(onChange);
     return () => media.removeListener(onChange);
-  }, [syncLeftRailHeight]);
-
-  useEffect(() => {
-    const rafId = window.requestAnimationFrame(syncLeftRailHeight);
-    const timeoutId = window.setTimeout(syncLeftRailHeight, 140);
-    return () => {
-      window.cancelAnimationFrame(rafId);
-      window.clearTimeout(timeoutId);
-    };
-  }, [syncLeftRailHeight]);
+  }, [scheduleLeftRailSync]);
 
   useEffect(() => {
     const node = leftRailRef.current;
     if (!node) {
       return;
     }
-    let timeoutId: number | null = null;
-    const handleResize = () => {
-      syncLeftRailHeight();
-      window.requestAnimationFrame(syncLeftRailHeight);
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-      timeoutId = window.setTimeout(syncLeftRailHeight, 140);
-    };
-    syncLeftRailHeight();
-    const observer = new ResizeObserver(syncLeftRailHeight);
+    const handleResize = () => scheduleLeftRailSync();
+    const observer = new ResizeObserver(() => scheduleLeftRailSync());
     observer.observe(node);
     window.addEventListener("resize", handleResize);
-    window.addEventListener("load", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    scheduleLeftRailSync();
+    const timeoutId = window.setTimeout(scheduleLeftRailSync, 140);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", handleResize);
-      window.removeEventListener("load", handleResize);
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
+      window.removeEventListener("orientationchange", handleResize);
+      window.clearTimeout(timeoutId);
+      if (leftRailSyncRafRef.current !== null) {
+        window.cancelAnimationFrame(leftRailSyncRafRef.current);
+        leftRailSyncRafRef.current = null;
       }
     };
-  }, [syncLeftRailHeight]);
+  }, [scheduleLeftRailSync]);
 
-  useLayoutEffect(() => {
-    syncLeftRailHeight();
-    const rafId = window.requestAnimationFrame(syncLeftRailHeight);
-    const timeoutId = window.setTimeout(syncLeftRailHeight, 120);
-    return () => {
-      window.cancelAnimationFrame(rafId);
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    syncLeftRailHeight,
-    selectedTrader,
-    detail,
-    traders.length,
-    market.status,
-    scheduler.running,
-    scheduler.run_in_progress,
-    allowClosedMarketTrading,
-    actionBusy,
-    loading,
-    stackedDeskLayout,
-  ]);
+  useEffect(() => {
+    scheduleLeftRailSync();
+  }, [stackedDeskLayout, scheduleLeftRailSync]);
 
   const totalCashValue = useMemo(
     () => traders.reduce((acc, trader) => acc + (trader.cash_balance ?? trader.balance), 0),

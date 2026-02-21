@@ -1193,7 +1193,7 @@ body {
 
 .transactionsTableWrap table {
   width: 100%;
-  min-width: 760px;
+  min-width: 980px;
   border-collapse: collapse;
   font-family: var(--font-mono), monospace;
   font-size: 0.8rem;
@@ -1212,18 +1212,18 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 0.68rem;
+  white-space: nowrap;
   position: sticky;
   top: 0;
   z-index: 3;
   background: #f7fbff;
 }
 
-.transactionsTableWrap th:nth-child(1) { width: 17%; }
-.transactionsTableWrap th:nth-child(2) { width: 8%; }
-.transactionsTableWrap th:nth-child(3) { width: 8%; }
-.transactionsTableWrap th:nth-child(4) { width: 6%; }
-.transactionsTableWrap th:nth-child(5) { width: 9%; }
-.transactionsTableWrap th:nth-child(6) { width: 52%; }
+.transactionsTableWrap th:nth-child(1) { width: 210px; }
+.transactionsTableWrap th:nth-child(2) { width: 90px; }
+.transactionsTableWrap th:nth-child(3) { width: 80px; }
+.transactionsTableWrap th:nth-child(4) { width: 70px; }
+.transactionsTableWrap th:nth-child(5) { width: 110px; }
 
 .thSortBtn {
   border: 0;
@@ -1306,6 +1306,12 @@ body {
 .colPrice,
 .colSymbol {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transactionsTableWrap td.txRationale {
+  white-space: normal;
 }
 
 .strategyBox {
@@ -1528,7 +1534,7 @@ body {
   }
 
   .transactionsTableWrap table {
-    min-width: 700px;
+    min-width: 980px;
   }
 
   .txLedger p {
@@ -1562,7 +1568,7 @@ body {
   }
 
   .transactionsTableWrap table {
-    min-width: 640px;
+    min-width: 980px;
   }
 
   .chartMeta {

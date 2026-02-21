@@ -188,9 +188,15 @@ sudo mkdir -p /opt/__PROJECT_NAME__/data
 sudo chown -R ec2-user:ec2-user /opt/__PROJECT_NAME__
 
 aws ecr get-login-password --region "__AWS_REGION__" | sudo docker login --username AWS --password-stdin "__ECR_REGISTRY__"
-sudo docker pull "__IMAGE_URI__"
 sudo docker stop __PROJECT_NAME__ >/dev/null 2>&1 || true
 sudo docker rm __PROJECT_NAME__ >/dev/null 2>&1 || true
+sudo docker image prune -af >/dev/null 2>&1 || true
+sudo docker builder prune -af >/dev/null 2>&1 || true
+if ! sudo docker pull "__IMAGE_URI__"; then
+  echo "Initial docker pull failed; running aggressive prune and retrying..."
+  sudo docker system prune -af >/dev/null 2>&1 || true
+  sudo docker pull "__IMAGE_URI__"
+fi
 sudo docker run -d \
   --name "__PROJECT_NAME__" \
   -p "__HOST_PORT__:8000" \
