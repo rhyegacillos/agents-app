@@ -1193,6 +1193,7 @@ body {
 
 .transactionsTableWrap table {
   width: 100%;
+  min-width: 760px;
   border-collapse: collapse;
   font-family: var(--font-mono), monospace;
   font-size: 0.8rem;
@@ -1526,6 +1527,10 @@ body {
     height: min(58vh, 410px);
   }
 
+  .transactionsTableWrap table {
+    min-width: 700px;
+  }
+
   .txLedger p {
     display: flex;
     flex-wrap: wrap;
@@ -1554,6 +1559,10 @@ body {
 
   .lineChart {
     min-height: 240px;
+  }
+
+  .transactionsTableWrap table {
+    min-width: 640px;
   }
 
   .chartMeta {

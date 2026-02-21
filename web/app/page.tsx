@@ -897,7 +897,7 @@ export default function HomePage() {
   const startBlockedByClosedMarket = market.status === "closed" && !allowClosedMarketTrading;
   const readOnlyMode = Boolean(scheduler.read_only_mode);
   const traderThemeClass = `theme-${selectedTrader.toLowerCase()}`;
-  const rightPanelHeightStyle =
+  const logPanelHeightStyle =
     !stackedDeskLayout && leftRailHeight
       ? { height: `min(${leftRailHeight}px, calc(100vh - 170px))` }
       : undefined;
@@ -1252,7 +1252,7 @@ export default function HomePage() {
           </aside>
         </div>
 
-        <section className="panel chartPanel" style={rightPanelHeightStyle}>
+        <section className="panel chartPanel">
           <div className="panelHeaderRow">
             <h2 className="titleWithHelp">
               {selectedTrader} Portfolio Timeline
@@ -1299,7 +1299,7 @@ export default function HomePage() {
           )}
         </section>
 
-        <aside className="panel logPanel" style={rightPanelHeightStyle}>
+        <aside className="panel logPanel" style={logPanelHeightStyle}>
           <div className="panelHeaderRow">
             <h2 className="titleWithHelp">
               Live Logs
