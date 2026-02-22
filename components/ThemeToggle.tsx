@@ -36,15 +36,15 @@ export default function ThemeToggle() {
     }
 
     return (
-        <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/85 px-3 py-2 shadow-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/85">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
+        <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/85 px-2 py-1.5 shadow-sm backdrop-blur sm:px-3 sm:py-2 dark:border-slate-700 dark:bg-slate-900/85">
+            <span className="hidden text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:inline dark:text-slate-400">
                 Current Theme:
             </span>
             <button
                 type="button"
                 onClick={toggleTheme}
                 aria-pressed={theme === 'dark'}
-                className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
+                className="min-h-11 rounded-full bg-slate-900 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-slate-800 dark:bg-emerald-500 dark:text-slate-950 dark:hover:bg-emerald-400"
             >
                 {theme === 'dark' ? 'Dark' : 'Light'}
             </button>

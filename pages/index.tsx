@@ -25,7 +25,7 @@ export default function Home() {
               MediNotes Pro
             </h1>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <SignedOut>
               <SignInButton mode="modal">
                 <button className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-200/60 transition hover:bg-emerald-700">
@@ -34,7 +34,7 @@ export default function Home() {
               </SignInButton>
             </SignedOut>
             <SignedIn>
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-3 sm:gap-4">
                 <Link
                   href="/product"
                   className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-200/60 transition hover:bg-emerald-700"
@@ -47,7 +47,7 @@ export default function Home() {
           </div>
         </nav>
 
-        <div className="fixed right-4 top-4 z-50 sm:right-6 sm:top-6">
+        <div className="safe-fixed-top-right fixed z-50">
           <ThemeToggle />
         </div>
 
@@ -260,10 +260,10 @@ export default function Home() {
         <div className="text-center text-xs uppercase tracking-[0.3em] text-slate-500 dark:text-slate-400">
           HIPAA ready • Secure • Professional
         </div>
-        <footer className="mt-2 border-t border-slate-200/70 pt-1 flex min-h-[24px] items-center text-[10px] text-slate-500 dark:border-slate-700/70 dark:text-slate-400">
-          <span className="flex-1 text-left">{year}</span>
-          <span className="flex-1 text-center font-semibold">RG</span>
-          <span className="flex-1 text-right">gacillos.rhye@gmail.com</span>
+        <footer className="mt-2 flex min-h-[24px] flex-col gap-1 border-t border-slate-200/70 pt-1 text-[10px] text-slate-500 sm:flex-row sm:items-center dark:border-slate-700/70 dark:text-slate-400">
+          <span className="w-full sm:flex-1 sm:text-left">{year}</span>
+          <span className="w-full font-semibold sm:flex-1 sm:text-center">RG</span>
+          <span className="w-full break-all sm:flex-1 sm:text-right">gacillos.rhye@gmail.com</span>
         </footer>
       </div>
     </main>

@@ -78,7 +78,7 @@ function HelpPill({ label, tooltipId, tooltipContent, align = 'right' }: { label
                 onMouseLeave={() => setOpen(false)}
                 onFocus={() => setOpen(true)}
                 onBlur={() => setOpen(false)}
-                className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 shadow-sm transition hover:border-emerald-400 hover:text-emerald-800 dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500"
+                className="inline-flex min-h-10 items-center gap-1 rounded-full border border-emerald-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 shadow-sm transition hover:border-emerald-400 hover:text-emerald-800 dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500"
                 aria-describedby={tooltipId}
             >
                 {label}
@@ -416,7 +416,9 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
             {/* Floating Toggle Button */}
             <button
                 onClick={() => setIsOpen(!isOpen)}
-                className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 transition hover:scale-105 hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-400/30 dark:bg-emerald-500 dark:hover:bg-emerald-400"
+                className={`safe-fixed-fab fixed z-50 h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 transition hover:scale-105 hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-400/30 dark:bg-emerald-500 dark:hover:bg-emerald-400 ${
+                    isOpen ? 'hidden sm:flex' : 'flex'
+                }`}
                 aria-label="Open MediNotes Assistant"
             >
                 {isOpen ? (
@@ -432,7 +434,7 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
 
             {/* Chat Panel */}
             {isOpen && (
-                <div className="fixed bottom-24 right-6 z-50 flex h-[600px] w-96 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+                <div className="safe-fixed-chat-panel fixed z-50 flex h-auto flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur sm:h-[600px] sm:w-96 dark:border-slate-700 dark:bg-slate-900/95">
                     {/* Header */}
                     <div className="flex items-center justify-between border-b border-slate-100 bg-white/50 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/50">
                         <div>
@@ -441,14 +443,26 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                                 {chatPatientName ? `Patient: ${chatPatientName}` : 'No patient selected'}
                             </p>
                         </div>
-                        <button onClick={handleSwitchPatientClick} className="rounded-md px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-slate-800">
+                        <div className="flex items-center gap-1">
+                            <button onClick={handleSwitchPatientClick} className="min-h-10 rounded-md px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-slate-800">
                                 {showPatientList ? 'Go Back' : 'Patient List'}
                             </button>
+                            <button
+                                type="button"
+                                onClick={() => setIsOpen(false)}
+                                className="flex h-10 w-10 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 sm:hidden dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                                aria-label="Close MediNotes Assistant"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="h-5 w-5">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
                         </div>
 
                     {/* Patient Selector */}
                     {showPatientList && (
-                        <div className="absolute top-14 left-0 w-full h-full bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm z-10 p-4">
+                        <div className="absolute inset-x-0 bottom-0 top-14 z-10 bg-white/80 p-4 backdrop-blur-sm dark:bg-slate-900/80">
                             <h4 className="font-semibold mb-2">Select Patient</h4>
                             {patientListLoading ? <p>Loading...</p> : (
                                 <ul className="max-h-96 overflow-y-auto rounded-md border dark:border-slate-700">
@@ -481,7 +495,7 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                                                 setShowQuickPrompts(false);
                                                 handleSend(chip);
                                             }}
-                                            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:text-emerald-400"
+                                            className="min-h-11 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:text-emerald-400"
                                         >
                                             {chip}
                                         </button>
@@ -556,7 +570,7 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                                 <button
                                     type="button"
                                     onClick={() => setShowQuickPrompts(true)}
-                                    className="rounded-full px-3 py-1 text-xs font-semibold text-slate-700 transition hover:text-emerald-700 dark:text-slate-200 dark:hover:text-emerald-400"
+                                    className="min-h-10 rounded-full px-4 py-1 text-xs font-semibold text-slate-700 transition hover:text-emerald-700 dark:text-slate-200 dark:hover:text-emerald-400"
                                 >
                                     Go back to chips
                                 </button>
@@ -575,12 +589,12 @@ function ChatInterface({ patientName, currentSummary, onSessionExpired }: ChatIn
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
                                 placeholder="Type a message..."
-                                className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-4 pr-12 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
+                                className="w-full rounded-full border border-slate-200 bg-slate-50 py-3 pl-4 pr-14 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
                             />
                             <button
                                 type="submit"
                                 disabled={!input.trim() || loading}
-                                className="absolute right-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-400"
+                                className="absolute right-1.5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-emerald-600 text-white transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-400"
                             >
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
                                     <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A1.5 1.5 0 005.135 9.25h6.115a.75.75 0 010 1.5H5.135a1.5 1.5 0 00-1.442 1.086l-1.414 4.926a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
@@ -1201,6 +1215,14 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
         };
     }, [timelineItems, isPanning]);
 
+    useEffect(() => {
+        const el = timelineRef.current;
+        if (!el) return;
+        // Reset horizontal scroll when the selected patient or timeline data changes
+        // so the first pill is fully visible and not clipped from prior pan state.
+        el.scrollLeft = 0;
+    }, [selectedPatient?.name, timelineItems.length]);
+
     return (
         <>
         <div className="mx-auto max-w-5xl px-6 pb-16">
@@ -1211,7 +1233,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                             <p className="text-xs uppercase tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
                                 Patient History
                             </p>
-                            <h2 className="font-display text-2xl text-slate-900 dark:text-slate-100">Longitudinal View</h2>
+                            <h2 className="font-display text-[clamp(1.35rem,4.6vw,1.75rem)] text-slate-900 dark:text-slate-100">Longitudinal View</h2>
                             <p className="text-sm text-slate-500 dark:text-slate-300">
                                 Choose a patient to see their past visits.
                             </p>
@@ -1274,7 +1296,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                 <button
                                     type="button"
                                     onClick={() => setDropdownOpen((prev) => !prev)}
-                                    className="rounded-lg p-1 text-slate-400 transition hover:text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400/40 dark:text-slate-300 dark:hover:text-emerald-300"
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition hover:text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-400/40 dark:text-slate-300 dark:hover:text-emerald-300"
                                     aria-label="Toggle patient list"
                                 >
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -1343,7 +1365,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                         </p>
                     </div>
 
-                    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                    <div className="overflow-x-hidden rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                         {selectedPatient ? (
                             <div className="space-y-4">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1362,7 +1384,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         setRenameValue(selectedPatient.name);
                                                         setRenameOpen(true);
                                                     }}
-                                                    className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                    className="min-h-10 rounded-full border border-slate-200 px-4 py-1 text-xs font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
                                                 >
                                                     Rename
                                                 </button>
@@ -1383,7 +1405,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                             </span>
                                         </div>
                                         <div
-                                            className={`mt-3 flex items-center gap-3 overflow-x-auto pb-2 ${isPanning ? 'cursor-grabbing' : 'cursor-grab'} select-none`}
+                                            className={`mt-3 flex items-center gap-3 overflow-x-auto px-1 pb-2 ${isPanning ? 'cursor-grabbing' : 'cursor-grab'} select-none`}
                                             ref={timelineRef}
                                             onDragStart={(e) => e.preventDefault()}
                                         >
@@ -1393,7 +1415,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                             const pillClass = isDeleted
                                                 ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-700 dark:bg-rose-950/60 dark:text-rose-100 ring-1 ring-rose-100 dark:ring-rose-900/40'
                                                 : isSelected
-                                                    ? 'border-emerald-400 bg-emerald-600 text-white ring-2 ring-emerald-200'
+                                                    ? 'border-emerald-400 bg-emerald-600 text-white ring-2 ring-inset ring-emerald-200'
                                                     : 'border-slate-200 bg-white text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-slate-800';
                                             const dateTextClass = isDeleted
                                                 ? 'text-rose-700 dark:text-rose-200'
@@ -1428,14 +1450,14 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Patient history</p>
                                     </div>
-                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                                            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800/80">
+                                    <div className="mt-2 flex w-full flex-wrap items-center gap-2 text-xs">
+                                            <div className="flex w-full min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm sm:w-auto dark:border-slate-700 dark:bg-slate-800/80">
                                                 <span className="text-slate-500 text-xs font-semibold uppercase tracking-wide dark:text-slate-400">From</span>
-                                                <div className="relative flex items-center">
+                                                <div className="relative flex min-w-0 flex-1 items-center sm:w-auto sm:flex-none">
                                                     <button
                                                         type="button"
                                                         onClick={() => historyStartRef.current?.showPicker ? historyStartRef.current.showPicker() : historyStartRef.current?.focus()}
-                                                        className="absolute left-1.5 rounded-md p-1 text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-slate-800/80"
+                                                        className="absolute left-1.5 flex h-8 w-8 items-center justify-center rounded-md text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-slate-800/80"
                                                         aria-label="Open start date picker"
                                                     >
                                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -1447,17 +1469,17 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         value={historyStartDate}
                                                         onChange={(e) => setHistoryStartDate(e.target.value)}
                                                         ref={historyStartRef}
-                                                        className="appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-3 py-2 text-sm font-semibold text-slate-800 shadow-inner focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
+                                                        className="min-w-0 w-full max-w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-semibold text-slate-800 shadow-inner focus:border-emerald-400 focus:outline-none sm:w-auto dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
                                                     />
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800/80">
+                                            <div className="flex w-full min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm sm:w-auto dark:border-slate-700 dark:bg-slate-800/80">
                                                 <span className="text-slate-500 text-xs font-semibold uppercase tracking-wide dark:text-slate-400">To</span>
-                                                <div className="relative flex items-center">
+                                                <div className="relative flex min-w-0 flex-1 items-center sm:w-auto sm:flex-none">
                                                     <button
                                                         type="button"
                                                         onClick={() => historyEndRef.current?.showPicker ? historyEndRef.current.showPicker() : historyEndRef.current?.focus()}
-                                                        className="absolute left-1.5 rounded-md p-1 text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-slate-800/80"
+                                                        className="absolute left-1.5 flex h-8 w-8 items-center justify-center rounded-md text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-300 dark:hover:bg-slate-800/80"
                                                         aria-label="Open end date picker"
                                                     >
                                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -1469,23 +1491,23 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         value={historyEndDate}
                                                         onChange={(e) => setHistoryEndDate(e.target.value)}
                                                         ref={historyEndRef}
-                                                        className="appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-3 py-2 text-sm font-semibold text-slate-800 shadow-inner focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
+                                                        className="min-w-0 w-full max-w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-semibold text-slate-800 shadow-inner focus:border-emerald-400 focus:outline-none sm:w-auto dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
                                                     />
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-2">
+                                            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
                                                 <input
                                                     type="text"
                                                     value={historyQuery}
                                                     onChange={(e) => setHistoryQuery(e.target.value)}
                                                     placeholder="Filter by keyword"
-                                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                                                    className="min-w-0 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm focus:border-emerald-400 focus:outline-none sm:w-48 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                                                 />
                                                 <button
                                                     type="button"
                                                     disabled={!selectedPatient}
                                                     onClick={() => selectedPatient && loadHistory(selectedPatient.name, historyStartDate, historyEndDate, historyQuery, showDeleted)}
-                                                    className="rounded-lg border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                    className="w-full min-h-10 rounded-lg border border-slate-200 px-4 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50 sm:w-auto dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
                                                 >
                                                     Apply
                                                 </button>
@@ -1501,14 +1523,14 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         loadHistory(selectedPatient.name, '', '', '', false);
                                                     }
                                                 }}
-                                                className="rounded-lg border border-slate-200 px-3 py-1 font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-700 dark:border-slate-700 dark:text-slate-300 dark:hover:border-emerald-400 dark:hover:text-emerald-200"
+                                                className="w-full min-h-10 rounded-lg border border-slate-200 px-4 py-1 font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-700 sm:w-auto dark:border-slate-700 dark:text-slate-300 dark:hover:border-emerald-400 dark:hover:text-emerald-200"
                                             >
                                                 Clear
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => setHistoryOrder((v) => (v === 'asc' ? 'desc' : 'asc'))}
-                                                className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                className="inline-flex w-full min-h-10 items-center justify-center gap-1 rounded-full border border-slate-200 px-4 py-1 font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 sm:w-auto sm:justify-start dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
                                             >
                                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                                                     {historyOrder === 'asc' ? (
@@ -1520,7 +1542,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                 {historyOrder === 'asc' ? 'Oldest first' : 'Newest first'}
                                             </button>
 
-                                            <label className="ml-auto inline-flex items-center gap-2 rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-200">
+                                            <label className="inline-flex w-full min-h-10 items-center justify-center gap-2 rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 sm:ml-auto sm:w-auto dark:border-slate-700 dark:text-slate-200">
                                                 <input
                                                     type="checkbox"
                                                     checked={showDeleted}
@@ -1548,7 +1570,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                     )}
 
                                     {!selectedVisit && (
-                                    <div className={`mt-3 max-h-[48rem] space-y-3 overflow-y-auto pr-1 transition-opacity duration-300 ease-out ${historyAnimating ? 'opacity-60' : 'opacity-100'}`}>
+                                    <div className={`mt-3 max-h-[48rem] space-y-3 overflow-x-hidden overflow-y-auto pr-1 transition-opacity duration-300 ease-out ${historyAnimating ? 'opacity-60' : 'opacity-100'}`}>
                                             {groupedHistory.map((group: HistoryEntry[], groupIdx: number) => {
                                                 const first = (group?.[0] ?? {}) as any;
                                                 const groupDate = (first?.date ?? 'Unknown date') as string;
@@ -1560,8 +1582,8 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         key={groupKey}
                                                         className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.35)] dark:border-slate-800/70 dark:bg-slate-900/80 dark:shadow-[0_10px_30px_-22px_rgba(15,23,42,0.65)]"
                                                     >
-                                                        <div className="flex items-center justify-between pb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                            <span className="flex items-center gap-2">
+                                                        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                            <span className="flex min-w-0 flex-wrap items-center gap-2">
                                                                 <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200">
                                                                     Visits
                                                                 </span>
@@ -1592,11 +1614,11 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                 const isSelected = selectedDocId === docId;
 
                                                                 return (
-                                                                    <div key={docId || idx} className="flex w-full items-start gap-3">
+                                                                    <div key={docId || idx} className="flex w-full flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => setSelectedVisit(entry)}
-                                                                            className="w-full text-left"
+                                                                            className="min-w-0 w-full text-left sm:flex-1"
                                                                         >
                                                                             <div
                                                                                 className={`rounded-lg border p-3 shadow-sm transition hover:-translate-y-px hover:border-emerald-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900/70 dark:hover:border-emerald-400/50 ${
@@ -1609,8 +1631,8 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                                         : ''
                                                                                 }`}
                                                                             >
-                                                                                <div className="flex items-center justify-between">
-                                                                                    <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                                                                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                                                                    <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
                                                                                         <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
                                                                                             {type}
                                                                                         </span>
@@ -1640,7 +1662,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                                         )}
                                                                                     </div>
 
-                                                                                    <div className="flex items-center gap-2">
+                                                                                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
                                                                                         {hasEvidence && (
                                                                                             <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
                                                                                                 Evidence
@@ -1652,15 +1674,27 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                                     </div>
                                                                                 </div>
 
-                                                                                <div className={`mt-2 rounded-lg p-3 text-sm text-slate-700 shadow-inner whitespace-pre-line dark:text-slate-200 line-clamp-6 transition-colors ${deleted ? "bg-[rgba(254,242,242,0.55)] dark:bg-[rgba(76,5,25,0.35)]" : "bg-slate-50/60 dark:bg-slate-900/40"}`}>
+                                                                                <div className={`mt-2 rounded-lg p-3 text-[clamp(0.86rem,2.3vw,0.95rem)] leading-[1.45] text-slate-700 shadow-inner whitespace-pre-line break-words [overflow-wrap:anywhere] dark:text-slate-200 line-clamp-6 transition-colors ${deleted ? "bg-[rgba(254,242,242,0.55)] dark:bg-[rgba(76,5,25,0.35)]" : "bg-slate-50/60 dark:bg-slate-900/40"}`}>
                                                                                     <ReactMarkdown
                                                                                         remarkPlugins={[remarkGfm, remarkBreaks]}
                                                                                         components={{
-                                                                                            a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                                                                            a: ({ className, ...props }) => (
+                                                                                                <a
+                                                                                                    {...props}
+                                                                                                    className={`${className || ''} break-all`.trim()}
+                                                                                                    target="_blank"
+                                                                                                    rel="noopener noreferrer"
+                                                                                                />
+                                                                                            ),
                                                                                             p: ({ children, ...props }) => (
-                                                                                                <p {...props} className="mb-2 last:mb-0">
+                                                                                                <p {...props} className="mb-2 break-words [overflow-wrap:anywhere] last:mb-0">
                                                                                                     {children}
                                                                                                 </p>
+                                                                                            ),
+                                                                                            li: ({ children, ...props }) => (
+                                                                                                <li {...props} className="break-words [overflow-wrap:anywhere]">
+                                                                                                    {children}
+                                                                                                </li>
                                                                                             ),
                                                                                         }}
                                                                                     >
@@ -1675,7 +1709,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                                 type="button"
                                                                                 onClick={() => handleRestoreVisit(docId)}
                                                                                 disabled={restoreLoadingId === docId}
-                                                                                className="mt-1 rounded-full border !border-rose-300 !bg-[rgba(254,242,242,0.85)] px-2 py-1 text-[11px] font-semibold text-rose-700 transition hover:!bg-[rgba(254,242,242,0.95)] disabled:opacity-50 dark:!border-rose-800 dark:!bg-[rgba(76,5,25,0.55)] dark:text-rose-200 dark:hover:!bg-[rgba(76,5,25,0.7)]"
+                                                                                className="w-full rounded-full border !border-rose-300 !bg-[rgba(254,242,242,0.85)] px-3 py-2 text-xs font-semibold text-rose-700 transition hover:!bg-[rgba(254,242,242,0.95)] disabled:opacity-50 sm:mt-1 sm:w-auto sm:px-2 sm:py-1 sm:text-[11px] dark:!border-rose-800 dark:!bg-[rgba(76,5,25,0.55)] dark:text-rose-200 dark:hover:!bg-[rgba(76,5,25,0.7)]"
                                                                                 aria-label="Restore visit"
                                                                             >
                                                                                 {restoreLoadingId === docId ? 'Restoring...' : 'Restore'}
@@ -1684,7 +1718,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                             <button
                                                                                 type="button"
                                                                                 onClick={() => handleDeleteVisit(entry)}
-                                                                                className="mt-1 rounded-full border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:border-rose-300 hover:text-rose-600 dark:border-slate-700 dark:text-slate-300 dark:hover:border-rose-500 dark:hover:text-rose-300"
+                                                                                className="w-full rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-500 transition hover:border-rose-300 hover:text-rose-600 sm:mt-1 sm:w-auto sm:px-2 sm:py-1 sm:text-[11px] dark:border-slate-700 dark:text-slate-300 dark:hover:border-rose-500 dark:hover:text-rose-300"
                                                                                 aria-label="Delete visit"
                                                                             >
                                                                                 Delete
@@ -1730,11 +1764,11 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                             {selectedVisit.date || 'Unknown date'}
                                                         </span>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
+                                                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
                                                         <button
                                                             type="button"
                                                             onClick={() => setSelectedVisit(null)}
-                                                            className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
+                                                            className="w-full rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-emerald-400 hover:text-emerald-700 sm:w-auto sm:py-1 dark:border-slate-700 dark:text-slate-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300"
                                                         >
                                                             Return to list
                                                         </button>
@@ -1743,7 +1777,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                             type="button"
                                                             onClick={() => handleRestoreVisit(selectedVisit.doc_id)}
                                                             disabled={restoreLoadingId === selectedVisit.doc_id}
-                                                            className="rounded-full border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:border-emerald-400 hover:text-emerald-800 disabled:opacity-50 dark:border-emerald-700 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:text-emerald-100"
+                                                            className="w-full rounded-full border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:border-emerald-400 hover:text-emerald-800 disabled:opacity-50 sm:w-auto sm:py-1 dark:border-emerald-700 dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:text-emerald-100"
                                                         >
                                                             {restoreLoadingId === selectedVisit.doc_id ? 'Restoring...' : 'Restore'}
                                                         </button>
@@ -1751,7 +1785,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         <button
                                                             type="button"
                                                             onClick={() => selectedVisit && handleDeleteVisit(selectedVisit)}
-                                                            className="rounded-full border border-rose-200 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:border-rose-400 hover:text-rose-800 dark:border-rose-700 dark:text-rose-300 dark:hover:border-rose-500 dark:hover:text-rose-200"
+                                                            className="w-full rounded-full border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:border-rose-400 hover:text-rose-800 sm:w-auto sm:py-1 dark:border-rose-700 dark:text-rose-300 dark:hover:border-rose-500 dark:hover:text-rose-200"
                                                         >
                                                             Delete
                                                         </button>
@@ -1759,7 +1793,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         <button
                                                             type="button"
                                                             onClick={() => selectedVisit.summary && handleCopySummary(selectedVisit.summary)}
-                                                            className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200 dark:hover:bg-emerald-900/70"
+                                                            className="w-full rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 sm:w-auto sm:py-1 dark:border-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200 dark:hover:bg-emerald-900/70"
                                                         >
                                                             Copy summary
                                                         </button>
@@ -1770,20 +1804,27 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         )}
                                                     </div>
                                                 </div>
-                                                <div className="mt-3 rounded-lg bg-slate-50/80 p-4 text-sm leading-relaxed text-slate-800 shadow-inner whitespace-pre-line dark:bg-slate-900/60 dark:text-slate-200">
+                                                <div className="mt-3 rounded-lg bg-slate-50/80 p-4 text-[clamp(0.9rem,2.5vw,1rem)] leading-[1.55] text-slate-800 shadow-inner whitespace-pre-line break-words [overflow-wrap:anywhere] dark:bg-slate-900/60 dark:text-slate-200">
                                                     <ReactMarkdown
                                                         remarkPlugins={[remarkGfm, remarkBreaks]}
                                                         components={{
-                                                            a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                                                            a: ({ className, ...props }) => (
+                                                                <a
+                                                                    {...props}
+                                                                    className={`${className || ''} break-all`.trim()}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                />
+                                                            ),
                                                             p: ({ children, ...props }) => (
-                                                                <p {...props} className="mb-3 last:mb-0">
+                                                                <p {...props} className="mb-3 break-words [overflow-wrap:anywhere] last:mb-0">
                                                                     {typeof children === 'string'
                                                                         ? renderHistoryHighlighted(children)
                                                                         : children}
                                                                 </p>
                                                             ),
                                                             li: ({ children, ...props }) => (
-                                                                <li {...props} className="mb-1 last:mb-0">
+                                                                <li {...props} className="mb-1 break-words [overflow-wrap:anywhere] last:mb-0">
                                                                     {typeof children === 'string'
                                                                         ? renderHistoryHighlighted(children)
                                                                         : children}
@@ -1796,12 +1837,12 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                 </div>
                                                 {selectedVisit.evidence?.chunks && selectedVisit.evidence.chunks.length > 0 && (
                                                     <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 shadow-sm dark:border-emerald-800 dark:bg-emerald-950/60">
-                                                        <div className="flex items-center justify-between">
+                                                        <div className="flex flex-wrap items-center justify-between gap-2">
                                                             <div>
                                                                 <p className="text-[11px] uppercase tracking-[0.25em] text-emerald-700 dark:text-emerald-300">
                                                                     Evidence
                                                                 </p>
-                                                                <p className="text-sm text-slate-700 dark:text-slate-200">
+                                                                <p className="text-[clamp(0.84rem,2.2vw,0.95rem)] leading-[1.45] text-slate-700 dark:text-slate-200">
                                                                     Source snippets supporting this visit
                                                                 </p>
                                                             </div>
@@ -1811,13 +1852,13 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                         </div>
                                                         <div className="mt-3 grid gap-3 md:grid-cols-2">
                                                             {selectedVisit.evidence.chunks.map((chunk, idx) => (
-                                                                <div key={chunk.id || idx} className="rounded-lg border border-emerald-100 bg-white/95 p-3 shadow-[0_10px_30px_-22px_rgba(16,185,129,0.6)] dark:border-emerald-800/50 dark:bg-slate-900/80 dark:shadow-[0_10px_30px_-22px_rgba(16,185,129,0.35)]">
-                                                                    <div className="flex items-center justify-between text-xs">
+                                                                <div key={chunk.id || idx} className="overflow-hidden rounded-lg border border-emerald-100 bg-white/95 p-3 shadow-[0_10px_30px_-22px_rgba(16,185,129,0.6)] dark:border-emerald-800/50 dark:bg-slate-900/80 dark:shadow-[0_10px_30px_-22px_rgba(16,185,129,0.35)]">
+                                                                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2 text-xs">
                                                                         <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200">
                                                                             {chunk.source || 'Source'}
                                                                         </span>
                                                                         {chunk.label && (
-                                                                            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-300">
+                                                                            <span className="w-full break-all text-[clamp(0.66rem,2vw,0.72rem)] font-semibold text-slate-500 sm:w-auto sm:text-right dark:text-slate-300">
                                                                                 {chunk.label}
                                                                             </span>
                                                                         )}
@@ -1839,7 +1880,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                                 : 'border border-slate-100 bg-white/80 dark:border-slate-800/50 dark:bg-slate-900/70';
                                                                         return (
                                                                             <div
-                                                                                className={`mt-2 rounded-lg p-3 text-sm text-slate-700 break-words whitespace-pre-wrap dark:text-slate-200 ${bg}`}
+                                                                                className={`mt-2 rounded-lg p-3 text-[clamp(0.86rem,2.2vw,0.95rem)] leading-[1.45] text-slate-700 break-words whitespace-pre-wrap [overflow-wrap:anywhere] dark:text-slate-200 ${bg}`}
                                                                             >
                                                                                 {isHistory && (
                                                                                     <span className="mr-2 inline-block rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-white dark:bg-emerald-500">
@@ -1851,7 +1892,7 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                                         Upload
                                                                                     </span>
                                                                                 )}
-                                                                                <span className="align-middle">
+                                                                                <span className="align-middle break-words [overflow-wrap:anywhere]">
                                                                                     {(isHistory && `History: ${rest}`) ||
                                                                                         (isUpload && `Upload: ${rest}`) ||
                                                                                         raw}
@@ -1860,14 +1901,14 @@ function PatientHistoryPanel({ onAuthFailure }: PatientHistoryPanelProps) {
                                                                         );
                                                                     })()}
                                                                     {chunk.sources && chunk.sources.length > 0 && (
-                                                                        <div className="mt-3 space-y-1 text-[11px] text-emerald-700 dark:text-emerald-300">
+                                                                        <div className="mt-3 space-y-1 text-[clamp(0.66rem,2vw,0.72rem)] text-emerald-700 dark:text-emerald-300">
                                                                             {chunk.sources.map((s, i) => (
                                                                                 <a
                                                                                     key={i}
                                                                                     href={s.url || '#'}
                                                                                     target="_blank"
                                                                                     rel="noopener noreferrer"
-                                                                                    className="flex items-center gap-1 underline decoration-emerald-400 underline-offset-2 hover:text-emerald-800 dark:hover:text-emerald-100"
+                                                                                    className="flex items-start gap-1 break-all [overflow-wrap:anywhere] underline decoration-emerald-400 underline-offset-2 hover:text-emerald-800 dark:hover:text-emerald-100"
                                                                                 >
                                                                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                                                                                         <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H19.5V12M19.5 6L10.5 15L7.5 12L4.5 15" />
@@ -3888,14 +3929,27 @@ function ConsultationForm({ isPremium = true, onSessionExpired }: ConsultationFo
                                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                                     Previous summary preview
                                 </p>
-                                <div className="mt-1 max-h-32 overflow-y-auto text-sm leading-relaxed">
+                                <div className="mt-1 max-h-32 overflow-y-auto text-sm leading-relaxed break-words [overflow-wrap:anywhere]">
                                     <ReactMarkdown
                                         remarkPlugins={[remarkGfm, remarkBreaks]}
                                         components={{
+                                            a: ({ className, ...props }) => (
+                                                <a
+                                                    {...props}
+                                                    className={`${className || ''} break-all`.trim()}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                />
+                                            ),
                                             p: ({ children, ...props }) => (
-                                                <p {...props} className="mb-2 last:mb-0">
+                                                <p {...props} className="mb-2 break-words [overflow-wrap:anywhere] last:mb-0">
                                                     {children}
                                                 </p>
+                                            ),
+                                            li: ({ children, ...props }) => (
+                                                <li {...props} className="break-words [overflow-wrap:anywhere]">
+                                                    {children}
+                                                </li>
                                             ),
                                         }}
                                     >
@@ -4060,7 +4114,7 @@ export default function Product() {
                     <div className="mb-4">
                         <Link
                             href="/"
-                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:border-emerald-500 dark:hover:text-emerald-200"
+                            className="inline-flex min-h-11 items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:border-emerald-500 dark:hover:text-emerald-200"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12l7.5-7.5M3 12h18" />
@@ -4090,7 +4144,7 @@ export default function Product() {
                                 </span>
                             </div>
                         </div>
-                        <div className="flex items-center gap-3 md:pt-2">
+                        <div className="flex flex-wrap items-center gap-3 md:pt-2">
                             {subscription && (
                                 <span
                                     className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${
@@ -4107,12 +4161,12 @@ export default function Product() {
                     </div>
                 </header>
 
-                <div className="fixed right-4 top-4 z-50 sm:right-6 sm:top-6">
+                <div className="safe-fixed-top-right fixed z-50">
                     <ThemeToggle />
                 </div>
 
                 <div className="mx-auto max-w-5xl px-6 pb-4">
-                    <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm dark:border-slate-700 dark:bg-slate-900/80">
+                    <div className="flex w-full flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm dark:border-slate-700 dark:bg-slate-900/80">
                         {workspaceTabs.map((tab) => {
                             const active = tab.id === activeTab;
                             return (
@@ -4120,7 +4174,7 @@ export default function Product() {
                                     key={tab.id}
                                     type="button"
                                     onClick={() => setActiveTab(tab.id)}
-                                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                                    className={`min-h-11 flex-1 rounded-full px-4 py-2 text-sm font-semibold transition sm:flex-none ${
                                         active
                                             ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-200/60 dark:bg-emerald-500 dark:text-slate-900'
                                             : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'

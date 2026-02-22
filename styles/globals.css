@@ -126,3 +126,40 @@ body {
   padding: 6px 8px;
   border-radius: 999px;
 }
+
+/* Mobile safe-area helpers for fixed controls */
+.safe-fixed-top-right {
+  top: max(1rem, calc(env(safe-area-inset-top) + 0.25rem));
+  right: max(1rem, calc(env(safe-area-inset-right) + 0.75rem));
+}
+
+.safe-fixed-fab {
+  bottom: max(1rem, calc(env(safe-area-inset-bottom) + 0.75rem));
+  right: max(1rem, calc(env(safe-area-inset-right) + 0.75rem));
+}
+
+.safe-fixed-chat-panel {
+  left: 0.75rem;
+  right: 0.75rem;
+  top: max(4.75rem, calc(env(safe-area-inset-top) + 4rem));
+  bottom: max(0.75rem, calc(env(safe-area-inset-bottom) + 0.75rem));
+}
+
+@media (min-width: 640px) {
+  .safe-fixed-top-right {
+    top: 1.5rem;
+    right: 1.5rem;
+  }
+
+  .safe-fixed-fab {
+    bottom: 1.5rem;
+    right: 1.5rem;
+  }
+
+  .safe-fixed-chat-panel {
+    top: auto;
+    left: auto;
+    right: 1.5rem;
+    bottom: 6rem;
+  }
+}
