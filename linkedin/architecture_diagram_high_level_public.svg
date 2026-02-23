@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="806" viewBox="0 0 1840 1060">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#64748b" flood-opacity="0.18"/>
+    </filter>
+    <style>
+      .title { font: 700 56px "Trebuchet MS", Arial, sans-serif; fill: #0f172a; }
+      .sub { font: 500 24px "Trebuchet MS", Arial, sans-serif; fill: #334155; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 2.8; rx: 20; filter: url(#cardShadow); }
+      .box-strong { fill: #ffffff; stroke: #0f172a; stroke-width: 3.4; rx: 20; filter: url(#cardShadow); }
+      .h { font: 700 34px "Trebuchet MS", Arial, sans-serif; fill: #0f172a; }
+      .b { font: 500 21px "Trebuchet MS", Arial, sans-serif; fill: #334155; }
+      .arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); stroke-linecap: round; stroke-linejoin: round; }
+      .edge-tag { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.2; rx: 7; }
+      .edge { font: 700 16px "Trebuchet MS", Arial, sans-serif; fill: #334155; }
+      .note { font: 500 16px "Trebuchet MS", Arial, sans-serif; fill: #64748b; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1840" height="1060" fill="url(#bg)"/>
+
+  <text x="64" y="94" class="title">IdeaGen High-Level Architecture</text>
+  <text x="64" y="136" class="sub">IdeaGen: multi-step business idea workflow with persistence, exports, and delivery.</text>
+
+  <rect x="64" y="212" width="370" height="250" class="box-strong"/>
+  <text x="96" y="265" class="h">Frontend</text>
+  <text x="96" y="305" class="b">- Product workflow UI</text>
+  <text x="96" y="341" class="b">- Generate -> Compare -> Decide</text>
+  <text x="96" y="377" class="b">- Execution workflow</text>
+  <text x="96" y="413" class="b">- Saved artifact library</text>
+
+  <rect x="454" y="212" width="430" height="250" class="box-strong"/>
+  <text x="486" y="265" class="h">FastAPI Control Plane</text>
+  <text x="486" y="305" class="b">- Auth and usage gating</text>
+  <text x="486" y="341" class="b">- Workflow orchestration</text>
+  <text x="486" y="377" class="b">- Artifact lifecycle APIs</text>
+  <text x="486" y="413" class="b">- Reliability guardrails</text>
+
+  <rect x="924" y="212" width="350" height="250" class="box"/>
+  <text x="956" y="265" class="h">Agent Layer</text>
+  <text x="956" y="305" class="b">- Generation and ranking</text>
+  <text x="956" y="341" class="b">- Comparison and summary</text>
+  <text x="956" y="377" class="b">- Execution planning</text>
+  <text x="956" y="413" class="b">- Fallback and validation</text>
+
+  <rect x="1314" y="212" width="420" height="250" class="box"/>
+  <text x="1346" y="265" class="h">LLM Providers</text>
+  <text x="1346" y="305" class="b">- OpenAI</text>
+  <text x="1346" y="341" class="b">- Gemini</text>
+  <text x="1346" y="377" class="b">- DeepSeek</text>
+  <text x="1346" y="413" class="b">- Grok</text>
+
+  <rect x="500" y="590" width="470" height="250" class="box"/>
+  <text x="532" y="643" class="h">Persistence Layer</text>
+  <text x="532" y="683" class="b">- SQLite / DB</text>
+  <text x="532" y="719" class="b">- Runs, comparisons, reports</text>
+  <text x="532" y="755" class="b">- Usage and plan counters</text>
+  <text x="532" y="791" class="b">- Snapshot-based reuse</text>
+
+  <rect x="1030" y="590" width="560" height="250" class="box"/>
+  <text x="1062" y="643" class="h">Reporting and Delivery</text>
+  <text x="1062" y="683" class="b">- PDF Renderer</text>
+  <text x="1062" y="719" class="b">- Email delivery</text>
+  <text x="1062" y="755" class="b">- Execution plan exports</text>
+  <text x="1062" y="791" class="b">- Stakeholder-ready artifacts</text>
+
+  <path d="M434 335 L454 335" class="arrow"/>
+  <rect x="418" y="286" width="54" height="24" class="edge-tag"/>
+  <text x="430" y="303" class="edge">JWT</text>
+
+  <path d="M884 335 L924 335" class="arrow"/>
+  <path d="M1274 335 L1314 335" class="arrow"/>
+
+  <path d="M669 462 L669 530 L735 530 L735 590" class="arrow"/>
+  <rect x="676" y="542" width="70" height="24" class="edge-tag"/>
+  <text x="689" y="559" class="edge">Writes</text>
+
+  <path d="M970 716 L1030 716" class="arrow"/>
+  <rect x="922" y="668" width="82" height="24" class="edge-tag"/>
+  <text x="932" y="685" class="edge">Artifacts</text>
+
+  <path d="M1310 840 L1310 910" class="arrow"/>
+  <rect x="1248" y="930" width="116" height="24" class="edge-tag"/>
+  <text x="1262" y="947" class="edge">PDF/Email</text>
+
+  <text x="64" y="1018" class="note">Public portfolio view with simplified labels and condensed flow details.</text>
+</svg>

@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1120" viewBox="0 0 1800 1120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="100%" stop-color="#e2e8f0" />
+    </linearGradient>
+    <style>
+      .title { font: 700 34px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 18px Arial, sans-serif; fill: #334155; }
+      .group-title { font: 700 20px Arial, sans-serif; fill: #0f172a; }
+      .text { font: 500 16px Arial, sans-serif; fill: #1e293b; }
+      .small { font: 500 14px Arial, sans-serif; fill: #334155; }
+      .panel { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; rx: 16; }
+      .panel-strong { fill: #ffffff; stroke: #0f172a; stroke-width: 2.4; rx: 16; }
+      .chip { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; rx: 8; }
+      .chip2 { fill: #ecfeff; stroke: #0891b2; stroke-width: 1.4; rx: 8; }
+      .chip3 { fill: #f0fdf4; stroke: #16a34a; stroke-width: 1.4; rx: 8; }
+      .chip4 { fill: #fff7ed; stroke: #ea580c; stroke-width: 1.4; rx: 8; }
+      .arrow { stroke: #334155; stroke-width: 2.8; fill: none; marker-end: url(#arrow); }
+      .dashed { stroke-dasharray: 7 6; }
+      .label { font: 600 13px Arial, sans-serif; fill: #475569; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#334155" />
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1800" height="1120" fill="url(#bg)" />
+
+  <text x="42" y="54" class="title">IdeaGen Complete Architecture</text>
+  <text x="42" y="84" class="subtitle">Full app functionality: Generate -> Compare -> Decision Summary -> Execution Plan + persistence, exports, and delivery</text>
+
+  <!-- Frontend -->
+  <rect x="42" y="126" width="410" height="370" class="panel-strong" />
+  <text x="62" y="158" class="group-title">Frontend (Next.js / React / TS)</text>
+  <text x="62" y="186" class="small">pages/product.tsx orchestrates UI state + modal workflows</text>
+
+  <rect x="62" y="208" width="172" height="46" class="chip" /><text x="75" y="237" class="text">1. Generate Results</text>
+  <rect x="244" y="208" width="188" height="46" class="chip" /><text x="258" y="237" class="text">2. Compare Results</text>
+  <rect x="62" y="264" width="200" height="46" class="chip" /><text x="76" y="293" class="text">3. Decision Summary</text>
+  <rect x="272" y="264" width="160" height="46" class="chip" /><text x="286" y="293" class="text">4. Execution Plan</text>
+
+  <text x="62" y="342" class="text">Saved Results modal modes:</text>
+  <text x="62" y="366" class="small">Generated | Compare | Decision | Stakeholder (Execution Plan)</text>
+  <text x="62" y="394" class="text">Main API usage:</text>
+  <text x="62" y="418" class="small">/api, /api/compare-results, /api/rank-report,</text>
+  <text x="62" y="440" class="small">/api/stakeholder-report, /api/*/pdf, /api/*/email</text>
+  <text x="62" y="468" class="small">Adaptive Decision Flow + persistent Step Guide UX</text>
+
+  <!-- API Orchestrator -->
+  <rect x="492" y="126" width="520" height="430" class="panel-strong" />
+  <text x="514" y="158" class="group-title">FastAPI Control Plane (api/index.py)</text>
+  <text x="514" y="186" class="small">Deterministic request orchestration + reliability guardrails</text>
+
+  <rect x="514" y="208" width="230" height="58" class="chip2" />
+  <text x="526" y="234" class="text">Auth: Clerk JWT + JWKS</text>
+  <text x="526" y="254" class="small">Custom verifier (PyJWT, leeway)</text>
+
+  <rect x="754" y="208" width="236" height="58" class="chip2" />
+  <text x="768" y="234" class="text">Plan + Quota Enforcement</text>
+  <text x="768" y="254" class="small">API/min, monthly tokens, email/day, storage</text>
+
+  <rect x="514" y="278" width="476" height="88" class="chip2" />
+  <text x="526" y="304" class="text">Core endpoint orchestration</text>
+  <text x="526" y="326" class="small">POST /api (generate + rank), POST /api/compare-results, POST /api/rank-report,</text>
+  <text x="526" y="348" class="small">POST /api/stakeholder-report, saved artifact CRUD, /health, static mount</text>
+
+  <rect x="514" y="378" width="476" height="74" class="chip2" />
+  <text x="526" y="404" class="text">Reliability controls</text>
+  <text x="526" y="426" class="small">Validation loops, fallback chains, cache-before-infer, deterministic safety fallbacks</text>
+
+  <rect x="514" y="462" width="476" height="72" class="chip2" />
+  <text x="526" y="488" class="text">Execution Plan (Grounded Finance v2)</text>
+  <text x="526" y="510" class="small">Deterministic finance + run-conditioned adjustments + narrative composition</text>
+
+  <!-- Agents -->
+  <rect x="1048" y="126" width="400" height="430" class="panel-strong" />
+  <text x="1068" y="158" class="group-title">Agent Layer (api/agent/*.py)</text>
+
+  <rect x="1068" y="184" width="360" height="44" class="chip3" /><text x="1082" y="212" class="text">idea_generation_agent + model_fallback</text>
+  <rect x="1068" y="236" width="360" height="44" class="chip3" /><text x="1082" y="264" class="text">rank_result_agent (per-run ranking)</text>
+  <rect x="1068" y="288" width="360" height="44" class="chip3" /><text x="1082" y="316" class="text">compare_results_agent (Run A vs Run B)</text>
+  <rect x="1068" y="340" width="360" height="44" class="chip3" /><text x="1082" y="368" class="text">rank_report_agent (decision summary)</text>
+  <rect x="1068" y="392" width="360" height="44" class="chip3" /><text x="1082" y="420" class="text">recommend_combination_agent (premium)</text>
+  <rect x="1068" y="444" width="360" height="44" class="chip3" /><text x="1082" y="472" class="text">email_agent (delivery + audit)</text>
+  <text x="1068" y="516" class="small">Contract-first outputs (HTML/JSON), validation + retry loops</text>
+
+  <!-- Providers -->
+  <rect x="1484" y="126" width="274" height="250" class="panel" />
+  <text x="1502" y="158" class="group-title">LLM Providers</text>
+  <rect x="1504" y="178" width="110" height="40" class="chip4" /><text x="1536" y="203" class="text">OpenAI</text>
+  <rect x="1628" y="178" width="110" height="40" class="chip4" /><text x="1661" y="203" class="text">Gemini</text>
+  <rect x="1504" y="228" width="110" height="40" class="chip4" /><text x="1531" y="253" class="text">DeepSeek</text>
+  <rect x="1628" y="228" width="110" height="40" class="chip4" /><text x="1664" y="253" class="text">Grok</text>
+  <text x="1504" y="292" class="small">Ordered fallback chains by provider</text>
+  <text x="1504" y="314" class="small">Transient failover + timeout handling</text>
+
+  <!-- Persistence -->
+  <rect x="42" y="560" width="700" height="300" class="panel-strong" />
+  <text x="62" y="592" class="group-title">Persistence (SQLite: /app/data/usage.db via api/db.py)</text>
+
+  <rect x="62" y="612" width="310" height="44" class="chip" /><text x="76" y="640" class="text">user_usage (plan + usage counters)</text>
+  <rect x="386" y="612" width="330" height="44" class="chip" /><text x="400" y="640" class="text">saved_results (generated runs + rank_result)</text>
+
+  <rect x="62" y="666" width="310" height="44" class="chip" /><text x="76" y="694" class="text">saved_comparisons (diff insights)</text>
+  <rect x="386" y="666" width="330" height="44" class="chip" /><text x="400" y="694" class="text">saved_rank_reports (decision reports + snapshots)</text>
+
+  <rect x="62" y="720" width="654" height="44" class="chip" /><text x="76" y="748" class="text">saved_stakeholder_reports (Execution Plan dossiers + assumptions + provenance)</text>
+
+  <text x="62" y="790" class="small">Cache reuse keys: compare pairs + normalized run-id sets for decision reports</text>
+  <text x="62" y="812" class="small">Artifact lifecycle: list/load/view/delete/delete-all across all four artifact domains</text>
+
+  <!-- Delivery -->
+  <rect x="780" y="580" width="570" height="280" class="panel-strong" />
+  <text x="802" y="612" class="group-title">Reporting and Delivery</text>
+
+  <rect x="802" y="632" width="250" height="56" class="chip2" />
+  <text x="816" y="658" class="text">PDF Rendering</text>
+  <text x="816" y="678" class="small">api/utils/pdf_utils.py + WeasyPrint</text>
+
+  <rect x="1062" y="632" width="266" height="56" class="chip2" />
+  <text x="1076" y="658" class="text">Email Delivery</text>
+  <text x="1076" y="678" class="small">email_agent -> Resend (quota-aware)</text>
+
+  <rect x="802" y="700" width="526" height="66" class="chip2" />
+  <text x="816" y="726" class="text">Export endpoints</text>
+  <text x="816" y="748" class="small">Generated PDF/email, Compare PDF/email, Decision PDF/email, Execution PDF + presentation</text>
+
+  <text x="802" y="794" class="small">Execution plan exports: /api/stakeholder-reports/{id}/pdf and /presentation</text>
+  <text x="802" y="816" class="small">Decision report responses include diagnostic headers (cached/email/runs-missing)</text>
+
+  <!-- Deployment -->
+  <rect x="1388" y="430" width="370" height="430" class="panel" />
+  <text x="1408" y="462" class="group-title">Runtime + Deployment</text>
+  <text x="1408" y="490" class="text">Docker multi-stage build</text>
+  <text x="1408" y="514" class="small">Static Next export + FastAPI in one container</text>
+  <text x="1408" y="548" class="text">AWS ECR -> App Runner</text>
+  <text x="1408" y="572" class="small">Route 53 custom domain + ALLOWED_HOSTS</text>
+  <text x="1408" y="606" class="text">Health: GET /health</text>
+  <text x="1408" y="630" class="small">Persistent volume required for SQLite durability</text>
+
+  <text x="1408" y="682" class="text">Current documented boundaries</text>
+  <text x="1408" y="706" class="small">No async job queue</text>
+  <text x="1408" y="728" class="small">No external managed DB in current implementation</text>
+  <text x="1408" y="750" class="small">No distributed tracing backend</text>
+
+  <!-- Arrows -->
+  <path d="M452 310 L492 310" class="arrow" />
+  <text x="456" y="296" class="label">JWT + requests</text>
+
+  <path d="M1012 332 L1048 332" class="arrow" />
+  <text x="1017" y="318" class="label">worker calls</text>
+
+  <path d="M1448 286 L1484 286" class="arrow" />
+  <text x="1451" y="272" class="label">provider API</text>
+
+  <path d="M740 560 L740 690 L742 690" class="arrow" />
+  <text x="628" y="676" class="label">persist/load/cache</text>
+
+  <path d="M820 558 L920 580" class="arrow" />
+  <text x="818" y="572" class="label">render/export</text>
+
+  <path d="M1012 492 L1130 580" class="arrow" />
+  <text x="1040" y="560" class="label">delivery workflows</text>
+
+  <path d="M1280 332 C1350 300, 1410 280, 1484 250" class="arrow dashed" />
+  <text x="1314" y="300" class="label">fallback chains</text>
+
+  <path d="M1160 860 C980 940, 620 958, 390 860" class="arrow" />
+  <text x="742" y="956" class="label">artifact retrieval -> UI hydration (load/view)</text>
+
+  <text x="42" y="1090" class="small">Source-aligned to ARCHITECTURE.md, api_reference.md, technical_backend.md, and stakeholder_report_schema.md (Execution Plan: grounded_v2).</text>
+</svg>
