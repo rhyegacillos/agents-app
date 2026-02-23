@@ -1,8 +1,10 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* --- Theme tokens --- */
 :root {
+  color-scheme: dark;
   --bg0: #070a12;
   --bg1: #0b1020;
   --panel: rgba(255, 255, 255, 0.06);
@@ -128,4 +130,3 @@
 .ig-scrollbar:hover::-webkit-scrollbar-thumb {
   opacity: 1;
 }
-

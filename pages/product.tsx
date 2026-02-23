@@ -7,7 +7,7 @@ import { Protect, UserButton, useAuth, useUser, useClerk, PricingTable } from "@
 
 const CLERK_JWT_TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE || "";
 const COMPARE_CONFIG_MISMATCH_MESSAGE =
-  "These runs cannot be compared. They must share the same industry, persona, constraints, and model set.";
+  "These runs cannot be compared. They must share the same industry, persona, and constraints.";
 
 type FlowStepKey = "generated" | "insights" | "decision" | "stakeholder";
 type FlowMode = "guided" | "status";
@@ -1187,7 +1187,8 @@ function IdeaGenerator({
   const [savedPanelPos, setSavedPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const savedPanelRef = useRef<HTMLDivElement | null>(null);
   const aiModelsRef = useRef<HTMLDivElement | null>(null);
-  const generateIdeasBtnRef = useRef<HTMLButtonElement | null>(null);
+  const generateIdeasDesktopBtnRef = useRef<HTMLButtonElement | null>(null);
+  const generateIdeasMobileBtnRef = useRef<HTMLButtonElement | null>(null);
   const generateIdeasNudgeTimerRef = useRef<number | null>(null);
   const compareBuilderRef = useRef<HTMLDivElement | null>(null);
   const compareRunASelectRef = useRef<HTMLSelectElement | null>(null);
@@ -1707,12 +1708,6 @@ function IdeaGenerator({
     const extra = labels.length - first.length;
     return extra > 0 ? `${first.join(", ")} +${extra}` : first.join(", ");
   };
-  const normalizeConfigTokens = (items: string[] = []) =>
-    items
-      .map((item) => String(item || "").trim().toLowerCase())
-      .filter(Boolean)
-      .sort()
-      .join("|");
   const normalizeConstraintMatchKey = (items: string[] = []) => {
     const normalized = items
       .map((item) => String(item || "").trim().toLowerCase())
@@ -1740,13 +1735,10 @@ function IdeaGenerator({
     const personaB = normalizePersonaMatchKey(String(runB.tone || ""));
     const constraintsA = normalizeConstraintMatchKey(runA.constraints || []);
     const constraintsB = normalizeConstraintMatchKey(runB.constraints || []);
-    const modelsA = normalizeConfigTokens(runA.models || []);
-    const modelsB = normalizeConfigTokens(runB.models || []);
     if (
       industryA !== industryB ||
       personaA !== personaB ||
-      constraintsA !== constraintsB ||
-      modelsA !== modelsB
+      constraintsA !== constraintsB
     ) {
       return COMPARE_CONFIG_MISMATCH_MESSAGE;
     }
@@ -2146,8 +2138,16 @@ function IdeaGenerator({
       generateIdeasNudgeTimerRef.current = null;
     }, 2200);
     window.setTimeout(() => {
-      generateIdeasBtnRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-      generateIdeasBtnRef.current?.focus();
+      const desktopBtn = generateIdeasDesktopBtnRef.current;
+      const mobileBtn = generateIdeasMobileBtnRef.current;
+      const targetBtn =
+        (desktopBtn && desktopBtn.offsetParent !== null ? desktopBtn : null) ||
+        (mobileBtn && mobileBtn.offsetParent !== null ? mobileBtn : null) ||
+        desktopBtn ||
+        mobileBtn ||
+        null;
+      targetBtn?.scrollIntoView({ behavior: "smooth", block: "center" });
+      targetBtn?.focus();
     }, 80);
   };
 
@@ -3738,7 +3738,7 @@ function IdeaGenerator({
     resultsView === "generated" && hasGeneratedContext && !hasCompareContext;
   const compareConfigMismatch =
     Boolean(compareError) &&
-    /(same industry, persona, constraints, and model set|cannot be compared)/i.test(String(compareError || ""));
+    /(same industry, persona, and constraints|cannot be compared)/i.test(String(compareError || ""));
   const compareNavigationLocked = compareLoading;
   const compareInteractionLock = compareLoading;
   const executionQuickTips = [
@@ -4256,6 +4256,52 @@ function IdeaGenerator({
     document.addEventListener("mouseup", onMouseUp);
   };
 
+  const startSavedPanelTouchDrag = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (savedPanelLocked) return;
+    if (e.touches.length !== 1) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button, [data-no-drag='true']")) return;
+    const panel = savedPanelRef.current;
+    const touch = e.touches[0];
+    if (!panel || !touch) return;
+    const rect = panel.getBoundingClientRect();
+    savedPanelDragRef.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    setIsDraggingSavedPanel(true);
+
+    const onTouchMove = (moveEvent: TouchEvent) => {
+      const drag = savedPanelDragRef.current;
+      const activeTouch = moveEvent.touches[0];
+      if (!drag || !activeTouch) return;
+      moveEvent.preventDefault();
+      const dx = activeTouch.clientX - drag.startX;
+      const dy = activeTouch.clientY - drag.startY;
+      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+      const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
+      const left = clamp(drag.originX + dx, 8, maxLeft);
+      const top = clamp(drag.originY + dy, 8, maxTop);
+      setSavedPanelPos({ top, left, width: drag.width });
+    };
+
+    const onTouchEnd = () => {
+      setIsDraggingSavedPanel(false);
+      savedPanelDragRef.current = null;
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("touchcancel", onTouchEnd);
+    };
+
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("touchend", onTouchEnd);
+    document.addEventListener("touchcancel", onTouchEnd);
+  };
+
   const updateExecutionPlanPickerPos = useCallback((forceCenter = false) => {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
@@ -4321,6 +4367,52 @@ function IdeaGenerator({
 
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+  };
+
+  const startExecutionPlanPickerTouchDrag = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (stakeholderGenerating) return;
+    if (e.touches.length !== 1) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button, [data-no-drag='true']")) return;
+    const panel = executionPlanPickerRef.current;
+    const touch = e.touches[0];
+    if (!panel || !touch) return;
+    const rect = panel.getBoundingClientRect();
+    executionPlanPickerDragRef.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    setIsDraggingExecutionPlanPicker(true);
+
+    const onTouchMove = (moveEvent: TouchEvent) => {
+      const drag = executionPlanPickerDragRef.current;
+      const activeTouch = moveEvent.touches[0];
+      if (!drag || !activeTouch) return;
+      moveEvent.preventDefault();
+      const dx = activeTouch.clientX - drag.startX;
+      const dy = activeTouch.clientY - drag.startY;
+      const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+      const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
+      const left = clamp(drag.originX + dx, 8, maxLeft);
+      const top = clamp(drag.originY + dy, 8, maxTop);
+      setExecutionPlanPickerPos({ top, left, width: drag.width });
+    };
+
+    const onTouchEnd = () => {
+      setIsDraggingExecutionPlanPicker(false);
+      executionPlanPickerDragRef.current = null;
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("touchcancel", onTouchEnd);
+    };
+
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("touchend", onTouchEnd);
+    document.addEventListener("touchcancel", onTouchEnd);
   };
 
   useEffect(() => {
@@ -4705,6 +4797,7 @@ function IdeaGenerator({
                 isDraggingExecutionPlanPicker ? "cursor-grabbing" : "cursor-grab"
               )}
               onMouseDown={startExecutionPlanPickerDrag}
+              onTouchStart={startExecutionPlanPickerTouchDrag}
             >
               <div>
                 <div className="text-lg font-semibold text-white">Select 1 report for Execution Plan</div>
@@ -4889,7 +4982,7 @@ function IdeaGenerator({
 
       {usageNotices.length ? (
         <div
-          className="fixed bottom-4 right-4 z-50 flex w-full max-w-xs flex-col gap-2 pointer-events-none"
+          className="fixed inset-x-3 bottom-4 z-50 flex flex-col gap-2 pointer-events-none sm:inset-x-auto sm:right-4 sm:w-full sm:max-w-xs"
           role="status"
           aria-live="polite"
         >
@@ -4985,9 +5078,9 @@ function IdeaGenerator({
             </div>
           ) : null}
 
-          <div className="mt-4">
+          <div className="mt-4 hidden lg:block">
             <button
-              ref={generateIdeasBtnRef}
+              ref={generateIdeasDesktopBtnRef}
               type="button"
               onClick={generateIdeas}
               disabled={isLoading || isApiLimited || isTokenLimited}
@@ -5532,6 +5625,7 @@ function IdeaGenerator({
 
             <div className="sticky bottom-3 z-20 -mx-1 rounded-xl bg-gradient-to-t from-slate-950/70 via-slate-950/40 to-transparent px-1 py-2 backdrop-blur-sm lg:hidden">
               <button
+                ref={generateIdeasMobileBtnRef}
                 type="button"
                 onClick={generateIdeas}
                 disabled={isLoading || isApiLimited || isTokenLimited}
@@ -5797,8 +5891,9 @@ function IdeaGenerator({
                     >
                       <div
                         onMouseDown={startSavedPanelDrag}
+                        onTouchStart={startSavedPanelTouchDrag}
                         className={cx(
-                          "flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5 select-none",
+                          "flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/60 dark:bg-white/5 select-none touch-none",
                           savedPanelLocked
                             ? ""
                             : isDraggingSavedPanel
@@ -6312,10 +6407,10 @@ function IdeaGenerator({
                                               setCompareResult(null);
                                               runCompare(item.run_a_id, item.run_b_id, true);
                                             }}
-                                            disabled={isTokenLimited || compareLoading || savedPanelLocked || deletingAllComparisons}
+                                            disabled={compareLoading || savedPanelLocked || deletingAllComparisons}
                                             className={cx(
                                               "rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white",
-                                              isTokenLimited || compareLoading || savedPanelLocked || deletingAllComparisons
+                                              compareLoading || savedPanelLocked || deletingAllComparisons
                                                 ? "bg-slate-400 cursor-not-allowed"
                                                 : "bg-emerald-600 hover:bg-emerald-700"
                                             )}
@@ -6854,11 +6949,11 @@ function IdeaGenerator({
         <GlassCard className="min-h-[680px] p-4 lg:p-5">
           <div className="space-y-1.5">
             <div className="rounded-xl border border-black/[0.03] dark:border-white/[0.04] bg-transparent px-2 py-0.5">
-              <div className="overflow-x-auto sm:overflow-x-visible ig-scrollbar">
-                <div className="inline-flex sm:flex sm:w-full sm:min-w-0 items-start gap-1.5 py-0.5">
-                  <span className="text-[10px] font-semibold text-gray-500/75 dark:text-gray-400/75">
-                    {showStepGuidanceAssist ? "Flow overview" : "Flow status"}
-                  </span>
+              <div className="px-0.5 text-[10px] font-semibold text-gray-500/75 dark:text-gray-400/75">
+                {showStepGuidanceAssist ? "Flow overview" : "Flow status"}
+              </div>
+              <div className="overflow-visible sm:overflow-x-auto sm:overflow-y-hidden ig-scrollbar">
+                <div className="flex flex-wrap items-start gap-1.5 py-0.5 sm:inline-flex sm:min-w-max sm:flex-nowrap">
                   {flowSteps.map((step, idx) => {
                     const isCurrent = activeFlowStepKey === step.key;
                     const previousStepKey = idx > 0 ? flowSteps[idx - 1]?.key : null;
@@ -6866,8 +6961,8 @@ function IdeaGenerator({
                       isGuidedMode && idx > 0 && previousStepKey && !flowCompletion[previousStepKey]
                     );
                     return (
-                      <div key={step.key} className="inline-flex items-center">
-                        <div className="inline-flex items-start gap-1.5 min-w-[140px]">
+                      <div key={step.key} className="flex w-full items-start sm:inline-flex sm:w-auto sm:items-center">
+                        <div className="inline-flex items-start gap-1.5 min-w-0 sm:min-w-[140px]">
                           <div className="inline-flex items-start gap-1.5">
                             <span
                               className={cx(
@@ -6932,7 +7027,7 @@ function IdeaGenerator({
                           <span
                             aria-hidden="true"
                             className={cx(
-                              "mx-1.5 block h-px w-4",
+                              "hidden sm:mx-1.5 sm:block sm:h-px sm:w-4",
                               isGuidedMode && guidanceBand === "high" && idx < currentStepIndex
                                 ? "bg-blue-500/25"
                                 : "bg-white/10"
@@ -7523,16 +7618,20 @@ function IdeaGenerator({
                       <div className="mx-auto w-full max-w-2xl rounded-xl bg-white/60 dark:bg-white/5 px-4 py-3 text-center space-y-1">
                         <p className="text-sm font-semibold text-gray-900 dark:text-white">No comparison loaded</p>
                         <p className="text-sm text-gray-700 dark:text-gray-200">
-                          Load a saved comparison or select two runs to generate a new comparison.
+                          {savedComparisons.length > 0
+                            ? "Load a saved comparison or select two runs to generate a new comparison."
+                            : "Select two runs to generate a new comparison."}
                         </p>
                         <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => openLibraryForView("insights")}
-                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
-                          >
-                            Load from Library
-                          </button>
+                          {savedComparisons.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => openLibraryForView("insights")}
+                              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                            >
+                              Load from Library
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => {
@@ -7544,7 +7643,7 @@ function IdeaGenerator({
                             }}
                             className="rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-white/90 dark:hover:bg-white/10"
                           >
-                            {savedResults.length >= 2 ? "Compare two runs" : "Generate another run"}
+                            {savedComparisons.length === 0 ? "Compare two runs" : savedResults.length >= 2 ? "Compare two runs" : "Generate another run"}
                           </button>
                         </div>
                         {savedResults.length < 2 ? (
@@ -7561,7 +7660,7 @@ function IdeaGenerator({
                         >
                           <div className="text-sm font-semibold text-gray-900 dark:text-white">Compare builder</div>
                           <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                            Pick two runs with the same Industry, Persona, Constraints, and model set.
+                            Pick two runs with the same Industry, Persona, and Constraints.
                           </div>
                           <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] md:items-center">
                             <select
@@ -8607,8 +8706,32 @@ function IdeaGenerator({
                         <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
                           Table legend: Revenue = total income · OpEx = operating expenses · Net = revenue minus total costs · Cumulative = running profit or loss.
                         </div>
+                        <div className="mt-2 md:hidden max-h-64 overflow-y-auto ig-scrollbar pr-1 space-y-2">
+                          {stakeholderReport.dossier?.revenue_profit?.monthly_projection?.map((row, idx) => (
+                            <div
+                              key={idx}
+                              className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/5 px-3 py-2"
+                            >
+                              <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-200">
+                                Month {row.month}
+                              </div>
+                              <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-gray-600 dark:text-gray-300">
+                                <span>Customers</span>
+                                <span className="text-right tabular-nums">{Number(row.customers || 0).toLocaleString()}</span>
+                                <span>Revenue</span>
+                                <span className="text-right tabular-nums">{formatCurrency(row.revenue, stakeholderReport.currency)}</span>
+                                <span>OpEx</span>
+                                <span className="text-right tabular-nums">{formatCurrency(row.opex, stakeholderReport.currency)}</span>
+                                <span>Net</span>
+                                <span className="text-right tabular-nums">{formatCurrency(row.net_profit, stakeholderReport.currency)}</span>
+                                <span>Cumulative</span>
+                                <span className="text-right tabular-nums">{formatCurrency(row.cumulative_net_profit, stakeholderReport.currency)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                         <div
-                          className="mt-2 max-h-64 overflow-y-auto overflow-x-auto ig-scrollbar pr-2"
+                          className="mt-2 hidden max-h-64 overflow-y-auto overflow-x-auto ig-scrollbar pr-2 md:block"
                           style={{ scrollbarGutter: "stable both-edges" as any }}
                         >
                           <table className="min-w-[720px] w-full table-fixed text-[12px]">

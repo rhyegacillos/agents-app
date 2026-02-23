@@ -206,6 +206,7 @@ docker run -p 8000:8000 \
 - Deep architecture reference: `ARCHITECTURE.md`
 - Stakeholder dossier schema spec: `stakeholder_report_schema.md`
 - Launch checklist: `checklist.md`
+- Production SaaS solid checker: `PRODUCTION_SAAS_SOLID_CHECKER.md`
 - Roadmap: `roadmap.md`
 
 

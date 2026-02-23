@@ -1927,19 +1927,16 @@ async def compare_results(request: CompareResultsRequest, creds: HTTPAuthorizati
 
     def normalized_config(run: Dict[str, Any]) -> Dict[str, Any]:
         constraints = [str(c).strip().lower() for c in (run.get("constraints") or []) if str(c).strip()]
-        models = run.get("models") or list((run.get("results") or {}).keys())
-        model_ids = [str(m).strip().lower() for m in models if str(m).strip()]
         return {
             "industry": str(run.get("industry") or "").strip().lower(),
             "tone": str(run.get("tone") or "").strip().lower(),
             "constraints": sorted(constraints),
-            "models": sorted(model_ids),
         }
 
     if normalized_config(run_a) != normalized_config(run_b):
         raise HTTPException(
             status_code=400,
-            detail="Diff analysis requires the same industry, persona, constraints, and model set.",
+            detail="Diff analysis requires the same industry, persona, and constraints.",
         )
 
     cached = db.get_saved_comparison(user_id, request.run_a_id, request.run_b_id)
