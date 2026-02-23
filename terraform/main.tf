@@ -9,6 +9,8 @@ locals {
   name_prefix = "${var.project_name}-${var.environment}"
 
   custom_domain_fqdn     = "${var.project_name}.${var.root_domain}"
+  api_domain_fqdn        = "${var.api_subdomain}.${var.root_domain}"
+  create_api_domain      = var.use_custom_domain && var.root_domain != "" && var.api_subdomain != ""
   api_cors_origin        = var.use_custom_domain && var.root_domain != "" ? "https://${local.custom_domain_fqdn}" : "https://${aws_cloudfront_distribution.main.domain_name}"
   create_www_alias       = false
   acm_validation_options = var.use_custom_domain && length(aws_acm_certificate.site) > 0 ? aws_acm_certificate.site[0].domain_validation_options : []
@@ -517,6 +519,34 @@ resource "aws_api_gateway_integration_response" "proxy_options" {
   }
 }
 
+resource "aws_cloudfront_function" "enforce_custom_host" {
+  count   = var.use_custom_domain && var.root_domain != "" ? 1 : 0
+  name    = "${local.name_prefix}-enforce-host"
+  runtime = "cloudfront-js-1.0"
+  publish = true
+  code    = <<-EOT
+function handler(event) {
+  var request = event.request;
+  var host = request.headers.host && request.headers.host.value ? request.headers.host.value.toLowerCase() : "";
+  var canonicalHost = "${local.custom_domain_fqdn}";
+
+  if (host === canonicalHost) {
+    return request;
+  }
+
+  return {
+    statusCode: 301,
+    statusDescription: "Moved Permanently",
+    headers: {
+      location: {
+        value: "https://" + canonicalHost + request.uri
+      }
+    }
+  };
+}
+EOT
+}
+
 # CloudFront distribution
 resource "aws_cloudfront_distribution" "main" {
   aliases             = local.aliases
@@ -555,6 +585,14 @@ resource "aws_cloudfront_distribution" "main" {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "S3-${aws_s3_bucket.frontend.id}"
+
+    dynamic "function_association" {
+      for_each = var.use_custom_domain && var.root_domain != "" ? [1] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.enforce_custom_host[0].arn
+      }
+    }
 
     forwarded_values {
       query_string = false
@@ -618,6 +656,65 @@ resource "aws_acm_certificate_validation" "site" {
   validation_record_fqdns = [
     for r in aws_route53_record.site_validation : r.fqdn
   ]
+}
+
+resource "aws_acm_certificate" "api" {
+  count             = local.create_api_domain ? 1 : 0
+  domain_name       = local.api_domain_fqdn
+  validation_method = "DNS"
+  lifecycle { create_before_destroy = true }
+  tags = local.common_tags
+}
+
+resource "aws_route53_record" "api_validation" {
+  for_each = local.create_api_domain ? {
+    for dvo in aws_acm_certificate.api[0].domain_validation_options : dvo.domain_name => dvo
+  } : {}
+
+  zone_id = data.aws_route53_zone.root[0].zone_id
+  name    = each.value.resource_record_name
+  type    = each.value.resource_record_type
+  ttl     = 300
+  records = [each.value.resource_record_value]
+}
+
+resource "aws_acm_certificate_validation" "api" {
+  count           = local.create_api_domain ? 1 : 0
+  certificate_arn = aws_acm_certificate.api[0].arn
+  validation_record_fqdns = [
+    for r in aws_route53_record.api_validation : r.fqdn
+  ]
+}
+
+resource "aws_api_gateway_domain_name" "api" {
+  count                    = local.create_api_domain ? 1 : 0
+  domain_name              = local.api_domain_fqdn
+  regional_certificate_arn = aws_acm_certificate_validation.api[0].certificate_arn
+  security_policy          = "TLS_1_2"
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
+}
+
+resource "aws_api_gateway_base_path_mapping" "api" {
+  count       = local.create_api_domain ? 1 : 0
+  api_id      = aws_api_gateway_rest_api.main.id
+  stage_name  = aws_api_gateway_stage.main.stage_name
+  domain_name = aws_api_gateway_domain_name.api[0].domain_name
+}
+
+resource "aws_route53_record" "api_alias" {
+  count   = local.create_api_domain ? 1 : 0
+  zone_id = data.aws_route53_zone.root[0].zone_id
+  name    = local.api_domain_fqdn
+  type    = "A"
+
+  alias {
+    name                   = aws_api_gateway_domain_name.api[0].regional_domain_name
+    zone_id                = aws_api_gateway_domain_name.api[0].regional_zone_id
+    evaluate_target_health = false
+  }
 }
 
 resource "aws_route53_record" "alias_root" {

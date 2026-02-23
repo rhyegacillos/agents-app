@@ -91,6 +91,7 @@ export default function Twin() {
     const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
+    const [viewport, setViewport] = useState({ width: 0, height: 0 });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const cancelRequestedRef = useRef(false);
@@ -99,7 +100,10 @@ export default function Twin() {
     const inputScrollbarRaf = useRef<number | null>(null);
     const [inputScrollbar, setInputScrollbar] = useState({ visible: false, top: 0, height: 0 });
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+    const API_URL = configuredApiUrl
+        ? configuredApiUrl.replace(/\/+$/, '')
+        : (process.env.NODE_ENV === 'development' ? 'http://localhost:8000' : '');
     const normalizeExternalUrl = useCallback((value?: string | Blob): string => {
         if (!value || typeof value !== 'string') return '';
         let next = value.trim();
@@ -438,7 +442,7 @@ export default function Twin() {
                 )}
 
                 <div
-                    className={`max-w-[64%] rounded-2xl px-2.5 py-2 shadow-sm text-[13px] leading-relaxed ${
+                    className={`max-w-[82%] rounded-2xl px-2.5 py-2 text-[13px] leading-relaxed shadow-sm sm:max-w-[74%] lg:max-w-[64%] ${
                         message.role === 'user'
                             ? 'bg-gradient-to-br from-slate-800 to-slate-900 text-white whitespace-pre-wrap'
                             : 'bg-white/90 border border-white/60 text-slate-800'
@@ -986,28 +990,51 @@ export default function Twin() {
         return () => window.clearInterval(timer);
     }, [userId, loadQuota]);
 
-    const COLLAPSED_HEIGHT = 640;
+    useEffect(() => {
+        const updateViewport = () => {
+            const width = window.innerWidth;
+            const height = Math.round(window.visualViewport?.height ?? window.innerHeight);
+            setViewport({ width, height });
+        };
+        updateViewport();
+        window.addEventListener('resize', updateViewport);
+        window.visualViewport?.addEventListener('resize', updateViewport);
+        return () => {
+            window.removeEventListener('resize', updateViewport);
+            window.visualViewport?.removeEventListener('resize', updateViewport);
+        };
+    }, []);
+
+    const isMobileViewport = viewport.width > 0 && viewport.width < 640;
+    const isTabletViewport = viewport.width >= 640 && viewport.width < 1024;
+    const COLLAPSED_HEIGHT = isMobileViewport ? 560 : isTabletViewport ? 620 : 640;
     const MAX_HEIGHT = 9999;
     const MAX_EXPAND_STEPS = 1;
     const panelHeight = Math.round(
         COLLAPSED_HEIGHT + ((MAX_HEIGHT - COLLAPSED_HEIGHT) * expandStep) / MAX_EXPAND_STEPS
     );
+    const viewportCap = viewport.height > 0
+        ? Math.max(360, viewport.height - (isMobileViewport ? 24 : 48))
+        : 0;
+    const resolvedMaxHeight = viewportCap > 0 ? Math.min(MAX_HEIGHT, viewportCap) : MAX_HEIGHT;
+    const resolvedPanelHeight = Math.min(panelHeight, resolvedMaxHeight);
     return (
         <div
-            className="absolute bottom-4 left-0 right-0 rounded-[28px] bg-gradient-to-br from-white/70 via-white/30 to-slate-200/50 p-[1px] shadow-[0_18px_45px_-30px_rgba(15,23,42,0.55)] transition-[height] duration-300 ease-out"
+            className="absolute left-0 right-0 rounded-[22px] bg-gradient-to-br from-white/70 via-white/30 to-slate-200/50 p-[1px] shadow-[0_18px_45px_-30px_rgba(15,23,42,0.55)] transition-[height] duration-300 ease-out sm:rounded-[28px]"
             style={{
-                height: `min(${panelHeight}px, calc(100vh - 64px))`,
-                maxHeight: `min(${MAX_HEIGHT}px, calc(100vh - 64px))`,
+                bottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+                height: viewport.height > 0 ? `${resolvedPanelHeight}px` : `min(${panelHeight}px, calc(100vh - 64px))`,
+                maxHeight: viewport.height > 0 ? `${resolvedMaxHeight}px` : `min(${MAX_HEIGHT}px, calc(100vh - 64px))`,
             }}
         >
-            <div className="flex h-full flex-col rounded-[26px] bg-white/80 border border-white/50 backdrop-blur overflow-visible">
+            <div className="flex h-full flex-col overflow-visible rounded-[20px] border border-white/50 bg-white/80 backdrop-blur sm:rounded-[26px]">
             {/* Header */}
-            <div className="bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] text-white p-5 rounded-t-[26px] flex items-start justify-between">
-                <div className="flex items-start gap-4">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 rounded-t-[20px] bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] p-3 text-white sm:gap-x-4 sm:gap-y-2 sm:rounded-t-[26px] sm:p-5 lg:flex lg:items-start lg:justify-between">
+                <div className="min-w-0 flex items-start gap-[clamp(0.35rem,1.8vw,1rem)]">
                     <div className="relative">
                         <div className="absolute -inset-1 rounded-full bg-gradient-to-br from-amber-200/50 via-slate-200/30 to-sky-300/40 blur-[8px]" />
                         <div className="absolute -inset-0.5 rounded-full bg-gradient-to-br from-white/40 via-transparent to-white/10 opacity-70" />
-                        <div className="relative w-12 h-12 rounded-full bg-slate-900/60 p-[2px] shadow-[0_10px_22px_rgba(15,23,42,0.45)]">
+                        <div className="relative h-[clamp(2rem,8vw,2.5rem)] w-[clamp(2rem,8vw,2.5rem)] rounded-full bg-slate-900/60 p-[2px] shadow-[0_10px_22px_rgba(15,23,42,0.45)] sm:h-12 sm:w-12">
                             <div className="relative w-full h-full rounded-full bg-slate-900/60 border border-white/25 overflow-hidden flex items-center justify-center">
                                 <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/20 via-transparent to-transparent" />
                                 <span className="pointer-events-none absolute -right-3 -top-3 h-8 w-8 rounded-full bg-white/10" />
@@ -1018,17 +1045,19 @@ export default function Twin() {
                                         className="w-full h-full object-cover"
                                     />
                                 ) : (
-                                    <Bot className="w-6 h-6 text-white" />
+                                    <Bot className="h-[clamp(0.9rem,3.8vw,1.25rem)] w-[clamp(0.9rem,3.8vw,1.25rem)] text-white sm:h-6 sm:w-6" />
                                 )}
                             </div>
                         </div>
                         <span className="absolute -right-1 -bottom-1 h-3 w-3 rounded-full bg-emerald-400 border-2 border-[#123243] shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                         <p className="text-xs uppercase tracking-[0.3em] text-white/70">Agent</p>
-                        <div className="flex flex-wrap items-center gap-2">
-                            <h2 className="text-2xl font-semibold font-display">Digital Assistant</h2>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                        <div className="flex items-center gap-2 lg:flex-wrap">
+                            <h2 className="font-display whitespace-nowrap font-semibold leading-tight text-[clamp(1rem,4.5vw,1.35rem)] sm:text-2xl">
+                                Digital Assistant
+                            </h2>
+                            <span className="group relative hidden items-center gap-1 rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] text-white/85 lg:inline-flex">
                                 <Terminal className="h-3 w-3 text-sky-200" />
                                 Deployment Mentor
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
@@ -1036,7 +1065,7 @@ export default function Twin() {
                                     Hands-on guidance for deploying LLM systems, infra, and tooling.
                                 </span>
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative hidden items-center gap-1 rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] text-white/85 lg:inline-flex">
                                 <LifeBuoy className="h-3 w-3 text-amber-200" />
                                 Live Troubleshooting
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
@@ -1044,7 +1073,7 @@ export default function Twin() {
                                     Real-time troubleshooting, root-cause analysis, and incident response.
                                 </span>
                             </span>
-                            <span className="group relative inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-white/15 bg-white/10 text-[10px] text-white/85">
+                            <span className="group relative hidden items-center gap-1 rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] text-white/85 lg:inline-flex">
                                 <Search className="h-3 w-3 text-cyan-200" />
                                 Researcher
                                 <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-30 w-[240px] whitespace-normal -translate-x-1/2 rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
@@ -1053,7 +1082,7 @@ export default function Twin() {
                                 </span>
                             </span>
                         </div>
-                        <div className="mt-2 flex min-w-0 items-center gap-1 overflow-visible whitespace-nowrap">
+                        <div className="mt-2 hidden min-w-0 flex-wrap items-center gap-1 overflow-visible lg:flex">
                             <span className="shrink-0 text-[9px] uppercase tracking-[0.18em] text-white/60">
                                 Tools
                             </span>
@@ -1100,8 +1129,8 @@ export default function Twin() {
                         </div>
                     </div>
                 </div>
-                <div className="mt-1 flex flex-col items-end gap-1">
-                    <div className="flex items-center gap-2 overflow-visible rounded-2xl border border-white/10 bg-white/5 px-2 py-1 shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)]">
+                <div className="contents lg:mt-1 lg:flex lg:w-auto lg:flex-col lg:items-end lg:gap-1">
+                    <div className="flex flex-nowrap items-center justify-center gap-[clamp(0.2rem,1vw,0.45rem)] overflow-visible rounded-2xl border border-white/10 bg-white/5 px-[clamp(0.3rem,1.2vw,0.45rem)] py-[clamp(0.2rem,0.8vw,0.32rem)] shadow-[0_6px_18px_-12px_rgba(15,23,42,0.5)] justify-self-center sm:justify-self-end sm:gap-2 sm:px-2 sm:py-1 lg:justify-self-auto lg:justify-end">
                         {memoryCandidates.length > 0 && (
                             <div className="group relative">
                                 <button
@@ -1113,10 +1142,10 @@ export default function Twin() {
                                             loadMemory(userId);
                                         }
                                     }}
-                                    className="inline-flex items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 p-2 text-[11px] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] hover:bg-rose-500 transition-all duration-200 ease-out active:scale-95"
+                                    className="inline-flex h-[clamp(1.7rem,8vw,2.2rem)] items-center gap-1 rounded-xl border border-rose-300/40 bg-rose-500/90 px-[clamp(0.35rem,1.4vw,0.45rem)] py-[clamp(0.25rem,0.9vw,0.4rem)] text-[clamp(0.6rem,2.2vw,0.66rem)] text-white shadow-[0_4px_14px_rgba(244,63,94,0.4)] transition-all duration-200 ease-out hover:bg-rose-500 active:scale-95 sm:min-h-10 sm:p-2 sm:text-[11px]"
                                     aria-label="Review memory"
                                 >
-                                    <Brain className="h-4 w-4 drop-shadow-sm" />
+                                    <Brain className="h-[clamp(0.8rem,3vw,0.95rem)] w-[clamp(0.8rem,3vw,0.95rem)] drop-shadow-sm sm:h-4 sm:w-4" />
                                     {memoryCandidates.length}
                                 </button>
                                 <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[180px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
@@ -1128,10 +1157,10 @@ export default function Twin() {
                         <div className="group relative">
                             <button
                                 onClick={handleNewChat}
-                                className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                                className="inline-flex h-[clamp(1.7rem,8vw,2.2rem)] w-[clamp(1.7rem,8vw,2.2rem)] items-center justify-center rounded-xl border border-white/15 bg-white/10 p-[clamp(0.28rem,1.3vw,0.45rem)] shadow-[0_3px_10px_rgba(15,23,42,0.25)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-white/20 active:scale-95 sm:min-h-10 sm:min-w-10 sm:p-2"
                                 aria-label="New chat"
                             >
-                                <MessageSquarePlus className="w-5 h-5 drop-shadow-sm" />
+                                <MessageSquarePlus className="h-[clamp(0.82rem,3.4vw,1.1rem)] w-[clamp(0.82rem,3.4vw,1.1rem)] drop-shadow-sm sm:h-5 sm:w-5" />
                             </button>
                             <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[160px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                                 <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
@@ -1143,10 +1172,10 @@ export default function Twin() {
                                 onClick={() => {
                                     setExpandStep(prev => (prev < MAX_EXPAND_STEPS ? prev + 1 : 0));
                                 }}
-                                className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                                className="inline-flex h-[clamp(1.7rem,8vw,2.2rem)] w-[clamp(1.7rem,8vw,2.2rem)] items-center justify-center rounded-xl border border-white/15 bg-white/10 p-[clamp(0.28rem,1.3vw,0.45rem)] shadow-[0_3px_10px_rgba(15,23,42,0.25)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-white/20 active:scale-95 sm:min-h-10 sm:min-w-10 sm:p-2"
                                 aria-label={expandStep >= MAX_EXPAND_STEPS ? 'Collapse' : 'Expand'}
                             >
-                                <Maximize2 className="w-5 h-5 drop-shadow-sm" />
+                                <Maximize2 className="h-[clamp(0.82rem,3.4vw,1.1rem)] w-[clamp(0.82rem,3.4vw,1.1rem)] drop-shadow-sm sm:h-5 sm:w-5" />
                             </button>
                             <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[160px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                                 <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
@@ -1162,10 +1191,10 @@ export default function Twin() {
                                         loadHistory(userId, false);
                                     }
                                 }}
-                                className="p-2 rounded-xl border border-white/15 bg-white/10 shadow-[0_3px_10px_rgba(15,23,42,0.25)] hover:bg-white/20 hover:-translate-y-0.5 transition-all duration-200 ease-out active:scale-95"
+                                className="inline-flex h-[clamp(1.7rem,8vw,2.2rem)] w-[clamp(1.7rem,8vw,2.2rem)] items-center justify-center rounded-xl border border-white/15 bg-white/10 p-[clamp(0.28rem,1.3vw,0.45rem)] shadow-[0_3px_10px_rgba(15,23,42,0.25)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-white/20 active:scale-95 sm:min-h-10 sm:min-w-10 sm:p-2"
                                 aria-label="History"
                             >
-                                <History className="w-5 h-5 drop-shadow-sm" />
+                                <History className="h-[clamp(0.82rem,3.4vw,1.1rem)] w-[clamp(0.82rem,3.4vw,1.1rem)] drop-shadow-sm sm:h-5 sm:w-5" />
                             </button>
                             <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-max max-w-[160px] whitespace-nowrap rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2 text-[10px] leading-none text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                                 <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
@@ -1173,7 +1202,7 @@ export default function Twin() {
                             </span>
                         </div>
                     </div>
-                    <div className="mt-1 flex items-center gap-1.5 pr-1">
+                    <div className="col-span-2 mt-1 flex flex-wrap items-center gap-1.5 pr-1 lg:hidden">
                         <span className="group relative inline-flex items-center text-[9px] uppercase tracking-[0.18em] text-white/60">
                             Daily Quota
                             <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-[220px] whitespace-normal rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] normal-case tracking-normal leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
@@ -1201,6 +1230,34 @@ export default function Twin() {
                             );
                         })}
                     </div>
+                    <div className="mt-1 hidden flex-wrap items-center gap-1.5 pr-1 lg:flex lg:justify-end">
+                        <span className="group relative inline-flex items-center text-[9px] uppercase tracking-[0.18em] text-white/60">
+                            Daily Quota
+                            <span className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-30 w-[220px] whitespace-normal rounded-xl border border-white/20 bg-gradient-to-br from-slate-900/98 to-slate-800/98 px-3 py-2.5 text-[10px] normal-case tracking-normal leading-relaxed text-white/90 opacity-0 shadow-[0_12px_30px_-18px_rgba(2,8,23,0.95)] transition-opacity duration-200 group-hover:opacity-100">
+                                <span className="absolute right-3 top-0 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-l border-t border-white/20 bg-slate-900" />
+                                {isLoadingQuota
+                                    ? 'Refreshing quota...'
+                                    : quota?.reset_at
+                                        ? `Resets at ${new Date(quota.reset_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`
+                                        : 'Quota reset info unavailable'}
+                            </span>
+                        </span>
+                        {quotaItems.map((item) => {
+                            const usage = quota?.usage?.[item.key] ?? 0;
+                            const limit = quota?.limits?.[item.key] ?? 0;
+                            return (
+                                <span
+                                    key={`desktop-${item.key}`}
+                                    className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] leading-none ${item.tone}`}
+                                >
+                                    <span>{item.label}</span>
+                                    <span className="text-white/90">
+                                        {formatCount(usage)}/{formatCount(limit)}
+                                    </span>
+                                </span>
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
 
@@ -1215,7 +1272,7 @@ export default function Twin() {
                     onClick={() => setIsHistoryOpen(false)}
                 />
                 <div
-                    className={`absolute left-0 top-0 h-full w-80 bg-gradient-to-br from-[#0f3b3e]/96 via-[#1b4a66]/96 to-[#1f2a44]/96 border border-white/10 shadow-[0_20px_45px_-28px_rgba(2,8,23,0.7)] p-4 flex flex-col transform transition-transform duration-200 text-white ${
+                    className={`absolute left-0 top-0 h-full w-[min(20rem,92vw)] bg-gradient-to-br from-[#0f3b3e]/96 via-[#1b4a66]/96 to-[#1f2a44]/96 border border-white/10 shadow-[0_20px_45px_-28px_rgba(2,8,23,0.7)] p-4 flex flex-col transform transition-transform duration-200 text-white sm:w-80 ${
                         isHistoryOpen ? 'translate-x-0' : '-translate-x-full'
                     }`}
                 >
@@ -1224,7 +1281,7 @@ export default function Twin() {
                             <div className="flex items-center gap-2">
                                 <button
                                     onClick={handleRefreshHistory}
-                                    className="p-1 rounded hover:bg-white/15 transition-all duration-200 ease-out active:scale-95"
+                                    className="min-h-10 min-w-10 rounded p-2 transition-all duration-200 ease-out hover:bg-white/15 active:scale-95"
                                     title="Refresh"
                                     disabled={isLoadingHistory || isLoadingMemory}
                                 >
@@ -1232,7 +1289,7 @@ export default function Twin() {
                                 </button>
                                 <button
                                     onClick={() => setIsHistoryOpen(false)}
-                                    className="p-1 rounded hover:bg-white/15 transition-all duration-200 ease-out active:scale-95"
+                                    className="min-h-10 min-w-10 rounded p-2 transition-all duration-200 ease-out hover:bg-white/15 active:scale-95"
                                     title="Close"
                                 >
                                     <X className="w-5 h-5 text-white/80" />
@@ -1467,21 +1524,21 @@ export default function Twin() {
                     </div>
             </div>
 
-            <div className="flex-1 flex flex-col overflow-hidden rounded-b-[26px]">
+            <div className="flex-1 flex flex-col overflow-hidden rounded-b-[20px] sm:rounded-b-[26px]">
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[radial-gradient(circle_at_top,_#ffffff,_#f1f5f9_55%,_#e7edf6_100%)]">
+            <div className="flex-1 space-y-3 overflow-y-auto bg-[radial-gradient(circle_at_top,_#ffffff,_#f1f5f9_55%,_#e7edf6_100%)] p-3 sm:space-y-5 sm:p-5">
                 {showInitialLoader ? (
-                    <div className="mx-auto mt-8 w-full max-w-2xl rounded-[24px] bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] p-[1px] shadow-[0_16px_36px_-20px_rgba(15,23,42,0.65)]">
-                        <div className="startup-loader-shimmer rounded-[23px] border border-white/10 bg-gradient-to-r from-[#0f3b3e]/95 via-[#1b4a66]/95 to-[#1f2a44]/95 p-5 text-white">
+                    <div className="mx-auto mt-4 w-full max-w-2xl rounded-[24px] bg-gradient-to-r from-[#0f3b3e] via-[#1b4a66] to-[#1f2a44] p-[1px] shadow-[0_16px_36px_-20px_rgba(15,23,42,0.65)] sm:mt-8">
+                        <div className="startup-loader-shimmer rounded-[23px] border border-white/10 bg-gradient-to-r from-[#0f3b3e]/95 via-[#1b4a66]/95 to-[#1f2a44]/95 p-3 text-white sm:p-5">
                             <div className="mb-3 flex items-center gap-3">
-                                <div className="h-10 w-10 flex-shrink-0">
+                                <div className="h-8 w-8 flex-shrink-0 sm:h-10 sm:w-10">
                                     {renderPremiumAvatar('w-10 h-10', 'w-5 h-5', false)}
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                    <p className="text-sm font-semibold">Loading your workspace…</p>
-                                    <p className="text-xs text-white/75">Warming up serverless runtime (usually 1-5 seconds).</p>
+                                    <p className="text-[13px] font-semibold sm:text-sm">Loading your workspace…</p>
+                                    <p className="text-[11px] text-white/75 sm:text-xs">Warming up serverless runtime (usually 1-5 seconds).</p>
                                 </div>
-                                <div className="h-7 w-7 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+                                <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/25 border-t-white sm:h-7 sm:w-7" />
                             </div>
 
                             <div className="mb-3 flex flex-wrap items-center gap-1.5">
@@ -1533,7 +1590,10 @@ export default function Twin() {
             </div>
 
             {/* Input */}
-            <div className="border-t border-white/60 p-4 bg-white/90 rounded-b-[26px]">
+            <div
+                className="rounded-b-[20px] border-t border-white/60 bg-white/90 p-3 sm:rounded-b-[26px] sm:p-4"
+                style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+            >
                 {(displayStatusLabel || showInitialLoader) && (
                     <div className="mb-2 flex items-center gap-2 text-xs text-slate-500">
                         <span className="inline-flex h-2 w-2 rounded-full bg-slate-400 animate-pulse" />
@@ -1542,7 +1602,7 @@ export default function Twin() {
                         </span>
                     </div>
                 )}
-                <div className="flex gap-3 items-end">
+                <div className="flex items-end gap-2 sm:gap-3">
                     <div className="relative flex-1">
                         <textarea
                             ref={inputRef}
@@ -1552,7 +1612,7 @@ export default function Twin() {
                             onKeyDown={handleKeyPress}
                             onScroll={scheduleInputScrollbarUpdate}
                             placeholder={showInitialLoader ? 'Loading…' : 'Ask about deployment, infrastructure, or troubleshooting...'}
-                            className="w-full pl-4 pr-6 py-3 border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-slate-600/40 focus:border-transparent text-slate-800 bg-white shadow-sm resize-none leading-relaxed min-h-[48px] overflow-y-auto chat-input-scroll"
+                            className="chat-input-scroll min-h-[44px] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white py-2.5 pl-3 pr-6 text-sm leading-relaxed text-slate-800 shadow-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-slate-600/40 sm:min-h-[48px] sm:py-3 sm:pl-4 sm:text-base"
                             disabled={isLoading || showInitialLoader}
                             autoFocus
                         />
@@ -1577,7 +1637,7 @@ export default function Twin() {
                         type="button"
                         onClick={triggerFileSelect}
                         disabled={showInitialLoader}
-                        className="group relative self-end px-3.5 py-3 bg-white text-slate-700 rounded-2xl border border-slate-200 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-600/40 transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_8px_18px_-12px_rgba(15,23,42,0.35)]"
+                        className="group relative self-end rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-slate-700 shadow-[0_8px_18px_-12px_rgba(15,23,42,0.35)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-600/40 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 min-h-11 min-w-11 sm:px-3.5 sm:py-3"
                         aria-label="Upload file"
                     >
                         <span className="absolute inset-0 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-slate-100 opacity-80" />
@@ -1589,7 +1649,7 @@ export default function Twin() {
                     {isLoading ? (
                         <button
                             onClick={cancelActiveJob}
-                            className="group relative self-end px-4 py-3 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-rose-500/40 transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] bg-gradient-to-br from-rose-500 via-rose-600 to-rose-500 hover:from-rose-500 hover:via-rose-500 hover:to-rose-600"
+                            className="group relative self-end rounded-2xl bg-gradient-to-br from-rose-500 via-rose-600 to-rose-500 px-3.5 py-2.5 text-white shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:from-rose-500 hover:via-rose-500 hover:to-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-500/40 active:scale-95 min-h-11 min-w-11 sm:px-4 sm:py-3"
                             aria-label="Cancel request"
                         >
                             <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(251,113,133,0.35),_transparent_65%)]" />
@@ -1607,7 +1667,7 @@ export default function Twin() {
                                 uploadStatus === 'uploading' ||
                                 uploadStatus === 'error'
                             }
-                            className="group relative self-end px-4 py-3 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-slate-600/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 ease-out hover:-translate-y-0.5 active:scale-95 shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 hover:from-slate-800 hover:via-slate-900 hover:to-slate-800"
+                            className="group relative self-end rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 px-3.5 py-2.5 text-white shadow-[0_10px_24px_-14px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out hover:-translate-y-0.5 hover:from-slate-800 hover:via-slate-900 hover:to-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-600/40 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 min-h-11 min-w-11 sm:px-4 sm:py-3"
                         >
                             <span className="absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-200 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.35),_transparent_65%)]" />
                             <span className="relative flex items-center justify-center gap-2">
@@ -1619,18 +1679,18 @@ export default function Twin() {
                 {(selectedFile || uploadError) && (
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
                         {selectedFile && (
-                            <span className="group relative inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 border border-slate-200">
-                                <span className="pointer-events-none absolute left-1/2 -top-2 z-30 w-[260px] -translate-x-1/2 -translate-y-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] text-slate-700 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100 whitespace-normal">
+                            <span className="group relative inline-flex max-w-full items-center gap-2 rounded-full border border-slate-200 bg-slate-100 px-3 py-1">
+                                <span className="pointer-events-none absolute left-1/2 -top-2 z-30 hidden w-[260px] -translate-x-1/2 -translate-y-full whitespace-normal rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] text-slate-700 opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100 sm:block">
                                     {selectedFile.name}
                                 </span>
-                                <span className="font-medium text-slate-700">{selectedFile.name}</span>
+                                <span className="max-w-[150px] truncate font-medium text-slate-700 sm:max-w-[260px]">{selectedFile.name}</span>
                                 {uploadStatus === 'uploading' && <span className="text-slate-500">Uploading…</span>}
                                 {uploadStatus === 'uploaded' && <span className="text-emerald-600">Uploaded</span>}
                                 {uploadStatus === 'error' && <span className="text-rose-600">Failed</span>}
                                 <button
                                     type="button"
                                     onClick={resetUpload}
-                                    className="text-slate-500 hover:text-slate-700"
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 hover:bg-slate-200 hover:text-slate-700"
                                     aria-label="Remove file"
                                 >
                                     <X className="h-3.5 w-3.5" />

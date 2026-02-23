@@ -260,6 +260,12 @@ variable "root_domain" {
   default     = ""
 }
 
+variable "api_subdomain" {
+  description = "Subdomain label for API Gateway custom domain (for example: api)"
+  type        = string
+  default     = "api"
+}
+
 variable "manage_github_actions_role_policies" {
   description = "If true, Terraform will attach required AWS managed policies to an existing GitHub Actions role."
   type        = bool

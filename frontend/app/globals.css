@@ -190,3 +190,9 @@
   width: 0;
   height: 0;
 }
+
+@media (max-width: 639px), (hover: none), (pointer: coarse) {
+  .group .pointer-events-none.absolute[class*='group-hover:opacity-100'] {
+    display: none !important;
+  }
+}

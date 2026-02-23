@@ -17,6 +17,7 @@ api_throttle_burst_limit           = 10
 api_throttle_rate_limit            = 20
 use_custom_domain                  = true
 root_domain                        = "agentairg.site"
+api_subdomain                      = "api"
 async_chat_enabled                 = true
 async_job_ttl_seconds              = 3600
 daily_token_limit                  = 1000000

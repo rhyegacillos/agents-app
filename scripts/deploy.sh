@@ -123,13 +123,18 @@ fi
 API_URL=$(terraform output -raw api_gateway_url)
 FRONTEND_BUCKET=$(terraform output -raw s3_frontend_bucket)
 CUSTOM_URL=$(terraform output -raw custom_domain_url 2>/dev/null || true)
+API_CUSTOM_URL=$(terraform output -raw api_custom_domain_url 2>/dev/null || true)
+FRONTEND_API_URL="$API_URL"
+if [ -n "$API_CUSTOM_URL" ] && [ "$API_CUSTOM_URL" != "None" ]; then
+  FRONTEND_API_URL="$API_CUSTOM_URL"
+fi
 
 # 3. Build + deploy frontend
 cd ../frontend
 
 # Create production environment file with API URL
 echo "📝 Setting API URL for production..."
-echo "NEXT_PUBLIC_API_URL=$API_URL" > .env.production
+echo "NEXT_PUBLIC_API_URL=$FRONTEND_API_URL" > .env.production
 
 npm install
 # Prevent local dev env from overriding production API URL
@@ -139,7 +144,7 @@ if [ -f .env.local ]; then
   mv .env.local "$ENV_LOCAL_BAK"
 fi
 
-NEXT_PUBLIC_API_URL="$API_URL" npm run build
+NEXT_PUBLIC_API_URL="$FRONTEND_API_URL" npm run build
 
 if [ -n "$ENV_LOCAL_BAK" ] && [ -f "$ENV_LOCAL_BAK" ]; then
   mv "$ENV_LOCAL_BAK" .env.local
@@ -176,5 +181,8 @@ echo -e "\n✅ Deployment complete!"
 echo "🌐 CloudFront URL : $(terraform -chdir=terraform output -raw cloudfront_url)"
 if [ -n "$CUSTOM_URL" ]; then
   echo "🔗 Custom domain  : $CUSTOM_URL"
+fi
+if [ -n "$API_CUSTOM_URL" ] && [ "$API_CUSTOM_URL" != "None" ]; then
+  echo "🔗 API domain     : $API_CUSTOM_URL"
 fi
 echo "📡 API Gateway    : $API_URL"

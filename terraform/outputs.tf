@@ -3,6 +3,11 @@ output "api_gateway_url" {
   value       = "https://${aws_api_gateway_rest_api.main.id}.execute-api.${data.aws_region.current.id}.amazonaws.com/${aws_api_gateway_stage.main.stage_name}"
 }
 
+output "api_custom_domain_url" {
+  description = "Custom API URL when custom domain is enabled"
+  value       = local.create_api_domain ? "https://${local.api_domain_fqdn}" : ""
+}
+
 output "cloudfront_url" {
   description = "URL of the CloudFront distribution"
   value       = "https://${aws_cloudfront_distribution.main.domain_name}"

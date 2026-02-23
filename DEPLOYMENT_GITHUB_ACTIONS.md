@@ -858,16 +858,17 @@ This means Terraform sees those values without any local tfvars file.
 ### 13.1 Check workflow logs
 In the Actions run, look for:
 - "Deployment complete"
-- CloudFront URL
-- API Gateway URL
+- Frontend URL (custom domain or CloudFront)
+- API URL (`api_custom_domain_url` when enabled, otherwise `api_gateway_url`)
 
 ### 13.2 Verify from terminal
 ```bash
-curl -s <api_gateway_url>/health
+curl -s <api_custom_domain_url>/health   # preferred when enabled
+curl -s <api_gateway_url>/health         # fallback
 ```
 
 ### 13.3 Verify frontend
-Open the CloudFront URL in a browser.
+Open custom frontend domain if enabled, otherwise the CloudFront URL.
 
 -------------------------------------------------------------------------------
 
@@ -1085,7 +1086,7 @@ aws iam attach-role-policy --role-name github-actions-digital-assistant-deploy -
 - [ ] Verify CloudFront and API URLs in logs
 
 ### 22.3 Post-deploy checklist
-- [ ] Open CloudFront URL in browser
+- [ ] Open frontend URL (custom domain or CloudFront) in browser
 - [ ] API `/health` returns 200
 - [ ] Chat request succeeds
 

@@ -33,12 +33,30 @@ If you are unsure about any of those steps, read the full guide below.
 
 -------------------------------------------------------------------------------
 
+### 0.2 Current Domain Model (important)
+
+This repo uses split domains when `use_custom_domain = true`:
+
+- Website domain: `https://<project_name>.<root_domain>` (CloudFront + S3)
+- API domain: `https://<api_subdomain>.<root_domain>` (API Gateway custom domain)
+
+Example in prod:
+- Website: `https://digital-assistant.agentairg.site`
+- API: `https://api.agentairg.site`
+
+`scripts/deploy.sh` behavior:
+- Prefers Terraform output `api_custom_domain_url` for `NEXT_PUBLIC_API_URL`
+- Falls back to `api_gateway_url` only when no API custom domain is configured
+
+-------------------------------------------------------------------------------
+
 ## 1) What this does (scope)
 
 Terraform provisions all AWS infrastructure required for the app:
 - Lambda (backend API + async worker)
 - ECR (container image repository)
 - API Gateway (REST API)
+- API Gateway custom domain + base path mapping (optional, with custom domain)
 - S3 (frontend hosting + memory storage)
 - CloudFront (global CDN for frontend)
 - IAM roles and policies
@@ -362,7 +380,7 @@ listed below, and only in the ways described.
     environment       = "prod"
     use_custom_domain = true
     root_domain       = "agentairg.site"
-    custom_subdomain  = "digital-assistant"
+    api_subdomain     = "api"
     ```
 
 - `terraform/terraform.tfvars.local`
@@ -715,6 +733,8 @@ This is the full data flow from inputs to outputs:
 
 4) Outputs expose what scripts need:
    - `api_gateway_url`
+   - `api_custom_domain_url`
+   - `custom_domain_url`
    - `cloudfront_url`
    - `s3_frontend_bucket`
    - `s3_memory_bucket`
@@ -1706,6 +1726,12 @@ variable "root_domain" {
   type        = string
   default     = ""
 }
+
+variable "api_subdomain" {
+  description = "Subdomain label for API Gateway custom domain (for example: api)"
+  type        = string
+  default     = "api"
+}
 ```
 
 #### 5.2.3 `terraform/outputs.tf` (outputs)
@@ -1715,6 +1741,10 @@ Create the file and output the values your scripts need:
 ```hcl
 output "api_gateway_url" {
   value = "https://${aws_api_gateway_rest_api.main.id}.execute-api.${data.aws_region.current.id}.amazonaws.com/${aws_api_gateway_stage.main.stage_name}"
+}
+
+output "api_custom_domain_url" {
+  value = local.create_api_domain ? "https://${local.api_domain_fqdn}" : ""
 }
 
 output "cloudfront_url" {
@@ -1747,6 +1777,11 @@ output "ecr_repository_url" {
 output "api_gateway_url" {
   description = "URL of the API Gateway"
   value       = "https://${aws_api_gateway_rest_api.main.id}.execute-api.${data.aws_region.current.id}.amazonaws.com/${aws_api_gateway_stage.main.stage_name}"
+}
+
+output "api_custom_domain_url" {
+  description = "Custom API URL when custom domain is enabled"
+  value       = local.create_api_domain ? "https://${local.api_domain_fqdn}" : ""
 }
 
 output "cloudfront_url" {
@@ -1912,15 +1947,15 @@ Line by line:
 environment       = "prod"
 use_custom_domain = true
 root_domain       = "agentairg.site"
-custom_subdomain  = "digital-assistant"
+api_subdomain     = "api"
 ```
 
 Line by line:
 - `environment`: ensures prod uses the prod workspace and prod resource names.
-- `use_custom_domain`: must be true for ACM + Route53 + CloudFront alias.
+- `use_custom_domain`: must be true for CloudFront + Route53 + ACM + API custom domain resources.
 - `root_domain`: the apex domain managed in Route53.
-- `custom_subdomain`: subdomain that points to CloudFront (full FQDN is
-  `custom_subdomain.root_domain`).
+- `api_subdomain`: API subdomain label (full API FQDN is `api_subdomain.root_domain`).
+- Frontend FQDN is derived from `project_name.root_domain`.
 
 #### terraform/terraform.tfvars.local (local secrets, untracked)
 ```hcl
@@ -1961,7 +1996,7 @@ upstash_redis_rest_token   = "YOUR_UPSTASH_TOKEN"
 
 use_custom_domain = true
 root_domain       = "agentairg.site"
-custom_subdomain  = "digital-assistant"
+api_subdomain     = "api"
 ```
 
 ### 5.6.2 How to choose Grok vs Bedrock
@@ -1999,7 +2034,7 @@ async_chat_enabled        = false
 
 use_custom_domain = false
 root_domain       = ""
-custom_subdomain  = ""
+api_subdomain     = "api"
 ```
 
 `terraform/terraform.tfvars.local`
@@ -2033,7 +2068,7 @@ upstash_redis_rest_token   = "YOUR_UPSTASH_TOKEN"
 
 use_custom_domain = false
 root_domain       = ""
-custom_subdomain  = ""
+api_subdomain     = "api"
 ```
 
 `terraform/terraform.tfvars.local`
@@ -2067,7 +2102,7 @@ upstash_redis_rest_token   = "YOUR_UPSTASH_TOKEN"
 
 use_custom_domain = true
 root_domain       = "agentairg.site"
-custom_subdomain  = "digital-assistant"
+api_subdomain     = "api"
 ```
 
 `terraform/terraform.tfvars.local`
@@ -2123,9 +2158,9 @@ Use this table to verify every variable is connected to the right resource.
 | lambda_image_tag | deploy.sh + ECR | Image tag deployed to Lambda |
 | api_throttle_burst_limit | aws_api_gateway_method_settings.main | API Gateway throttling |
 | api_throttle_rate_limit | aws_api_gateway_method_settings.main | API Gateway throttling |
-| use_custom_domain | CloudFront + ACM + Route53 | Enable custom domain |
-| root_domain | ACM + Route53 | Domain zone lookup |
-| custom_subdomain | Route53 alias / ACM | Full domain name |
+| use_custom_domain | CloudFront + API Gateway + ACM + Route53 | Enable custom domains |
+| root_domain | ACM + Route53 + API Gateway | Domain zone lookup |
+| api_subdomain | API Gateway custom domain | API FQDN label |
 
 ### 5.6.5 Dev vs Prod diff (what changes and why)
 
@@ -2138,13 +2173,13 @@ dev:
   environment = "dev"
   use_custom_domain = false
   root_domain = ""
-  custom_subdomain = ""
+  api_subdomain = "api"
 
 prod:
   environment = "prod"
   use_custom_domain = true
   root_domain = "agentairg.site"
-  custom_subdomain = "digital-assistant"
+  api_subdomain = "api"
 ```
 
 #### Resource name diff (examples)
@@ -2166,13 +2201,18 @@ prod:
 ```
 dev:
   No Route53 records created
-  CloudFront URL used directly
+  Frontend uses CloudFront URL directly
+  API uses execute-api URL directly (`api_gateway_url`)
 
 prod:
-  ACM certificate in us-east-1
-  Route53 validation CNAME
-  Route53 A/AAAA alias to CloudFront
-  Custom domain: https://digital-assistant.agentairg.site
+  ACM cert for website in us-east-1 (CloudFront requirement)
+  ACM cert for API in the workload region (regional API Gateway requirement)
+  Route53 validation CNAME records
+  Route53 aliases:
+    website -> CloudFront
+    api -> API Gateway regional domain
+  Website: https://digital-assistant.agentairg.site
+  API: https://api.agentairg.site
 ```
 
 ### 5.6.6 Impact of `use_custom_domain` (what changes)
@@ -2182,13 +2222,17 @@ When `use_custom_domain = false`:
 - No Route53 records are created.
 - CloudFront uses the default certificate.
 - The frontend URL is the CloudFront domain.
+- API uses the execute-api domain (`api_gateway_url`).
 
 When `use_custom_domain = true`:
-- ACM certificate is requested in us-east-1.
-- DNS validation CNAME is created in Route53.
-- CloudFront uses the ACM certificate (custom SSL).
-- Route53 A/AAAA alias records are created.
-- The frontend URL becomes `https://<custom_subdomain>.<root_domain>`.
+- Website ACM certificate is requested in us-east-1.
+- API ACM certificate is requested in the workload region.
+- DNS validation CNAMEs are created in Route53.
+- CloudFront uses the website ACM certificate (custom SSL).
+- API Gateway regional custom domain + base path mapping are created.
+- Route53 alias records are created for website and API.
+- The frontend URL becomes `https://<project_name>.<root_domain>`.
+- The API URL becomes `https://<api_subdomain>.<root_domain>`.
 
 ### 5.6.7 Propagation timeline (what to wait for)
 
@@ -2212,19 +2256,28 @@ Use these commands to confirm every step is complete.
 ```bash
 dig A digital-assistant.agentairg.site +short
 dig AAAA digital-assistant.agentairg.site +short
+dig A api.agentairg.site +short
 ```
 
 Windows PowerShell equivalent:
 ```powershell
 nslookup -type=A digital-assistant.agentairg.site
 nslookup -type=AAAA digital-assistant.agentairg.site
+nslookup -type=A api.agentairg.site
 ```
 
 #### Check ACM certificate status
 ```bash
+# Website cert (CloudFront)
 aws acm describe-certificate \
-  --certificate-arn <ACM_CERT_ARN> \
+  --certificate-arn <SITE_ACM_CERT_ARN> \
   --region us-east-1 \
+  --query "Certificate.Status"
+
+# API cert (API Gateway regional)
+aws acm describe-certificate \
+  --certificate-arn <API_ACM_CERT_ARN> \
+  --region <AWS_REGION> \
   --query "Certificate.Status"
 ```
 
@@ -2232,9 +2285,16 @@ Expected status: `ISSUED`.
 
 Windows PowerShell equivalent:
 ```powershell
+# Website cert (CloudFront)
 aws acm describe-certificate `
-  --certificate-arn <ACM_CERT_ARN> `
+  --certificate-arn <SITE_ACM_CERT_ARN> `
   --region us-east-1 `
+  --query "Certificate.Status"
+
+# API cert (API Gateway regional)
+aws acm describe-certificate `
+  --certificate-arn <API_ACM_CERT_ARN> `
+  --region <AWS_REGION> `
   --query "Certificate.Status"
 ```
 
@@ -2346,13 +2406,13 @@ You typically set them via `.tfvars` files or TF_VAR_ env vars.
 | grok_api_key | API key for Grok | "<secret>" |
 | grok_api_url | Grok endpoint base URL | "https://api.x.ai/v1" |
 | grok_model_id | Grok model id | "grok-4-1-fast" |
-| use_custom_domain | whether to use Route53 + ACM | true/false |
+| use_custom_domain | whether to enable website/API custom domains | true/false |
 | root_domain | root domain for custom domain | "agentairg.site" |
-| custom_subdomain | subdomain for app | "digital-assistant" |
+| api_subdomain | subdomain label for API custom domain | "api" |
 
 Note:
 - `grok_api_key` must be in `terraform.tfvars.local` or TF_VAR_ env var.
-- `use_custom_domain` controls ACM + Route53 + CloudFront alias.
+- `use_custom_domain` controls ACM + Route53 + CloudFront alias + API Gateway custom domain.
 
 ### 7.2 Local secrets file (do not commit)
 Create `terraform/terraform.tfvars.local` with secrets:
@@ -2610,10 +2670,11 @@ aws cloudfront create-invalidation --distribution-id <ID> --paths "/*"
 
 CloudFront requires ACM certificates in us-east-1.
 If you enable `use_custom_domain = true`, Terraform:
-- requests an ACM certificate in us-east-1
-- creates validation CNAME in Route53
-- creates CloudFront distribution with your domain
-- creates Route53 A/AAAA alias records
+- requests a website ACM certificate in us-east-1 (CloudFront)
+- requests an API ACM certificate in your workload region (API Gateway REGIONAL)
+- creates Route53 validation CNAME records
+- creates Route53 alias records for website and API domains
+- creates API Gateway custom domain + base path mapping
 
 ### 12.1 Requirements
 - Your domain is in Route53 (hosted zone)
@@ -2623,12 +2684,16 @@ If you enable `use_custom_domain = true`, Terraform:
 ```hcl
 use_custom_domain = true
 root_domain = "agentairg.site"
-custom_subdomain = "digital-assistant"
+api_subdomain = "api"
 ```
+
+Resulting domains:
+- Website: `https://<project_name>.<root_domain>`
+- API: `https://<api_subdomain>.<root_domain>`
 
 ### 12.3 DNS propagation
 After apply, it can take minutes for ACM validation and DNS propagation.
-CloudFront will fail if the certificate is not issued.
+CloudFront and API custom domain setup will fail if certificates are not issued.
 
 -------------------------------------------------------------------------------
 
@@ -2755,6 +2820,7 @@ terraform output
 
 Expected outputs:
 - api_gateway_url
+- api_custom_domain_url (if enabled)
 - cloudfront_url
 - custom_domain_url (if enabled)
 - s3_frontend_bucket
@@ -2762,11 +2828,12 @@ Expected outputs:
 
 ### 14.2 Test API
 ```bash
-curl -s <api_gateway_url>/health
+curl -s <api_custom_domain_url>/health   # preferred when enabled
+curl -s <api_gateway_url>/health         # fallback
 ```
 
 ### 14.3 Test frontend
-Open the CloudFront URL in browser.
+Open `<custom_domain_url>` when enabled, otherwise open `<cloudfront_url>`.
 
 -------------------------------------------------------------------------------
 
@@ -2896,7 +2963,7 @@ Q: Can I run Terraform without the scripts?
 A: Yes, but scripts are the recommended and tested path.
 
 Q: Is the custom domain required?
-A: No. You can use the CloudFront URL directly.
+A: No. Without custom domain, use CloudFront for frontend and `api_gateway_url` for API.
 
 -------------------------------------------------------------------------------
 
@@ -3068,17 +3135,24 @@ terraform output
 
 ### 19.15 Test API
 ```powershell
-curl -s <api_gateway_url>/health
+curl -s <api_custom_domain_url>/health   # preferred when enabled
+curl -s <api_gateway_url>/health         # fallback
 ```
 
 ### 19.16 Ready checks (DNS, ACM, CloudFront, HTTP)
 ```powershell
 nslookup -type=A digital-assistant.agentairg.site
 nslookup -type=AAAA digital-assistant.agentairg.site
+nslookup -type=A api.agentairg.site
 
 aws acm describe-certificate `
-  --certificate-arn <ACM_CERT_ARN> `
+  --certificate-arn <SITE_ACM_CERT_ARN> `
   --region us-east-1 `
+  --query "Certificate.Status"
+
+aws acm describe-certificate `
+  --certificate-arn <API_ACM_CERT_ARN> `
+  --region <AWS_REGION> `
   --query "Certificate.Status"
 
 aws cloudfront get-distribution `
@@ -3086,6 +3160,7 @@ aws cloudfront get-distribution `
   --query "Distribution.Status"
 
 Invoke-WebRequest -Method Head -Uri https://digital-assistant.agentairg.site
+Invoke-WebRequest -Method Head -Uri https://api.agentairg.site/health
 ```
 
 -------------------------------------------------------------------------------
