@@ -1,5 +1,7 @@
 # Digital Assistant: Capstone One-Pager
 
+Live App: https://digital-assistant.agentairg.site
+
 ## Project Summary
 Digital Assistant is a production-oriented, **serverless** agentic AI web application that combines conversational LLM UX with real tools (web search, PDF generation, email delivery, file upload parsing, and user-approved memory). It runs on fully managed services (Lambda, API Gateway, S3, CloudFront, Upstash Redis) and is designed for reliability under real constraints: API timeouts, hallucination risk, quota governance, and deployment repeatability.
 

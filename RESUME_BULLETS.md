@@ -2,6 +2,8 @@
 
 Use these as copy-ready bullets and adjust scope/metrics to match your exact contribution.
 
+Live App: https://digital-assistant.agentairg.site
+
 ## Senior Full-Stack / AI Engineer
 - Built and deployed a serverless, agentic AI assistant with tool orchestration (web search, PDF export, email delivery, file ingestion, memory extraction) using FastAPI, Next.js, and MCP.
 - Designed a hybrid truth-gated execution model that routes low-risk chat through guarded prose and high-risk actions through canonical tool-validated rendering.

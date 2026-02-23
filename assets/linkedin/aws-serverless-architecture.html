@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Digital Assistant - AWS Serverless Architecture</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f3f6fb;
+      font-family: "Helvetica", Arial, sans-serif;
+      color: #0f172a;
+    }
+    .frame {
+      width: 1600px;
+      height: 900px;
+      margin: 0 auto;
+      position: relative;
+      background: radial-gradient(circle at 18% 12%, #ffffff 0%, #f4f8ff 45%, #eef4fd 100%);
+      overflow: hidden;
+    }
+    .title {
+      position: absolute;
+      left: 38px;
+      top: 18px;
+      font-size: 38px;
+      font-weight: 700;
+      color: #123a66;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      position: absolute;
+      left: 38px;
+      top: 66px;
+      font-size: 20px;
+      color: #334155;
+    }
+    svg { position: absolute; inset: 0; }
+    .node {
+      fill: #ffffff;
+      stroke: #2f5d8f;
+      stroke-width: 2;
+      rx: 16;
+    }
+    .edge { stroke: #456a96; stroke-width: 2.8; fill: none; marker-end: url(#arrow); }
+    .label { font-size: 22px; font-weight: 700; fill: #143d69; }
+    .small { font-size: 17px; font-weight: 500; fill: #334155; }
+    .aws {
+      fill: #ff9900;
+      font-size: 16px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <div class="title">Digital Assistant - AWS Serverless Architecture</div>
+    <div class="subtitle">CloudFront/S3 frontend, API Gateway/Lambda backend, async worker, Redis quotas, S3 artifacts, MCP tools.</div>
+
+    <svg viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" aria-label="aws-serverless-architecture">
+      <defs>
+        <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+          <path d="M0,0 L12,6 L0,12 z" fill="#456a96" />
+        </marker>
+      </defs>
+
+      <rect x="30" y="130" width="1540" height="750" fill="#f7fbff" stroke="#d3e3f8" stroke-width="2" rx="20"/>
+      <text x="52" y="160" class="aws">AWS REGION (ap-southeast-1)</text>
+
+      <rect x="70" y="355" width="220" height="104" class="node"/>
+      <text x="128" y="398" class="label">Browser</text>
+      <text x="106" y="426" class="small">User Interface</text>
+
+      <rect x="330" y="220" width="260" height="104" class="node"/>
+      <text x="378" y="263" class="label">CloudFront</text>
+      <text x="392" y="291" class="small">CDN / TLS</text>
+
+      <rect x="330" y="510" width="260" height="104" class="node"/>
+      <text x="384" y="553" class="label">API Gateway</text>
+      <text x="403" y="581" class="small">REST API</text>
+
+      <rect x="660" y="220" width="280" height="104" class="node"/>
+      <text x="800" y="263" text-anchor="middle" class="label">S3 Frontend</text>
+      <text x="800" y="291" text-anchor="middle" class="small">Static App Files</text>
+
+      <rect x="660" y="510" width="280" height="104" class="node"/>
+      <text x="800" y="553" text-anchor="middle" class="label">Lambda API</text>
+      <text x="800" y="581" text-anchor="middle" class="small">FastAPI Container</text>
+
+      <rect x="1010" y="510" width="280" height="104" class="node"/>
+      <text x="1150" y="553" text-anchor="middle" class="label">Lambda Worker</text>
+      <text x="1150" y="581" text-anchor="middle" class="small">Async Tool Jobs</text>
+
+      <rect x="660" y="700" width="280" height="116" class="node"/>
+      <text x="800" y="744" text-anchor="middle" class="label">S3 (Artifacts +</text>
+      <text x="800" y="770" text-anchor="middle" class="label">Memory)</text>
+      <text x="800" y="794" text-anchor="middle" class="small">Uploads / Files</text>
+
+      <rect x="1010" y="700" width="280" height="116" class="node"/>
+      <text x="1150" y="744" text-anchor="middle" class="label">Redis (Jobs +</text>
+      <text x="1150" y="770" text-anchor="middle" class="label">Quotas)</text>
+      <text x="1150" y="794" text-anchor="middle" class="small">Upstash</text>
+
+      <rect x="1350" y="510" width="170" height="104" class="node"/>
+      <text x="1435" y="553" text-anchor="middle" class="label">LLMs</text>
+      <text x="1435" y="581" text-anchor="middle" class="small">Grok/Bedrock</text>
+
+      <rect x="1350" y="700" width="170" height="104" class="node"/>
+      <text x="1435" y="743" text-anchor="middle" class="label">MCP</text>
+      <text x="1435" y="771" text-anchor="middle" class="small">Tools</text>
+
+      <path d="M290 380 L330 270" class="edge"/>
+      <path d="M290 425 L330 562" class="edge"/>
+      <path d="M590 272 L660 272" class="edge"/>
+      <path d="M590 562 L660 562" class="edge"/>
+      <path d="M940 562 L1010 562" class="edge"/>
+      <path d="M800 614 L800 700" class="edge"/>
+      <path d="M1150 614 L1150 700" class="edge"/>
+      <path d="M1290 562 L1350 562" class="edge"/>
+      <path d="M1290 742 L1350 742" class="edge"/>
+      <path d="M1010 742 L940 742" class="edge"/>
+    </svg>
+  </div>
+</body>
+</html>

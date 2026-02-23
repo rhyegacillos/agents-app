@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Digital Assistant - Project One-Pager</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    body {
+      font-family: "Helvetica", Arial, sans-serif;
+      color: #0f172a;
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.35;
+      background: #ffffff;
+    }
+    .wrap {
+      width: 100%;
+      max-width: 180mm;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 21px;
+      margin: 0 0 2px 0;
+      letter-spacing: 0.2px;
+    }
+    .sub {
+      color: #334155;
+      margin-bottom: 10px;
+      font-size: 11px;
+    }
+    .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 2px 0 10px;
+      font-size: 10px;
+      color: #334155;
+    }
+    .pill {
+      border: 1px solid #cbd5e1;
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: #f8fafc;
+      white-space: nowrap;
+    }
+    h2 {
+      font-size: 12px;
+      margin: 10px 0 4px;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 3px;
+      color: #0b3a67;
+    }
+    ul {
+      margin: 5px 0 0 16px;
+      padding: 0;
+    }
+    li { margin-bottom: 3px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .stack {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .box {
+      border: 1px solid #dbe2ea;
+      border-radius: 8px;
+      padding: 7px;
+      background: #fbfdff;
+    }
+    .muted { color: #475569; }
+    a { color: #0b3a67; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Digital Assistant (Agentic AI)</h1>
+    <div class="sub">Production-style serverless AI assistant with tools, memory, async workers, and quota governance.</div>
+    <div class="meta">
+      <span class="pill">Live App: https://digital-assistant.agentairg.site</span>
+      <span class="pill">Deployment: Terraform + GitHub Actions</span>
+      <span class="pill">Architecture: AWS Serverless</span>
+    </div>
+
+    <h2>Problem</h2>
+    <ul>
+      <li>Most chat demos break in production: timeout failures, unreliable tool outputs, and missing usage controls.</li>
+      <li>Long-running tasks exceed synchronous API limits and degrade UX.</li>
+      <li>Without verifiable actions and observability, operations and trust become fragile.</li>
+    </ul>
+
+    <h2>Solution & Core Features</h2>
+    <div class="grid">
+      <div class="box">
+        <ul>
+          <li>Tool-enabled agent: web search, PDF export, email, file upload parsing, memory extraction.</li>
+          <li>Async execution: <span class="muted">POST /chat</span> returns <span class="muted">job_id</span>, worker completes long tool chains.</li>
+          <li>Daily quota enforcement: tokens/PDF/email tracked server-side with deterministic limits.</li>
+          <li>Human-approved memory: candidate memories require explicit approval before reuse.</li>
+        </ul>
+      </div>
+      <div class="box">
+        <ul>
+          <li>Reliability guardrails: tool-claim validation and safe fallbacks for failed tool actions.</li>
+          <li>Upload path optimized for production: browser direct-to-S3 via presigned URLs.</li>
+          <li>Responsive UI tuning for mobile/tablet chat header actions and quota visibility.</li>
+          <li>Split domains in prod: website on CloudFront domain, API on API Gateway custom domain.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>Architecture (High Level)</h2>
+    <ul>
+      <li>Frontend: Next.js served from S3 + CloudFront.</li>
+      <li>API: FastAPI running in AWS Lambda behind API Gateway REST.</li>
+      <li>Worker: dedicated Lambda for tool-heavy asynchronous runs.</li>
+      <li>State: S3 for artifacts/memory, Upstash Redis for jobs and quotas.</li>
+      <li>Infra as code: Terraform manages IAM, ECR, Lambda, API Gateway, S3, CloudFront, Route53, ACM.</li>
+    </ul>
+
+    <h2>Stack</h2>
+    <div class="stack">
+      <div class="box"><b>Backend</b><br/>Python, FastAPI, openai-agents, MCP</div>
+      <div class="box"><b>Frontend</b><br/>Next.js, React, TypeScript</div>
+      <div class="box"><b>Cloud</b><br/>AWS Lambda, API Gateway, S3, CloudFront, ECR, IAM, Route53, ACM</div>
+      <div class="box"><b>Data & Ops</b><br/>Upstash Redis, OpenTelemetry, CloudWatch, GitHub Actions</div>
+    </div>
+  </main>
+</body>
+</html>

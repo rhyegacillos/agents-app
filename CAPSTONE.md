@@ -33,6 +33,7 @@ In a single session, you can show:
 6. **Memory Tab**: approve/deny candidate memories and see them shape future responses.
 7. **Reliability**: long-running tool chains executed via a background worker (no 30s API Gateway timeouts).
 8. **Quota Governance**: real-time daily counters (tokens/PDF/email) with deterministic server-side enforcement.
+9. **Responsive UX**: mobile/tablet header actions auto-adjust for small widths while keeping quota visibility usable.
 
 ---
 
@@ -195,11 +196,28 @@ Infrastructure is defined in Terraform (in the `terraform/` folder):
 - ECR repository for Lambda container images
 - Lambda API + Lambda worker
 - API Gateway REST API + CORS + throttling
-- Optional custom domain (Route53 + ACM)
+- Frontend custom domain via CloudFront + Route53 + ACM (optional)
+- API custom domain via API Gateway + Route53 + ACM (optional)
 
 Notable implementation detail:
 
 - **Direct-to-S3 browser uploads** via `POST /uploads/presign` to avoid binary corruption through API Gateway/Lambda.
+- **Split domain routing**: frontend and API use separate hostnames to avoid static-site routing collisions on API paths.
+  - Frontend: `https://digital-assistant.agentairg.site`
+  - API: `https://api.agentairg.site`
+- **TLS/DNS model**:
+  - CloudFront certificate is in `us-east-1` (CloudFront requirement)
+  - API Gateway (REGIONAL) certificate is in the workload region
+  - Route53 aliases map both website and API domains
+- **Build-time API wiring**: frontend uses `NEXT_PUBLIC_API_URL` from Terraform output `api_custom_domain_url` when enabled, with fallback to `api_gateway_url`.
+
+Post-deploy smoke checks:
+
+```bash
+curl -s https://api.agentairg.site/health
+# open https://digital-assistant.agentairg.site
+# send one chat request and confirm async job status completes
+```
 
 See:
 
