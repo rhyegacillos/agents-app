@@ -55,7 +55,7 @@
 <body>
   <div class="frame">
     <div class="title">Digital Assistant - AWS Serverless Architecture</div>
-    <div class="subtitle">CloudFront/S3 frontend, API Gateway/Lambda backend, async worker, Redis quotas, S3 artifacts, MCP tools.</div>
+    <div class="subtitle">CloudFront/S3 frontend, API Gateway/Lambda backend, async worker, Redis quotas, S3 artifacts, OTel -> Sentry.</div>
 
     <svg viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" aria-label="aws-serverless-architecture">
       <defs>
@@ -82,6 +82,11 @@
       <rect x="660" y="220" width="280" height="104" class="node"/>
       <text x="800" y="263" text-anchor="middle" class="label">S3 Frontend</text>
       <text x="800" y="291" text-anchor="middle" class="small">Static App Files</text>
+
+      <rect x="1210" y="220" width="320" height="110" class="node"/>
+      <text x="1370" y="262" text-anchor="middle" class="label">Sentry</text>
+      <text x="1370" y="290" text-anchor="middle" class="small">Traces + Logs + Errors</text>
+      <text x="1370" y="314" text-anchor="middle" class="small">Export via OTLP</text>
 
       <rect x="660" y="510" width="280" height="104" class="node"/>
       <text x="800" y="553" text-anchor="middle" class="label">Lambda API</text>
@@ -113,6 +118,8 @@
       <path d="M290 425 L330 562" class="edge"/>
       <path d="M590 272 L660 272" class="edge"/>
       <path d="M590 562 L660 562" class="edge"/>
+      <path d="M940 540 L1210 285" class="edge"/>
+      <path d="M1150 510 L1320 330" class="edge"/>
       <path d="M940 562 L1010 562" class="edge"/>
       <path d="M800 614 L800 700" class="edge"/>
       <path d="M1150 614 L1150 700" class="edge"/>

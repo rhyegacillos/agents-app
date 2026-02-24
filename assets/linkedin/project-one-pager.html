@@ -98,9 +98,9 @@
       <div class="box">
         <ul>
           <li>Tool-enabled agent: web search, PDF export, email, file upload parsing, memory extraction.</li>
-          <li>Async execution: <span class="muted">POST /chat</span> returns <span class="muted">job_id</span>, worker completes long tool chains.</li>
+          <li>Async execution: <span class="muted">/chat</span> returns <span class="muted">job_id</span>; worker completes long tool chains.</li>
           <li>Daily quota enforcement: tokens/PDF/email tracked server-side with deterministic limits.</li>
-          <li>Human-approved memory: candidate memories require explicit approval before reuse.</li>
+          <li>User-approved memory: candidate memories require explicit approval before reuse.</li>
         </ul>
       </div>
       <div class="box">
@@ -108,6 +108,7 @@
           <li>Reliability guardrails: tool-claim validation and safe fallbacks for failed tool actions.</li>
           <li>Upload path optimized for production: browser direct-to-S3 via presigned URLs.</li>
           <li>Responsive UI tuning for mobile/tablet chat header actions and quota visibility.</li>
+          <li>Observability via OpenTelemetry instrumentation (traces/logs) exported to Sentry via OTLP.</li>
           <li>Split domains in prod: website on CloudFront domain, API on API Gateway custom domain.</li>
         </ul>
       </div>
@@ -119,15 +120,16 @@
       <li>API: FastAPI running in AWS Lambda behind API Gateway REST.</li>
       <li>Worker: dedicated Lambda for tool-heavy asynchronous runs.</li>
       <li>State: S3 for artifacts/memory, Upstash Redis for jobs and quotas.</li>
+      <li>Observability: OpenTelemetry for API + worker, exported to Sentry (OTLP); CloudWatch for AWS runtime logs/metrics.</li>
       <li>Infra as code: Terraform manages IAM, ECR, Lambda, API Gateway, S3, CloudFront, Route53, ACM.</li>
     </ul>
 
     <h2>Stack</h2>
     <div class="stack">
-      <div class="box"><b>Backend</b><br/>Python, FastAPI, openai-agents, MCP</div>
+      <div class="box"><b>Backend</b><br/>Python, FastAPI, Agent runtime, MCP</div>
       <div class="box"><b>Frontend</b><br/>Next.js, React, TypeScript</div>
       <div class="box"><b>Cloud</b><br/>AWS Lambda, API Gateway, S3, CloudFront, ECR, IAM, Route53, ACM</div>
-      <div class="box"><b>Data & Ops</b><br/>Upstash Redis, OpenTelemetry, CloudWatch, GitHub Actions</div>
+      <div class="box"><b>Data & Ops</b><br/>Upstash Redis, OpenTelemetry/Sentry, CloudWatch, GitHub Actions</div>
     </div>
   </main>
 </body>

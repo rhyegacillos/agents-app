@@ -50,7 +50,7 @@ This project implements a hybrid architecture:
 
 ## Reliability and Operations
 - Structured logs with trace and job correlation.
-- OpenTelemetry traces + logs via OTLP export for backend-agnostic observability (portable across Sentry/Datadog/Grafana/others).
+- Observability via OpenTelemetry instrumentation (traces/logs) exported to Sentry via OTLP.
 - Clear operator workflow documented in `OPERATIONS.md`.
 - Regression coverage in backend tests plus lint-clean frontend.
 - Risk-tier routing to preserve UX while protecting high-risk actions.
