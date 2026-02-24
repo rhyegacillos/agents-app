@@ -1,0 +1,30 @@
+digraph AutonomousTrader {
+  graph [rankdir=LR, bgcolor="white", pad="0.35", nodesep="0.7", ranksep="0.85", fontname="Helvetica"];
+  node [shape=box, style="rounded,filled", fillcolor="#F8FAFC", color="#334155", fontname="Helvetica", fontsize=11, penwidth=1.2];
+  edge [color="#334155", arrowsize=0.8, penwidth=1.2, fontname="Helvetica", fontsize=10];
+
+  Browser [label="User Browser", fillcolor="#E0F2FE", color="#0369A1"];
+  Container [label="Single Docker Container\nPort 8000", fillcolor="#DBEAFE", color="#1D4ED8"];
+  FastAPI [label="FastAPI Control Plane\napi/app/main.py", fillcolor="#F1F5F9"];
+  UI [label="Static Next.js UI\napi/static", fillcolor="#F1F5F9"];
+  Scheduler [label="Scheduler Manager\nstart/stop/status", fillcolor="#F1F5F9"];
+  Engine [label="Trader Engine Data Plane\napi/trader_engine", fillcolor="#EDE9FE", color="#6D28D9"];
+  MCP [label="MCP Tool Servers\naccounts | market | fetch | brave | memory", fillcolor="#FEF3C7", color="#92400E"];
+  SQLite [shape=cylinder, label="SQLite + Memory DBs\napi/data", fillcolor="#DCFCE7", color="#166534"];
+  Polygon [label="Polygon API", fillcolor="#FEE2E2", color="#B91C1C"];
+  LLMs [label="LLM Providers\nOpenAI | DeepSeek | Gemini | Grok", fillcolor="#FEE2E2", color="#B91C1C"];
+
+  Browser -> Container [label="HTTP"];
+  Container -> FastAPI;
+  Container -> UI [label="serves static"];
+
+  FastAPI -> Scheduler;
+  Scheduler -> Engine [label="spawns trading loop"];
+  FastAPI -> SQLite [label="reads trader data"];
+
+  Engine -> MCP [label="tool/resource calls"];
+  Engine -> SQLite [label="persist accounts/logs"];
+  Engine -> LLMs [label="reasoning"];
+  MCP -> Polygon [label="market prices"];
+  MCP -> SQLite [label="account + memory state"];
+}

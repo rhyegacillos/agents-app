@@ -1,0 +1,186 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3012 >>
+stream
+BT
+/F2 20 Tf
+1 0 0 1 54 754 Tm
+(Autonomous Agentic Trader - Project One-Pager) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 732 Tm
+(Multi-agent AI trading simulation platform for portfolio and LinkedIn showcase) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 719 Tm
+(Research/education simulation; not financial advice.) Tj
+ET
+BT
+/F2 12 Tf
+1 0 0 1 54 698 Tm
+(Problem) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 682 Tm
+(Most trading demos are either chat-only with no execution path, or hardcoded scripts with no) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 669 Tm
+(transparent reasoning. This project combines autonomous LLM decision-making, tool-gated) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 656 Tm
+(execution, and live observability in one deployable system.) Tj
+ET
+BT
+/F2 12 Tf
+1 0 0 1 54 635 Tm
+(Key Features) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 619 Tm
+(- Four trader personas \(Warren, George, Ray, Cathie\) running scheduled trade/rebalance cycles.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 606 Tm
+(- MCP tool boundaries for account actions, market prices, web research, and memory.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 593 Tm
+(- Resilient pricing chain: Polygon -> cache -> web -> unavailable; invalid prices are blocked.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 580 Tm
+(- FastAPI lifecycle controls: start, stop, status, and reset for runtime operations.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 567 Tm
+(- Next.js dashboard with structured logs, trace events, holdings, transactions, and timeline.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 554 Tm
+(- Read-only and market-auto runtime modes for safer cloud demo operations.) Tj
+ET
+BT
+/F2 12 Tf
+1 0 0 1 54 533 Tm
+(Architecture) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 517 Tm
+(- Single Docker container serves FastAPI APIs and static Next.js UI on port 8000.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 504 Tm
+(- FastAPI is the control plane; trading engine runs as a managed child process data plane.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 491 Tm
+(- Trader agents call MCP servers instead of mutating storage directly.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 478 Tm
+(- State persists in SQLite tables \(accounts, logs, market\) plus optional per-trader memory) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 68 465 Tm
+(DBs.) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 452 Tm
+(- External integrations: LLM providers, Polygon market data, and research MCP tools.) Tj
+ET
+BT
+/F2 12 Tf
+1 0 0 1 54 431 Tm
+(Stack) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 415 Tm
+(- Backend: FastAPI, Uvicorn, Python 3.12) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 402 Tm
+(- Agent Runtime: OpenAI Agents SDK + MCP tool servers \(stdio\)) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 389 Tm
+(- Frontend: Next.js static export with TypeScript) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 376 Tm
+(- Data: SQLite) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 363 Tm
+(- Infra: Docker, AWS EC2 + ECR, Terraform, GitHub Actions \(OIDC\), SSM redeploy) Tj
+ET
+BT
+/F2 12 Tf
+1 0 0 1 54 342 Tm
+(Outcome) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 326 Tm
+(A production-style, end-to-end agentic application demonstrating decision intelligence,) Tj
+ET
+BT
+/F1 10 Tf
+1 0 0 1 54 313 Tm
+(controlled tool execution, observability, and cloud-ready deployment workflow.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000257 00000 n 
+0000003320 00000 n 
+0000003390 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+3465
+%%EOF

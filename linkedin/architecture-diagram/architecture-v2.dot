@@ -1,0 +1,56 @@
+digraph AutonomousTraderV2 {
+  graph [
+    rankdir=TB,
+    bgcolor="white",
+    pad="0.15",
+    margin="0.05",
+    nodesep="0.28",
+    ranksep="0.45",
+    fontname="Helvetica",
+    label="Autonomous Agentic Trader - High-Level Architecture\nMulti-agent trading simulation with MCP tool boundaries + resilience guardrails",
+    labelloc=t,
+    labeljust=c,
+    fontsize=20,
+    fontcolor="#0F172A"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#F8FAFC",
+    color="#334155",
+    fontname="Helvetica",
+    fontsize=13,
+    penwidth=1.4,
+    margin="0.10,0.08"
+  ];
+
+  edge [
+    color="#334155",
+    arrowsize=0.8,
+    penwidth=1.3,
+    fontname="Helvetica",
+    fontsize=10
+  ];
+
+  Browser [label="User Browser", fillcolor="#E0F2FE", color="#0369A1"];
+  Entry [label="UI + API Layer\n(Next.js UI + FastAPI)", fillcolor="#DBEAFE", color="#1D4ED8"];
+  Scheduler [label="Scheduler Control", fillcolor="#F1F5F9"];
+  Engine [label="Trader Engine\n(Data Plane)", fillcolor="#EDE9FE", color="#6D28D9"];
+  MCP [label="MCP Tool Servers", fillcolor="#FEF3C7", color="#92400E"];
+  LLMs [label="LLM Providers\n(OpenAI / DeepSeek / Gemini / Grok)", fillcolor="#FEE2E2", color="#B91C1C"];
+  DB [shape=cylinder, label="State Store\n(SQLite + Memory)", fillcolor="#DCFCE7", color="#166534"];
+  Polygon [label="Polygon API\n(Market Data)", fillcolor="#FEE2E2", color="#B91C1C"];
+
+  Browser -> Entry [color="#1D4ED8", penwidth=3.2];
+  Entry -> Scheduler [color="#1D4ED8", penwidth=3.2];
+  Scheduler -> Engine [color="#1D4ED8", penwidth=3.2];
+  Engine -> MCP [color="#1D4ED8", penwidth=3.2, label="execution + state updates", fontcolor="#1D4ED8", fontsize=10];
+  MCP -> DB [color="#1D4ED8", penwidth=3.2];
+
+  Engine -> LLMs [color="#475569", style=dashed, penwidth=1.5, label="reasoning", constraint=false];
+  MCP -> Polygon [color="#475569", style=dashed, penwidth=1.5, label="price lookup", constraint=false];
+
+  { rank=same; Engine; LLMs }
+  { rank=same; MCP; Polygon }
+}
