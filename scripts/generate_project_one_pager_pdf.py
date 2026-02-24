@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a one-page PDF from deliverables/project-one-pager.md without external deps."""
+"""Generate a styled one-page project PDF without external dependencies."""
 
 from __future__ import annotations
 
@@ -8,115 +8,314 @@ import textwrap
 
 PAGE_WIDTH = 612
 PAGE_HEIGHT = 792
-LEFT_MARGIN = 54
-TOP_Y = 754
-LINE_WIDTH_CHARS = 94
+MARGIN = 16
 
 
 def pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def wrap_text(text: str, width: int = LINE_WIDTH_CHARS) -> list[str]:
-    return textwrap.wrap(text, width=width, break_long_words=False, break_on_hyphens=False)
+def rgb(color: tuple[int, int, int]) -> str:
+    r, g, b = color
+    return f"{r / 255:.4f} {g / 255:.4f} {b / 255:.4f}"
 
 
-def build_layout() -> list[tuple[str, int, int, str]]:
-    # tuple: (font_id, size, x, text)
-    rows: list[tuple[str, int, int, str]] = []
+def y_from_top(top: float, height: float = 0.0) -> float:
+    return PAGE_HEIGHT - top - height
 
-    rows.append(("F2", 20, LEFT_MARGIN, "Autonomous Agentic Trader - Project One-Pager"))
-    rows.append(("F1", 10, LEFT_MARGIN, "Multi-agent AI trading simulation platform for portfolio and LinkedIn showcase"))
-    rows.append(("F1", 10, LEFT_MARGIN, "Research/education simulation; not financial advice."))
-    rows.append(("", 0, LEFT_MARGIN, ""))
 
-    rows.append(("F2", 12, LEFT_MARGIN, "Problem"))
+def wrap_for_width(text: str, width_pts: float, font_size: int) -> list[str]:
+    chars = max(12, int(width_pts / (font_size * 0.52)))
+    return textwrap.wrap(text, width=chars, break_long_words=False, break_on_hyphens=False)
+
+
+class PdfCanvas:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def rect(
+        self,
+        x: float,
+        top: float,
+        width: float,
+        height: float,
+        fill: tuple[int, int, int],
+        stroke: tuple[int, int, int],
+        line_width: float = 1.0,
+    ) -> None:
+        y = y_from_top(top, height)
+        self.commands.append(f"{rgb(fill)} rg")
+        self.commands.append(f"{rgb(stroke)} RG")
+        self.commands.append(f"{line_width:.2f} w")
+        self.commands.append(f"{x:.2f} {y:.2f} {width:.2f} {height:.2f} re B")
+
+    def line(
+        self,
+        x1: float,
+        top1: float,
+        x2: float,
+        top2: float,
+        color: tuple[int, int, int],
+        line_width: float = 0.8,
+    ) -> None:
+        y1 = y_from_top(top1)
+        y2 = y_from_top(top2)
+        self.commands.append(f"{rgb(color)} RG")
+        self.commands.append(f"{line_width:.2f} w")
+        self.commands.append(f"{x1:.2f} {y1:.2f} m {x2:.2f} {y2:.2f} l S")
+
+    def text(
+        self,
+        x: float,
+        top: float,
+        text: str,
+        font: str = "F1",
+        size: int = 10,
+        color: tuple[int, int, int] = (30, 41, 59),
+    ) -> None:
+        y = y_from_top(top, size)
+        self.commands.extend(
+            [
+                "BT",
+                f"/{font} {size} Tf",
+                f"{rgb(color)} rg",
+                f"1 0 0 1 {x:.2f} {y:.2f} Tm",
+                f"({pdf_escape(text)}) Tj",
+                "ET",
+            ]
+        )
+
+    def paragraph(
+        self,
+        x: float,
+        top: float,
+        width: float,
+        text: str,
+        size: int = 10,
+        line_gap: int = 4,
+        font: str = "F1",
+        color: tuple[int, int, int] = (30, 41, 59),
+    ) -> float:
+        cur_top = top
+        for line in wrap_for_width(text, width, size):
+            self.text(x, cur_top, line, font=font, size=size, color=color)
+            cur_top += size + line_gap
+        return cur_top
+
+    def bullets(
+        self,
+        x: float,
+        top: float,
+        width: float,
+        items: list[str],
+        size: int = 10,
+        line_gap: int = 3,
+        color: tuple[int, int, int] = (30, 41, 59),
+    ) -> float:
+        cur_top = top
+        for item in items:
+            lines = wrap_for_width(item, width - 14, size)
+            for idx, line in enumerate(lines):
+                prefix = "- " if idx == 0 else "  "
+                self.text(x, cur_top, f"{prefix}{line}", font="F1", size=size, color=color)
+                cur_top += size + line_gap
+            cur_top += 2
+        return cur_top
+
+    def numbered_list(
+        self,
+        x: float,
+        top: float,
+        width: float,
+        items: list[str],
+        size: int = 10,
+        line_gap: int = 3,
+        color: tuple[int, int, int] = (30, 41, 59),
+    ) -> float:
+        cur_top = top
+        for idx, item in enumerate(items, start=1):
+            lines = wrap_for_width(item, width - 16, size)
+            for line_index, line in enumerate(lines):
+                prefix = f"{idx}. " if line_index == 0 else "   "
+                self.text(x, cur_top, f"{prefix}{line}", font="F1", size=size, color=color)
+                cur_top += size + line_gap
+            cur_top += 1
+        return cur_top
+
+    def stream(self) -> bytes:
+        return ("\n".join(self.commands) + "\n").encode("latin-1")
+
+
+def build_layout_stream() -> bytes:
+    colors = {
+        "bg": (250, 251, 253),
+        "card_fill": (242, 245, 249),
+        "card_border": (195, 208, 221),
+        "title": (18, 31, 46),
+        "subtitle": (67, 80, 95),
+        "section": (8, 125, 109),
+        "text": (34, 46, 61),
+        "muted_border": (180, 214, 206),
+        "muted_fill": (229, 245, 241),
+        "chip_fill": (232, 247, 243),
+        "chip_border": (133, 204, 188),
+    }
+
+    c = PdfCanvas()
+    c.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, fill=colors["bg"], stroke=colors["bg"], line_width=0)
+
+    c.text(
+        MARGIN + 12,
+        20,
+        "Autonomous Agentic Trader - Project One-Pager",
+        font="F2",
+        size=24,
+        color=colors["title"],
+    )
+    c.text(
+        MARGIN + 12,
+        50,
+        "Multi-agent trading simulation platform with tool-gated execution and operator visibility.",
+        font="F1",
+        size=11,
+        color=colors["subtitle"],
+    )
+    c.text(
+        MARGIN + 12,
+        66,
+        "Research/education simulation; not financial advice.",
+        font="F1",
+        size=10,
+        color=colors["subtitle"],
+    )
+
+    row_top = 82
+    row_height = 300
+    gap = 10
+    card_width = (PAGE_WIDTH - (2 * MARGIN) - gap) / 2
+    left_x = MARGIN
+    right_x = left_x + card_width + gap
+    pad = 10
+
+    c.rect(left_x, row_top, card_width, row_height, colors["card_fill"], colors["card_border"], line_width=1.0)
+    c.text(left_x + pad, row_top + 14, "PROBLEM", font="F2", size=12, color=colors["section"])
     problem = (
-        "Most trading demos are either chat-only with no execution path, or hardcoded scripts with no transparent"
-        " reasoning. This project combines autonomous LLM decision-making, tool-gated execution, and live"
-        " observability in one deployable system."
+        "Most trading demos are either chat-only with no execution path or hardcoded scripts with limited"
+        " transparency. Reviewers struggle to see how agent reasoning becomes controlled actions, how failures"
+        " are handled, and how portfolio outcomes are explained in real time."
     )
-    for line in wrap_text(problem):
-        rows.append(("F1", 10, LEFT_MARGIN, line))
-    rows.append(("", 0, LEFT_MARGIN, ""))
-
-    rows.append(("F2", 12, LEFT_MARGIN, "Key Features"))
-    feature_items = [
-        "Four trader personas (Warren, George, Ray, Cathie) running scheduled trade/rebalance cycles.",
-        "MCP tool boundaries for account actions, market prices, web research, and memory.",
-        "Resilient pricing chain: Polygon -> cache -> web -> unavailable; invalid prices are blocked.",
-        "FastAPI lifecycle controls: start, stop, status, and reset for runtime operations.",
-        "Next.js dashboard with structured logs, trace events, holdings, transactions, and timeline.",
-        "Read-only and market-auto runtime modes for safer cloud demo operations.",
-    ]
-    for item in feature_items:
-        wrapped = wrap_text(f"- {item}")
-        for idx, line in enumerate(wrapped):
-            x = LEFT_MARGIN if idx == 0 else LEFT_MARGIN + 14
-            rows.append(("F1", 10, x, line))
-    rows.append(("", 0, LEFT_MARGIN, ""))
-
-    rows.append(("F2", 12, LEFT_MARGIN, "Architecture"))
-    architecture_items = [
-        "Single Docker container serves FastAPI APIs and static Next.js UI on port 8000.",
-        "FastAPI is the control plane; trading engine runs as a managed child process data plane.",
-        "Trader agents call MCP servers instead of mutating storage directly.",
-        "State persists in SQLite tables (accounts, logs, market) plus optional per-trader memory DBs.",
-        "External integrations: LLM providers, Polygon market data, and research MCP tools.",
-    ]
-    for item in architecture_items:
-        wrapped = wrap_text(f"- {item}")
-        for idx, line in enumerate(wrapped):
-            x = LEFT_MARGIN if idx == 0 else LEFT_MARGIN + 14
-            rows.append(("F1", 10, x, line))
-    rows.append(("", 0, LEFT_MARGIN, ""))
-
-    rows.append(("F2", 12, LEFT_MARGIN, "Stack"))
-    stack_items = [
-        "Backend: FastAPI, Uvicorn, Python 3.12",
-        "Agent Runtime: OpenAI Agents SDK + MCP tool servers (stdio)",
-        "Frontend: Next.js static export with TypeScript",
-        "Data: SQLite",
-        "Infra: Docker, AWS EC2 + ECR, Terraform, GitHub Actions (OIDC), SSM redeploy",
-    ]
-    for item in stack_items:
-        rows.append(("F1", 10, LEFT_MARGIN, f"- {item}"))
-
-    rows.append(("", 0, LEFT_MARGIN, ""))
-    rows.append(("F2", 12, LEFT_MARGIN, "Outcome"))
-    outcome = (
-        "A production-style, end-to-end agentic application demonstrating decision intelligence, controlled tool"
-        " execution, observability, and cloud-ready deployment workflow."
+    c.paragraph(
+        left_x + pad,
+        row_top + 38,
+        card_width - (2 * pad),
+        problem,
+        size=11,
+        line_gap=4,
+        font="F1",
+        color=colors["text"],
     )
-    for line in wrap_text(outcome):
-        rows.append(("F1", 10, LEFT_MARGIN, line))
 
-    return rows
+    c.rect(right_x, row_top, card_width, row_height, colors["card_fill"], colors["card_border"], line_width=1.0)
+    c.text(right_x + pad, row_top + 14, "SOLUTION FEATURES", font="F2", size=12, color=colors["section"])
+    features = [
+        "Four autonomous trader personas with alternating trade/rebalance cycles.",
+        "MCP tool boundaries for accounts, market pricing, research, and memory.",
+        "Resilient market pricing path: Polygon -> cache -> web -> unavailable.",
+        "Execution safety checks block invalid quantities and unavailable prices.",
+        "Control APIs for scheduler start, stop, status, and account reset.",
+        "Dashboard with structured logs, trace events, holdings, and timeline views.",
+        "Read-only and market-auto runtime modes for safer cloud demos.",
+    ]
+    c.bullets(
+        right_x + pad,
+        row_top + 38,
+        card_width - (2 * pad),
+        features,
+        size=10,
+        line_gap=3,
+        color=colors["text"],
+    )
 
+    arch_top = 392
+    arch_height = 160
+    full_width = PAGE_WIDTH - (2 * MARGIN)
+    c.rect(MARGIN, arch_top, full_width, arch_height, colors["card_fill"], colors["card_border"], line_width=1.0)
+    c.text(MARGIN + pad, arch_top + 14, "ARCHITECTURE", font="F2", size=12, color=colors["section"])
 
-def make_content_stream(rows: list[tuple[str, int, int, str]]) -> bytes:
-    commands = []
-    y = TOP_Y
-    for font_id, size, x, text in rows:
-        if not font_id:
-            y -= 8
-            continue
-        commands.append("BT")
-        commands.append(f"/{font_id} {size} Tf")
-        commands.append(f"1 0 0 1 {x} {y} Tm")
-        commands.append(f"({pdf_escape(text)}) Tj")
-        commands.append("ET")
-        if size >= 20:
-            y -= 22
-        elif size >= 12:
-            y -= 16
-        else:
-            y -= 13
+    inner_pad = 10
+    c.rect(
+        MARGIN + pad,
+        arch_top + 36,
+        full_width - (2 * pad),
+        94,
+        colors["muted_fill"],
+        colors["muted_border"],
+        line_width=0.9,
+    )
+    arch_items = [
+        "UI calls FastAPI for trader snapshots, logs, market status, and scheduler controls.",
+        "Scheduler manages the trading engine lifecycle and run cadence.",
+        "Trader Engine executes persona agents across trade and rebalance cycles.",
+        "Agents call MCP tool servers for accounts, market data, and optional research memory.",
+        "Tool calls persist transactions, logs, and market snapshots to State Store.",
+        "Dashboard refresh exposes portfolio movement and operational telemetry.",
+    ]
+    c.numbered_list(
+        MARGIN + pad + inner_pad,
+        arch_top + 47,
+        full_width - (2 * pad) - (2 * inner_pad),
+        arch_items,
+        size=10,
+        line_gap=2,
+        color=colors["text"],
+    )
 
-    if y < 42:
-        raise RuntimeError("Content overflowed the single page. Reduce text before generating PDF.")
+    chip_y = arch_top + 136
+    chips = [
+        "Control plane + data plane split",
+        "MCP tool boundary",
+        "Resilient price fallback",
+    ]
+    chip_x = MARGIN + pad
+    for chip in chips:
+        chip_w = 18 + (len(chip) * 4.9)
+        c.rect(chip_x, chip_y, chip_w, 16, colors["chip_fill"], colors["chip_border"], line_width=0.8)
+        c.text(chip_x + 7, chip_y + 4, chip, font="F1", size=9, color=colors["section"])
+        chip_x += chip_w + 8
 
-    return ("\n".join(commands) + "\n").encode("latin-1")
+    stack_top = 560
+    stack_height = 216
+    c.rect(MARGIN, stack_top, full_width, stack_height, colors["card_fill"], colors["card_border"], line_width=1.0)
+    c.text(MARGIN + pad, stack_top + 14, "TECHNOLOGY STACK", font="F2", size=12, color=colors["section"])
+
+    rows = [
+        ("Frontend", "Next.js static export, TypeScript dashboard, portfolio and log visualizations"),
+        ("Backend", "FastAPI, Uvicorn, Pydantic services, scheduler control API"),
+        ("AI/Agents", "OpenAI Agents SDK, multi-model routing, MCP tool servers over stdio"),
+        ("Data/State", "State Store (SQLite + memory), account ledgers, logs, market cache"),
+        ("Integrations", "Polygon market data, Brave Search, fetch/memory MCP services"),
+        ("Deployment", "Docker, AWS ECR + EC2, Terraform, GitHub Actions, SSM deployment"),
+    ]
+
+    label_w = 102
+    row_top = stack_top + 36
+    row_left = MARGIN + pad
+    row_right = MARGIN + full_width - pad
+    line_color = (205, 214, 224)
+    text_w = full_width - (2 * pad) - label_w - 6
+
+    for label, value in rows:
+        c.text(row_left, row_top, label, font="F2", size=10, color=colors["text"])
+        value_lines = wrap_for_width(value, text_w, 10)
+        line_top = row_top
+        for line in value_lines:
+            c.text(row_left + label_w + 6, line_top, line, font="F1", size=10, color=colors["text"])
+            line_top += 12
+        row_bottom = line_top + 2
+        c.line(row_left, row_bottom, row_right, row_bottom, color=line_color, line_width=0.6)
+        row_top = row_bottom + 4
+
+    return c.stream()
 
 
 def build_pdf(content_stream: bytes) -> bytes:
@@ -137,7 +336,6 @@ def build_pdf(content_stream: bytes) -> bytes:
 
     pdf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     offsets = [0]
-
     for i, obj in enumerate(objects, start=1):
         offsets.append(len(pdf))
         pdf.extend(f"{i} 0 obj\n".encode("ascii"))
@@ -158,8 +356,7 @@ def build_pdf(content_stream: bytes) -> bytes:
 
 def main() -> None:
     out_pdf = Path("deliverables/project-one-pager.pdf")
-    rows = build_layout()
-    content = make_content_stream(rows)
+    content = build_layout_stream()
     pdf_bytes = build_pdf(content)
     out_pdf.write_bytes(pdf_bytes)
     print(f"Wrote {out_pdf}")
