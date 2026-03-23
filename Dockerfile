@@ -53,11 +53,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the FastAPI server
 COPY api/ ./
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+COPY scripts ./scripts
 COPY api/index.py ./server.py
 
 
 # Copy the Next.js static export from builder stage
 COPY --from=frontend-builder /app/out ./static
+
+RUN chmod +x ./scripts/start_server.sh
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -69,5 +74,5 @@ EXPOSE 8000
 # Ensure logs flush to container output
 ENV PYTHONUNBUFFERED=1
 
-# Start the FastAPI server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--access-log"]
+# Run migrations, then start the FastAPI server
+CMD ["./scripts/start_server.sh"]

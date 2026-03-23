@@ -253,7 +253,7 @@ When `finance_mode=grounded_v2`:
 
 ## 5) Storage Model
 
-SQLite table: `saved_stakeholder_reports`
+PostgreSQL table: `saved_stakeholder_reports`
 
 Columns:
 
@@ -269,6 +269,7 @@ Notes:
 
 - `model` stores narrative generation model identifier.
 - Deterministic finance mode information is stored in `dossier_json.provenance`.
+- JSON payloads are stored as `JSONB` in the current schema.
 
 ---
 

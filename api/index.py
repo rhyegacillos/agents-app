@@ -90,6 +90,19 @@ if ALLOWED_HOSTS:
     ALLOWED_HOSTS = ALLOWED_HOSTS.union(DEFAULT_ALLOWED_HOSTS)
 
 
+def _is_allowed_host(incoming_host: str) -> bool:
+    if incoming_host in ALLOWED_HOSTS:
+        return True
+
+    for allowed_host in ALLOWED_HOSTS:
+        if allowed_host.startswith("*."):
+            suffix = allowed_host[1:]
+            if incoming_host.endswith(suffix):
+                return True
+
+    return False
+
+
 def _normalize_host(value: str) -> str:
     host = (value or "").strip().lower()
     if not host:
@@ -117,7 +130,7 @@ async def enforce_allowed_hosts(request: Request, call_next):
         return await call_next(request)
 
     incoming_host = _extract_request_host(request)
-    if incoming_host not in ALLOWED_HOSTS:
+    if not _is_allowed_host(incoming_host):
         logger.warning(
             "blocked_request.invalid_host host=%s path=%s",
             incoming_host,
@@ -1821,14 +1834,8 @@ async def subscription(creds=Depends(clerk_guard)):
     decoded = getattr(creds, "decoded", {}) or {}
     user_id = decoded.get("sub")
     plan = decoded.get("pla") or "u:free_user"
-    
-    # print(f"subscription poll: {user_id}") # Optional: debug log
 
-    # Sync plan/stats
-    conn = db.get_db()
-    db.get_or_create_user(conn, user_id, plan)
-    conn.close()
-    
+    db.ensure_user(user_id, plan)
     stats = db.get_user_stats(user_id)
     
     return {
@@ -3078,8 +3085,8 @@ async def recommend_combination(
     result = await recommend_combination_agent(
         generate=generate_openai_compatible,
         extract_json=_extract_json_object,
-        client=grok_client,
-        model=GROK_MODEL,
+        client=deepseek_client,
+        model=DEEPSEEK_MODEL,
         industry=request.industry,
         allowed_constraints=allowed_constraints,
         personas=[p.model_dump() for p in (request.personas or [])],

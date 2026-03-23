@@ -1,272 +1,279 @@
 # IdeaGen
 
-IdeaGen is a multi-model business idea generator and report engine. It generates ideas, ranks model outputs, compares runs, and produces decision-ready reports for stakeholders.
+IdeaGen is a multi-model business idea generator and report engine. It generates ideas, ranks model outputs, compares runs, produces decision-ready reports, and builds Execution Plans from saved evidence.
 
-## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+This repository now runs on a PostgreSQL-first persistence stack:
 
-This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+- PostgreSQL as the system of record
+- SQLAlchemy 2.x for database access
+- Alembic for schema migrations
+- Amazon RDS for production database hosting
+- AWS App Runner for the application runtime
+- Terraform for infrastructure provisioning
 
-- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
-- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
-- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
-- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
-- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
-- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
-- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
-- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
-- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
-- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
-- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+## Current Architecture
 
-
-## Why this project (LLM engineering focus)
-- Multi-provider orchestration (OpenAI, Gemini, DeepSeek, Grok).
-- Agentic validation loops for structured JSON outputs.
-- Automated ranking and diff analysis across runs.
-- Exportable PDF/email reports with consistent formatting.
-
-## Architecture (high level)
-```
-UI (Next.js) ---> FastAPI API ---> LLM Providers
-     |                |               |-- OpenAI
-     |                |               |-- Gemini
-     |                |               |-- DeepSeek
-     |                |               |-- Grok
-     |                |
-     |                +--> SQLite (saved runs, reports, usage)
-     |                +--> PDF renderer (WeasyPrint)
-     |                +--> Resend email
+```text
+Browser (Next.js static UI)
+  -> FastAPI API
+      -> Clerk JWT verification
+      -> quota/usage checks
+      -> multi-provider LLM orchestration
+      -> PDF rendering (WeasyPrint)
+      -> email delivery (Resend)
+      -> PostgreSQL via SQLAlchemy
+           -> local Postgres in development
+           -> Amazon RDS PostgreSQL in AWS
 ```
 
-## LLM engineering highlights
-- Provider routing and fallback chains for resilience.
-- Agentic JSON validation and retries for structured outputs.
-- Separate analysis agents for ranking and comparisons.
-- Strict prompts to avoid assumptions and keep outputs factual.
-- Grounded Finance v2 for Execution Plans (deterministic financial model + narrative-only LLM).
+## What Changed in the Database Migration
 
-## Agent flows
-- Idea generation: multi-model outputs for the same config.
-- Model ranking (per run): ranks model outputs using a rubric.
-- Compare results (across runs): compares top-ranked outputs for the same config.
-- Decision Summary Report: ranks multiple runs and summarizes insights.
-- Execution Plan: generates implementation and finance dossier from saved decision artifacts.
-- Recommend combination: suggests constraints/persona for a target industry.
-- Email agent: centralized report email sending.
+The application no longer depends on a local SQLite file for runtime persistence.
 
-## Saved Results modal UX (implemented)
-- One draggable, viewport-constrained floating modal shell with 4 modes: Generated, Compare, Decision, Execution Plan.
-- Per-item actions:
-  - Generated: `Load`, `Delete`
-  - Compare: `View`, `Delete`
-  - Decision: `View`, `Delete`
-  - Execution Plan: `View`, `Delete`
-- Bulk actions:
-  - `Delete All` in Generated header (beside Refresh)
-  - `Delete All` in Saved Comparisons header
-  - `Delete All` in Saved Decision Summary Reports header
-  - `Delete All` in Saved Execution Plans header
-- Delete-all actions are disabled when the list is empty and always require confirmation.
-- During compare/report generation and bulk deletion, conflicting modal actions are locked.
-- Delete confirmation dialogs no longer trigger parent modal auto-close from outside-click listeners.
+The migration introduced:
 
-## Decision Flow + Step Guide UX (implemented)
+- a central config resolver in [api/config.py](/home/repos/ideagen-saas-aws/api/config.py)
+- SQLAlchemy models in [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py)
+- Alembic migrations in [alembic](/home/repos/ideagen-saas-aws/alembic)
+- Postgres-backed persistence helpers in [api/db.py](/home/repos/ideagen-saas-aws/api/db.py)
+- an app startup wrapper in [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh) that runs `alembic upgrade head` before starting `uvicorn`
+- Terraform-managed RDS, Secrets Manager, ECR, App Runner, VPC networking, and deployment workflows
 
-The workspace now uses a dual-mode onboarding system so first-time users are guided while experienced users get a lighter status view.
+This means:
 
-- **Decision Flow strip** (top of workspace) shows 4 stages:
-  1. Generate Results
-  2. Compare Results
-  3. Decision Summary
-  4. Execution Plan
-- **Adaptive mode switching with hysteresis**:
-  - `guided -> status` only when global guidedness drops to `<= 40`
-  - `status -> guided` only when global guidedness rises to `>= 60`
-  - values between `41-59` keep current mode (prevents rapid mode flip/flop)
-- **Guided mode** emphasizes prerequisites and next-step actions.
-- **Status mode** emphasizes artifact counts and compact navigation context.
+- schema changes are no longer created ad hoc in app startup code
+- schema ownership is now Alembic
+- production data lives in managed Postgres, not inside the container filesystem
+- local development uses the same database engine as production
 
-### Persistent Step Guide panel
+## Environment Model
 
-A persistent **Step Guide** panel is rendered directly below the Decision Flow strip in all workspace tabs.
+The backend resolves exactly one effective database URL at startup.
 
-- Same structure on every tab:
-  - What you do here
-  - What you get
-  - When you should use it
-  - To move forward
-- Tab-specific CTA in "To move forward":
-  - Compare -> Generate Decision Summary
-  - Decision -> Generate Execution Plan
-  - Execution Plan -> Export Plan
-- Collapse/expand is remembered per step and per user.
-- Defaults are adaptive:
-  - guided mode: expanded by default
-  - status mode: collapsed by default
-  - once user manually toggles a step guide, that preference is respected and not auto-overridden
+- `APP_ENV=local` -> uses `DATABASE_URL_LOCAL`
+- `APP_ENV=prod` -> uses `DATABASE_URL_PROD`
 
-### Generated tab onboarding behavior
+The selection logic is implemented in [api/config.py](/home/repos/ideagen-saas-aws/api/config.py).
 
-Generated empty state now follows explicit scenarios:
+Important behavior:
 
-- Fresh user (no saved artifacts): start with Generate Ideas.
-- Returning user with saved artifacts but no selected run: prompt to Load from Library or Generate Ideas.
+- if `APP_ENV=local`, `DATABASE_URL_LOCAL` is required
+- if `APP_ENV=prod`, `DATABASE_URL_PROD` is required
+- if `APP_ENV` is omitted, the backend defaults to `local` outside AWS and `prod` when AWS runtime env markers are present
 
-This keeps first-run onboarding explicit without blocking expert backtracking from Library.
+## Database Ownership and Migrations
 
-## Bulk delete APIs (implemented)
-- `DELETE /api/saved-results` -> bulk delete generated runs, returns `{ status, count }`
-- `DELETE /api/compare-results` -> bulk delete comparisons, returns `{ status, count }`
-- `DELETE /api/rank-reports` -> bulk delete decision reports, returns `{ status, count }`
-- `DELETE /api/stakeholder-reports` -> bulk delete execution plans, returns `{ status, count }`
+Database schema is defined in two layers:
 
-## Ranking rubric (per run)
-The model ranking agent scores outputs on:
-- Clarity
-- Feasibility
-- Differentiation
-- Actionability
-- Risk awareness
-- Stakeholder readiness
+1. SQLAlchemy models in [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py)
+2. Alembic migration history in [alembic/versions](/home/repos/ideagen-saas-aws/alembic/versions)
 
-## Guardrails
-- JSON schema validation in agent responses.
-- Retry loops with capped attempts.
-- Fallback summaries for failed validations.
-- Consistent model label mapping (user-friendly provider names).
+The initial Postgres baseline creates:
 
-## Evaluation approach (portfolio ready)
-- Per-run ranking uses the rubric above.
-- Compare Results uses top-ranked outputs only and highlights key changes.
-- Decision Summary Report ranks runs and summarizes risks and next steps.
-- Execution Plan uses grounded deterministic finance and rule-based gates for `go | conditional_go | no_go`.
-- Manual spot checks verify that outputs match the configuration and avoid hallucination.
+- `user_usage`
+- `saved_results`
+- `saved_rank_reports`
+- `saved_comparisons`
+- `saved_stakeholder_reports`
 
-## Execution Plan (Grounded Finance v2)
+The migration also changes storage semantics from SQLite text blobs to Postgres-native types where appropriate:
 
-Execution Plans are generated from saved artifacts (`decision_report`, `compare_result`, or `saved_run`) and support strict finance grounding.
+- JSON payloads are stored as `JSONB`
+- timestamps are stored as timezone-aware `timestamptz`
+- list/report queries use explicit indexes for the dominant access patterns
 
-- Default mode: `finance_mode=grounded_v2`
-  - financial sections are deterministic (`resources`, `costs`, `revenue_profit`, `scenarios`, `stakeholder_ask`)
-  - LLM is used only for narrative sections (thesis, execution blueprint, risks, decision wording)
-- Compatibility mode: `finance_mode=llm_v1`
-- Report includes:
-  - proposal estimate disclaimer banner,
-  - sensitivity analysis stress tests (ARPU, conversion, OpEx),
-  - assumption source + confidence fields,
-  - decision support gates and profitability recovery plan,
-  - per-card `Info` pill tooltips in the Execution Plan UI with plain-English explanations for non-technical readers.
+### Runtime migration behavior
 
-## Local development
+There are two supported ways migrations run:
 
-### Frontend
+- local direct backend development:
+  - you run `alembic upgrade head` yourself before starting the API
+- containerized runtime:
+  - [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh) runs `alembic upgrade head` before launching `uvicorn`
+
+This distinction matters:
+
+- if you run `uvicorn index:app` manually, you still need to apply migrations first
+- if you run the built container, migrations are executed at container startup as long as a database URL is configured
+
+## Local Development
+
+### 1. Start local PostgreSQL
+
+The repo includes a local Postgres service in [docker-compose.yml](/home/repos/ideagen-saas-aws/docker-compose.yml).
+
 ```bash
-npm install
-npm run dev
+docker compose up -d postgres
 ```
 
-### Backend (FastAPI)
+### 2. Configure local env
+
+Set at minimum:
+
+```bash
+APP_ENV=local
+DATABASE_URL_LOCAL=postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_dev
+```
+
+Also provide the provider/auth/email variables used by the app:
+
+- `CLERK_JWKS_URL`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+- `GEMINI_API_URL`
+- `DEEPSEEK_API_KEY`
+- `DEEPSEEK_API_URL`
+- `GROK_API_KEY`
+- `GROK_API_URL`
+- `RESEND_API_KEY`
+- `EMAIL_FROM`
+
+### 3. Apply migrations
+
+```bash
+alembic upgrade head
+```
+
+### 4. Run the backend
+
 ```bash
 cd api
 uvicorn index:app --reload --port 8000
 ```
 
-### Docker (recommended)
+### 5. Run the frontend
+
 ```bash
-export $(cat .env | grep -v '^#' | xargs)
+npm install
+npm run dev
+```
+
+## Local Docker Run
+
+If you want to run the container locally against local Postgres:
+
+```bash
 docker build \
   --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
-  --build-arg NODE_ENV=dev \
   -t ideagen-app .
 
 docker run -p 8000:8000 \
-  -v ideagen_data:/app/data \
-  -e CLERK_SECRET_KEY="$CLERK_SECRET_KEY" \
+  -e APP_ENV=local \
+  -e DATABASE_URL_LOCAL="$DATABASE_URL_LOCAL" \
   -e CLERK_JWKS_URL="$CLERK_JWKS_URL" \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-  -e RESEND_API_KEY="$RESEND_API_KEY" \
-  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -e GROK_API_KEY="$GROK_API_KEY" \
   -e GEMINI_API_KEY="$GEMINI_API_KEY" \
-  -e DEEPSEEK_API_URL="$DEEPSEEK_API_URL" \
-  -e GROK_API_URL="$GROK_API_URL" \
   -e GEMINI_API_URL="$GEMINI_API_URL" \
+  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e DEEPSEEK_API_URL="$DEEPSEEK_API_URL" \
+  -e GROK_API_KEY="$GROK_API_KEY" \
+  -e GROK_API_URL="$GROK_API_URL" \
+  -e RESEND_API_KEY="$RESEND_API_KEY" \
+  -e EMAIL_FROM="$EMAIL_FROM" \
   ideagen-app
 ```
 
-## Documentation
-- API reference: `api_reference.md`
-- Data model/schema: `data_model.md`
-- Deployment runbook: `deployment_runbook.md`
-- Troubleshooting: `troubleshooting.md`
-- Security/privacy: `security_privacy.md`
-- Billing/limits: `billing_limits.md`
-- UX flow guide: `ux_flow.md`
-- User guide: `user guide.md`
-- Deep architecture reference: `ARCHITECTURE.md`
-- Stakeholder dossier schema spec: `stakeholder_report_schema.md`
-- Launch checklist: `checklist.md`
-- Production SaaS solid checker: `PRODUCTION_SAAS_SOLID_CHECKER.md`
-- Roadmap: `roadmap.md`
+The container startup script runs Alembic automatically before `uvicorn`.
 
+## Production Deployment Model
 
-## AWS DEPLOYMENT ECR
+Production now assumes this shape:
 
-# aws configure
+- app container built once and pushed to ECR
+- App Runner pulls the image
+- App Runner service runs in public ingress mode
+- App Runner uses a VPC connector for private egress to RDS
+- RDS PostgreSQL runs in private subnets
+- runtime app secrets live in AWS Secrets Manager
+- the RDS master password is AWS-managed in Secrets Manager
 
-Enter:
+Terraform resources for this are defined in [terraform](/home/repos/ideagen-saas-aws/terraform).
 
-AWS Access Key ID: (paste your key)
-AWS Secret Access Key: (paste your secret)
-Default region: Choose based on your location:
-US East Coast: us-east-1 (N. Virginia)
-US West Coast: us-west-2 (Oregon)
-Europe: eu-west-1 (Ireland)
-Asia: ap-southeast-1 (Singapore)
-Pick the closest region for best performance!
-Default output format: json
-Important: Remember your region choice
+## Terraform and Deployment Scripts
 
+The repo includes environment-aware deployment wrappers:
 
-# 1. Authenticate Docker to ECR (using your .env values!)
-aws ecr get-login-password --region $DEFAULT_AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com
+- [scripts/deploy.sh](/home/repos/ideagen-saas-aws/scripts/deploy.sh)
+- [scripts/destroy.sh](/home/repos/ideagen-saas-aws/scripts/destroy.sh)
 
-docker build --platform linux/amd64 \
-  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
-  --build-arg NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
-  -t ideagen-app .
+They select the matching environment var-file automatically:
 
-# 3. Tag your image (using your .env values!)
-docker tag ideagen-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/ideagen-app:latest
+- `terraform/dev.tfvars`
+- `terraform/test.tfvars`
+- `terraform/prod.tfvars`
 
-# 4. Push to ECR
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/ideagen-app:latest
-
-## AWS APP RUNNER CUSTOM DOMAIN
-
-Target domain:
-
-- `ideagen.agentairg.site`
-
-Setup steps:
-
-1. In App Runner service, open `Custom domains` -> `Link custom domain`.
-2. Select Route 53 hosted zone `agentairg.site`.
-3. Set subdomain to `ideagen`.
-4. Choose `CNAME` record type for subdomain mapping.
-5. Wait until domain status is `Active`.
-
-Verify:
+Examples:
 
 ```bash
-dig ideagen.agentairg.site +short
-curl -I https://ideagen.agentairg.site
+./scripts/deploy.sh dev
+./scripts/deploy.sh prod
+./scripts/destroy.sh dev
 ```
 
-## HOST RESTRICTION (`ALLOWED_HOSTS`)
+### What `deploy.sh` does
 
-Backend middleware enforces allowed hosts for app traffic.
+For a given environment, the local deploy wrapper:
 
-- Set `ALLOWED_HOSTS=ideagen.agentairg.site` in App Runner env vars.
-- Non-allowed hosts (including default `*.awsapprunner.com`) return `403`.
-- `/health` remains allowed for App Runner health checks.
+1. loads `.env`
+2. bootstraps the Terraform backend bucket and lock table if missing
+3. initializes Terraform with the correct remote state key
+4. selects the matching Terraform workspace
+5. performs first-deploy bootstrap only if App Runner is not already managed in state
+6. syncs runtime secrets from local env into AWS Secrets Manager
+7. builds and pushes the Docker image to ECR
+8. applies Terraform for the App Runner service
+9. if App Runner is already `RUNNING`, starts a deployment to pull the new image
+10. if Terraform already triggered a rollout, waits for the service to return to `RUNNING`
+11. waits for `/health`
+
+This is intentionally different from the earlier design that toggled App Runner off and on. Redeployments now update in place.
+
+## GitHub Actions
+
+The repo includes:
+
+- CI: [.github/workflows/ci.yml](/home/repos/ideagen-saas-aws/.github/workflows/ci.yml)
+- deploy: [.github/workflows/deploy.yml](/home/repos/ideagen-saas-aws/.github/workflows/deploy.yml)
+- destroy: [.github/workflows/destroy.yml](/home/repos/ideagen-saas-aws/.github/workflows/destroy.yml)
+
+Current behavior:
+
+- CI runs backend tests, lint, Terraform validation, and Docker build checks
+- deploy workflow supports `dev`, `test`, and `prod`
+- destroy workflow is manual-only and requires explicit confirmation
+
+## Custom Domain and Host Allowlist
+
+The production custom domain is:
+
+- `https://ideagen.agentairg.site`
+
+The backend enforces request host allowlisting. That is controlled by `ALLOWED_HOSTS` and implemented in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py).
+
+Important behavior:
+
+- `/health` is exempt so App Runner health probes continue to work
+- normal app/API traffic is rejected if the request host is not allowed
+- wildcard hosts such as `*.awsapprunner.com` are supported for controlled access during rollout and validation
+
+## Key Runtime Files
+
+- backend config: [api/config.py](/home/repos/ideagen-saas-aws/api/config.py)
+- DB access layer: [api/db.py](/home/repos/ideagen-saas-aws/api/db.py)
+- SQLAlchemy models: [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py)
+- Alembic baseline: [alembic/versions/20260319_000001_initial_postgres_schema.py](/home/repos/ideagen-saas-aws/alembic/versions/20260319_000001_initial_postgres_schema.py)
+- container startup: [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh)
+- Terraform infra: [terraform/main.tf](/home/repos/ideagen-saas-aws/terraform/main.tf)
+
+## Related Documentation
+
+- API reference: [api_reference.md](/home/repos/ideagen-saas-aws/api_reference.md)
+- architecture: [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md)
+- backend technical guide: [technical_backend.md](/home/repos/ideagen-saas-aws/technical_backend.md)
+- data model: [data_model.md](/home/repos/ideagen-saas-aws/data_model.md)
+- deployment runbook: [deployment_runbook.md](/home/repos/ideagen-saas-aws/deployment_runbook.md)
+- Terraform guide: [terraform/README.md](/home/repos/ideagen-saas-aws/terraform/README.md)
+- current usage/quota behavior: [current_usage.md](/home/repos/ideagen-saas-aws/current_usage.md)
+- security/privacy notes: [security_privacy.md](/home/repos/ideagen-saas-aws/security_privacy.md)
+- stakeholder dossier schema: [stakeholder_report_schema.md](/home/repos/ideagen-saas-aws/stakeholder_report_schema.md)

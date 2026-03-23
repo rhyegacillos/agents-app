@@ -86,7 +86,7 @@ This implementation chooses **request-scoped orchestration** rather than long-ru
 - product actions are user-triggered and synchronous from UI,
 - feature scope is bounded and naturally endpoint-oriented,
 - reliability can be achieved with local retry/fallback contracts,
-- deployment remains simple (single container process, SQLite persistence).
+- deployment remains simple (single container app runtime with managed PostgreSQL persistence).
 
 ### 0.4 Cross-agent reliability contract
 
@@ -381,21 +381,23 @@ Browser (Next.js static export)
   v
 FastAPI (api/index.py)
   |-- Custom Clerk JWT verify (JWKS + PyJWT)
-  |-- Plan & quota checks (api/db.py)
+  |-- Plan & quota checks (api/db.py -> SQLAlchemy session)
   |-- Agent orchestration (api/agent/*.py)
   |-- PDF rendering (api/utils/pdf_utils.py + WeasyPrint)
   |-- Email delivery (api/agent/email_agent.py -> Resend)
   |
-  +--> SQLite (/app/data/usage.db)
+  +--> PostgreSQL via SQLAlchemy (api/database/session.py, models in api/database/models.py; schema via Alembic)
   +--> OpenAI / Gemini / DeepSeek / Grok APIs
 ```
+
+**AWS production (reference deployment):** the container image lives in **Amazon ECR** and runs on **AWS App Runner**. Durable data lives in **Amazon RDS for PostgreSQL** (private subnets; App Runner reaches RDS via **VPC connector** / private egress). Sensitive runtime values—especially **`DATABASE_URL_PROD`** and API keys—are intended to live in **AWS Secrets Manager** and be **referenced into App Runner** as environment variables (see `terraform/secrets.tf`), not committed to the repository or baked into the image.
 
 ### 1.2 Runtime boundaries
 
 - Frontend is built as static assets (`next export`) and served by FastAPI at root path.
 - Backend API remains dynamic under `/api/*`.
 - Authentication is enforced only on protected API routes (not on static assets).
-- Data persistence is local SQLite (durable if `/app/data` volume is mounted).
+- Data persistence is PostgreSQL-backed; local dev uses Docker Compose Postgres; **AWS** production uses **Amazon RDS** with **`DATABASE_URL_PROD`** typically sourced from **AWS Secrets Manager** and injected into **App Runner**.
 
 ### 1.3 Capability map
 
@@ -415,7 +417,7 @@ Implemented product capabilities:
 Not implemented in current architecture:
 
 - asynchronous job queue for long-running tasks,
-- external DB with transactional concurrency guarantees,
+- read replicas, automated failover drills, or multi-region database topology as first-class architecture (single primary PostgreSQL / RDS is the current target),
 - event-driven or pub/sub orchestration,
 - distributed tracing and metrics backend,
 - strict global response error schema contract.
@@ -471,14 +473,21 @@ Implication:
 
 ### 2.5 Persistent data paths
 
-- DB default path: `/app/data/usage.db`
-- Container should mount `/app/data` for persistence between restarts.
+- No application database file path is used in the current architecture.
+- Persistence is externalized to PostgreSQL.
+- Local development uses `DATABASE_URL_LOCAL`; AWS deploys use `DATABASE_URL_PROD`.
 
 ### 2.6 Environment variable matrix
 
 Backend/auth:
 
 - `CLERK_JWKS_URL`
+
+Database (PostgreSQL via SQLAlchemy; see **§6**):
+
+- `APP_ENV` — `local` or `prod` (selects which URL is active; see `api/config.py`)
+- `DATABASE_URL_LOCAL` — required when `APP_ENV=local` (typical local form: `postgresql+psycopg://user:pass@host:5432/dbname`)
+- `DATABASE_URL_PROD` — required when `APP_ENV=prod`; in **AWS**, this should be the SQLAlchemy URL to **Amazon RDS** (see **§2.7**), injected via **AWS Secrets Manager** into **App Runner** (Terraform: `aws_secretsmanager_secret.database_url_prod` and service configuration—not checked into git)
 
 LLM providers:
 
@@ -501,7 +510,11 @@ Usage/storage limits:
 - `TOKEN_LIMIT_PREMIUM` (default 500000)
 - `SAVED_RESULTS_LIMIT_FREE_BYTES` (default 100MB)
 - `SAVED_RESULTS_LIMIT_PREMIUM_BYTES` (default 1GB)
-- `DB_PATH` (optional override)
+- `DB_POOL_SIZE` (optional override)
+- `DB_MAX_OVERFLOW` (optional override)
+- `DB_POOL_TIMEOUT` (optional override)
+- `DB_POOL_RECYCLE` (optional override)
+- `DB_ECHO` (optional override)
 
 Frontend env used in UI behavior:
 
@@ -509,6 +522,22 @@ Frontend env used in UI behavior:
 - `NEXT_PUBLIC_CLERK_JWT_TEMPLATE`
 - `NEXT_PUBLIC_TOKEN_LIMIT_FREE`
 - `NEXT_PUBLIC_TOKEN_LIMIT_PREMIUM`
+
+### 2.7 AWS services in the reference deployment (RDS + Secrets Manager)
+
+This repository’s **Terraform** stack models a small-SaaS shape on AWS. The following services are the ones worth naming explicitly when explaining deployment:
+
+| AWS service | Role in this design |
+|-------------|---------------------|
+| **Amazon ECR** | Stores the built **Docker** image; App Runner pulls from here (often with automatic deploy on push). |
+| **AWS App Runner** | Runs the **FastAPI** + static frontend container on port **8000**; maps **Secrets Manager** secrets and plain env vars into the task environment. |
+| **Amazon RDS for PostgreSQL** | **System of record** for all application tables (usage, saved artifacts, reports). Placed in **private subnets** in the Terraform layout; not dependent on ephemeral container disk. |
+| **AWS Secrets Manager** | Holds **`DATABASE_URL_PROD`** (full connection string to RDS) and provider keys (OpenAI, Gemini, DeepSeek, Grok, Resend, etc.) under names like `{prefix}/app/DATABASE_URL_PROD` — see `terraform/secrets.tf`. App Runner is configured to expose these as **environment variables** to the app. |
+| **VPC / VPC connector** | Lets App Runner use **private** egress to reach **RDS** without exposing the database to the public internet. |
+| **Route 53** (optional) | Custom domain (e.g. `ideagen.agentairg.site`) in front of App Runner. |
+| **IAM** | Least-privilege roles for App Runner to read secrets, pull from ECR, and (where configured) manage related resources. |
+
+**Application contract:** the Python code still reads **`DATABASE_URL_PROD`** and API keys from the process environment (`api/config.py`, standard `os.getenv` paths). The **AWS** responsibility is to populate those variables from **Secrets Manager** at runtime—not to change application code per cloud.
 
 ---
 
@@ -537,10 +566,21 @@ Frontend env used in UI behavior:
   - all endpoint orchestration.
   - model provider wrapper calls.
 
+- `api/config.py`
+  - resolves `APP_ENV` and a single effective `database_url` plus pool tuning settings.
+
+- `api/database/models.py`
+  - SQLAlchemy 2.x declarative ORM definitions (tables, columns, JSONB, indexes, check constraints).
+
+- `api/database/session.py`
+  - engine creation, connection pool, `sessionmaker`, `session_scope`, `verify_database_connection`.
+
 - `api/db.py`
-  - schema creation/migration.
-  - usage counters and limit checks.
-  - CRUD for saved runs/comparisons/reports.
+  - persistence helpers used by routes: usage counters and limit checks, CRUD for saved runs/comparisons/reports/execution plans.
+  - `init_db()` verifies DB connectivity only; **schema is not created here** (Alembic owns DDL).
+
+- `alembic/`
+  - versioned schema migrations applied with `alembic upgrade head` (container entry runs this before Uvicorn when a DB URL is set).
 
 - `api/agent/*.py`
   - feature-specific agentic workflows.
@@ -571,7 +611,7 @@ These are supporting docs; source-of-truth behavior remains the runtime code.
 
 - `load_dotenv()` loads env values.
 - `app = FastAPI()` initializes app.
-- `startup_event()` runs `db.init_db()` to create tables and apply additive migrations.
+- `startup_event()` runs `db.init_db()`, which **only verifies** database connectivity (`SELECT 1`). Table creation and DDL changes are applied by **Alembic** before the process starts in the supported Docker/deploy path (`scripts/start_server.sh`).
 - logging is configured with `force=True`, INFO level, and noisy libraries are muted.
 
 ### 4.2 Authentication architecture
@@ -1009,89 +1049,161 @@ Returns:
 
 ---
 
-## 6) Persistence Architecture (`api/db.py`)
+## 6) Persistence Architecture (PostgreSQL, SQLAlchemy, Alembic)
 
-### 6.1 Database connection model
+Persistence is intentionally split across three concerns so the architecture stays understandable in reviews and interviews:
 
-- SQLite connection opened per function via `get_db()`.
-- row factory returns dict-like `sqlite3.Row`.
-- no ORM is used.
-- all table relationships are managed in application logic.
+1. **PostgreSQL** — durable system of record (local Docker Compose in dev, **Amazon RDS for PostgreSQL** in the documented AWS path; **`DATABASE_URL_PROD`** supplied from **AWS Secrets Manager** into **App Runner** per **§2.7**). The database is never a file inside the container image.
+2. **SQLAlchemy 2.x** — typed application access: declarative ORM models, a pooled engine, and short-lived sessions. Routes and agents do not embed raw SQL for routine CRUD; they call helpers in `api/db.py`.
+3. **Alembic** — **exclusive** owner of schema creation and change. DDL is versioned, reviewable, and replayed with `alembic upgrade head`.
 
-### 6.2 Table schema details
+Together, these replace an older SQLite-in-container approach: multiple App Runner instances can share one database, JSON payloads use **JSONB**, and schema drift is handled with migrations instead of startup `ALTER TABLE` scripts.
+
+### 6.1 How the pieces fit at runtime
+
+```text
+FastAPI request
+  -> api/index.py (auth, orchestration)
+  -> api/db.py (transactions + domain persistence helpers)
+        -> session_scope() / Session
+              -> SQLAlchemy ORM (api/database/models.py)
+                    -> psycopg (SQLAlchemy URL: postgresql+psycopg://...)
+                          -> PostgreSQL
+```
+
+**Read path:** `get_settings()` supplies `database_url`; `get_engine()` builds (once) a SQLAlchemy `Engine` with pooling; `sessionmaker` produces `Session` instances; `api/db.py` runs queries/updates inside `session_scope()` or explicit `session.begin()` blocks.
+
+**Write path:** the same stack applies. User isolation is enforced in application logic by **always** scoping queries with `user_id` (and by never trusting client-supplied IDs without a user match).
+
+**Schema path:** before Uvicorn accepts traffic in the standard container entrypoint, `scripts/start_server.sh` runs `alembic upgrade head` when `DATABASE_URL_LOCAL` or `DATABASE_URL_PROD` is set. FastAPI startup then calls `init_db()`, which only runs `verify_database_connection()` — a cheap sanity check that the pool can reach the server.
+
+### 6.2 Configuration: one URL, explicit environment (`api/config.py`)
+
+The backend does not discover the database implicitly. `get_settings()` (cached) enforces:
+
+- `APP_ENV` is `local` or `prod` (with a heuristic default toward `prod` when AWS environment markers are present).
+- `APP_ENV=local` requires **`DATABASE_URL_LOCAL`**.
+- `APP_ENV=prod` requires **`DATABASE_URL_PROD`**.
+
+Exactly **one** `database_url` is selected for the process. Documented examples use the SQLAlchemy v2 driver form **`postgresql+psycopg://...`** (Psycopg 3). Using the same dialect locally and in production avoids subtle semantic differences between SQLite and Postgres that used to hide behind ad hoc SQL.
+
+Optional pool tuning (all read in `get_settings()`):
+
+- `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE`, `DB_ECHO`
+
+These map directly to `create_engine(...)` in `api/database/session.py`. **`pool_pre_ping`** is enabled so stale connections are discarded before they surface as random request failures after idle periods — important behind RDS and NAT.
+
+### 6.3 Engine, pool, and session semantics (`api/database/session.py`)
+
+- **`get_engine()`** — lazily constructs a single global `Engine` bound to `settings.database_url`, with `future=True` for SQLAlchemy 2.x behavior.
+- **`get_session_factory()`** — `sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)`.
+  - `autoflush=False` keeps flush timing explicit inside transaction boundaries.
+  - `expire_on_commit=False` avoids surprise lazy reloads on committed instances when response serialization still touches ORM attributes.
+- **`session_scope()`** — context manager: open session, `yield`, **always** `close()` in `finally` so connections return to the pool.
+- **`verify_database_connection()`** — `SELECT 1`; used by `init_db()` at app startup.
+
+No async SQLAlchemy stack is used in the current phase: the API remains synchronous end-to-end for DB I/O, which keeps the Postgres migration tractable and is sufficient while LLM latency dominates most routes.
+
+### 6.4 Alembic: schema ownership and workflow
+
+Files:
+
+- `alembic.ini` — script location and logging hooks.
+- `alembic/env.py` — binds metadata from the SQLAlchemy `Base`, loads `database_url` from application settings, runs migrations **offline** (SQL) or **online** (engine).
+- `alembic/versions/*.py` — one revision per logical schema change (e.g. initial baseline creating all application tables).
+
+**Rule:** new tables, columns, indexes, or constraints are added by **generating a new Alembic revision**, not by editing startup code in `api/db.py`. That rule is what makes schema changes auditable in pull requests and reproducible across environments.
+
+**Deploy ordering:** `scripts/start_server.sh` runs `alembic upgrade head` first, then starts Uvicorn. If you run `uvicorn` directly on a laptop without that wrapper, you must run Alembic yourself once the database exists — otherwise the app will fail on missing tables even though `init_db()` “succeeds” (connectivity only).
+
+**Optional one-time data path:** `scripts/import_sqlite_to_postgres.py` exists for migrating legacy SQLite dumps into Postgres. Normal operation reads and writes **only** through PostgreSQL.
+
+### 6.5 ORM models and the persistence façade (`api/database/models.py`, `api/db.py`)
+
+**Models** (`api/database/models.py`) define:
+
+- table names and column types aligned with Postgres (`BigInteger` + `Identity()` for surrogate keys, `DateTime(timezone=True)` for timestamps, `JSONB` for structured blobs),
+- **check constraints** (e.g. non-negative usage counters, allowed `source_type` values on stakeholder reports),
+- **indexes** supporting common list and lookup patterns (`user_id` + `created_at`, compare pair + user, etc.).
+
+Relationships between tables are **not** heavily normalized with ORM `relationship()` cascades: artifact graphs are intentionally **JSON-heavy** for fast iteration on LLM output shapes; referential integrity for “run A / run B” is enforced by application logic and typing, not by foreign keys to `saved_results` in the baseline schema.
+
+**Persistence façade** (`api/db.py`) is what `api/index.py` imports. It:
+
+- imports ORM classes from `database.models`,
+- uses `session_scope`, `get_session`, and SQLAlchemy `select` / `update` / `delete` / `func` patterns,
+- implements quota checks, saved artifact CRUD, caching lookups for reports and comparisons, and storage byte estimation for plan limits.
+
+This layout keeps FastAPI routes thin: they authenticate, validate Pydantic payloads, and delegate storage rules to `db.*` functions.
+
+### 6.6 Table reference (logical schema)
+
+The following matches the ORM intent; authoritative DDL is in Alembic revisions.
 
 #### `user_usage`
 
-Purpose: user plan and quota counters.
+Purpose: per-user **plan** and **quota counters** (tokens, API window, emails).
 
-Columns:
+Notable columns:
 
-- `user_id` (TEXT PK)
-- `plan` (TEXT)
-- `total_tokens` (INTEGER)
-- `api_calls_count` (INTEGER)
-- `api_window_start` (REAL seconds timestamp)
-- `emails_sent_count` (INTEGER)
-- `emails_last_sent_date` (TEXT YYYY-MM-DD)
-- `tokens_last_reset_date` (TEXT YYYY-MM)
+- `user_id` (`TEXT`, primary key)
+- `plan` (`TEXT`)
+- `total_tokens` (`BIGINT`, constrained non-negative)
+- `api_calls_count`, `emails_sent_count` (`INTEGER`, constrained non-negative)
+- `api_window_start` (`TIMESTAMPTZ`) — rolling window anchor for per-minute API limits
+- `emails_last_sent_date` (`DATE`, nullable) — UTC date for daily email cap
+- `tokens_last_reset_month` (`TEXT`, `YYYY-MM`) — month bucket for token totals
+- `created_at`, `updated_at` (`TIMESTAMPTZ`)
 
 #### `saved_results`
 
-Purpose: persist generated runs.
+Purpose: **generated runs** (multi-model outputs + config).
 
-Columns:
+Notable columns:
 
-- `id` (INTEGER PK)
-- `user_id`
-- `created_at`
-- `industry`
-- `tone`
-- `constraints_json`
-- `models_json`
-- `results_json`
-- `rank_result_json`
+- `id` (`BIGINT`, Postgres `IDENTITY`, primary key)
+- `user_id`, `created_at` (`TIMESTAMPTZ`)
+- `industry`, `tone` (`TEXT`, nullable)
+- `constraints_json`, `models_json`, `results_json`, `rank_result_json` (`JSONB`)
+
+Indexes support listing by user ordered by time and keyed lookups by `(user_id, id)`.
 
 #### `saved_rank_reports`
 
-Purpose: persist decision summary reports and stable run snapshots.
+Purpose: **decision summary** artifacts with **snapshot** durability.
 
-Columns:
+Notable columns:
 
-- `id`
-- `user_id`
-- `created_at`
-- `run_ids_key` (sorted canonical key)
-- `run_ids_json`
-- `report_json`
-- `runs_json` (snapshot payload)
-- `model` (model used for analysis)
+- `id` (`BIGINT` identity PK), `user_id`, `created_at`
+- `run_ids_key` (`TEXT`) — normalized cache key (sorted run ids)
+- `run_ids_json`, `report_json`, `runs_json` (`JSONB`) — `runs_json` stores snapshot payloads for reproducible PDF/email even if source runs change
+- `model` (`TEXT`, nullable)
 
 #### `saved_comparisons`
 
-Purpose: persist diff/compare insights.
+Purpose: **compare** artifacts for a run pair.
 
-Columns:
+Notable columns:
 
-- `id`
-- `user_id`
-- `created_at`
-- `run_a_id`
-- `run_b_id`
-- `winner_run_id`
-- `comparison_json`
-- `model`
+- `id` (identity PK), `user_id`, `created_at`
+- `run_a_id`, `run_b_id`, `winner_run_id` (`BIGINT`)
+- `comparison_json` (`JSONB`), `model` (`TEXT`, nullable)
 
-### 6.3 Startup migration strategy
+Indexes support “latest comparison for this user + pair” query patterns.
 
-`init_db()` applies additive migrations with safe `ALTER TABLE` calls wrapped in `try/except`:
+#### `saved_stakeholder_reports`
 
-- add `tokens_last_reset_date` to `user_usage`
-- add `rank_result_json` to `saved_results`
-- add `runs_json` to `saved_rank_reports`
+Purpose: **Execution Plan** / stakeholder dossiers (Grounded Finance v2 and related metadata).
 
-This supports forward-compatible schema extension without external migration tooling.
+Notable columns:
 
-### 6.4 Plan and quota lifecycle
+- `id` (identity PK), `user_id`, `created_at`
+- `source_type` (`TEXT`) — constrained to `decision_report`, `compare_result`, or `saved_run`
+- `source_id` (`BIGINT`)
+- `scenario_profile`, `horizon_months`, `currency`, `region`, `model` (optional metadata)
+- `dossier_json`, `assumptions_json` (`JSONB`)
+
+### 6.7 Plan and quota lifecycle
 
 `get_or_create_user(...)`:
 
@@ -1101,7 +1213,7 @@ This supports forward-compatible schema extension without external migration too
 Token policy:
 
 - `check_token_limit` blocks when month total reaches plan cap.
-- monthly reset uses UTC month string in `tokens_last_reset_date`.
+- monthly reset uses UTC month string in `tokens_last_reset_month` (compared to current `YYYY-MM`).
 
 API rate policy:
 
@@ -1115,7 +1227,7 @@ Email policy:
 - premium: 10/day
 - daily reset by UTC date string.
 
-### 6.5 Token tracking semantics
+### 6.8 Token tracking semantics
 
 `track_token_usage(...)`:
 
@@ -1126,13 +1238,13 @@ Email policy:
 
 - lazily resets expired API window counter for display consistency.
 
-### 6.6 Saved results storage accounting
+### 6.9 Saved results storage accounting
 
 `get_saved_results_usage_bytes(...)` estimates storage by summing lengths of key text/JSON columns.
 
 This is used for save-time plan storage gating and usage UI meter.
 
-### 6.7 Saved report and comparison caching behavior
+### 6.10 Saved report and comparison caching behavior
 
 Decision report caching:
 
@@ -1807,7 +1919,7 @@ External providers used:
 
 - synchronous request/response orchestration,
 - concurrent fan-out for generation only,
-- SQLite-backed persistence,
+- PostgreSQL-backed persistence,
 - no async worker queue.
 
 ### 14.2 Latency contributors
@@ -1823,7 +1935,7 @@ Major contributors:
 
 Primary bottlenecks at scale:
 
-- SQLite write contention,
+- database connection pool sizing and long-running request occupancy,
 - long-running report requests occupying API workers,
 - no background execution channel for delivery-heavy workloads.
 
@@ -1932,10 +2044,18 @@ This section is a compact index for where key behavior lives.
   - `/api/recommend-combination`
   - `/health`
 
-### 18.2 `api/db.py`
+### 18.2 Persistence stack (see **§6**)
 
-- Setup: `init_db`
-- User lifecycle: `get_or_create_user`, `get_user`
+- `api/config.py`: `get_settings`, `reset_settings_cache`
+- `api/database/session.py`: `get_engine`, `get_session_factory`, `get_session`, `session_scope`, `verify_database_connection`, `reset_engine`
+- `api/database/models.py`: ORM table classes (`UserUsage`, `SavedResult`, `SavedRankReport`, `SavedComparison`, `SavedStakeholderReport`)
+- `alembic/env.py` + `alembic/versions/*`: schema revisions
+- `scripts/start_server.sh`: `alembic upgrade head` then Uvicorn
+
+### 18.3 `api/db.py`
+
+- Startup: `init_db` (connectivity check only; **not** DDL — Alembic applies schema)
+- User lifecycle: `ensure_user`, `get_or_create_user`, `get_user`
 - Limits: `check_token_limit`, `check_and_increment_api_call`, `check_and_increment_email`
 - Usage: `track_token_usage`, `get_user_stats`
 - Saved runs:
@@ -1943,7 +2063,9 @@ This section is a compact index for where key behavior lives.
   - `list_saved_results`
   - `list_saved_results_full`
   - `get_saved_result`
+  - `get_saved_results_by_ids`
   - `delete_saved_result`
+  - `delete_all_saved_results`
   - `update_saved_result_rank`
   - `get_saved_results_usage_bytes`
 - Rank reports:
@@ -1952,6 +2074,7 @@ This section is a compact index for where key behavior lives.
   - `get_saved_rank_report_by_id`
   - `list_saved_rank_reports`
   - `delete_saved_rank_report`
+  - `delete_all_saved_rank_reports`
   - `update_rank_report_snapshot`
 - Comparisons:
   - `get_saved_comparison`
@@ -1959,8 +2082,15 @@ This section is a compact index for where key behavior lives.
   - `save_comparison`
   - `list_saved_comparisons`
   - `delete_saved_comparison`
+  - `delete_all_saved_comparisons`
+- Stakeholder / execution plans:
+  - `save_stakeholder_report`
+  - `get_saved_stakeholder_report_by_id`
+  - `list_saved_stakeholder_reports`
+  - `delete_saved_stakeholder_report`
+  - `delete_all_saved_stakeholder_reports`
 
-### 18.3 Agent modules
+### 18.4 Agent modules
 
 - `model_fallback.py`: `generate_with_fallback`
 - `idea_generation_agent.py`: `generate_idea_agentic`
@@ -1970,7 +2100,7 @@ This section is a compact index for where key behavior lives.
 - `recommend_combination_agent.py`: `recommend_combination_agent`
 - `email_agent.py`: `run_email_agent`, `send_report_email`
 
-### 18.4 Frontend (`pages/product.tsx`) key orchestration functions
+### 18.5 Frontend (`pages/product.tsx`) key orchestration functions
 
 - Data fetchers:
   - `fetchSavedResults`
@@ -2008,6 +2138,7 @@ Use this file as primary architecture reference, then consult supporting docs fo
 - `agentic_architecture.md`
 - `api_reference.md`
 - `data_model.md`
+- `POSTGRES_MIGRATION_SPEC.md` (design notes for SQLite → Postgres + SQLAlchemy + Alembic)
 - `deployment_runbook.md`
 - `billing_limits.md`
 - `security_privacy.md`

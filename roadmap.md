@@ -31,7 +31,7 @@ Monetization requires predictable reliability, professional outputs, and a clear
   - Failure points: provider timeouts/errors; unsupported params; model fallback chain failures; invalid JSON from `rank_result_agent`; partial model failures; token tracking errors.
 
 - Save/load results (`/api/saved-results` GET/POST, `/api/saved-results/{id}`, DELETE in `api/index.py`)
-  - Dependencies: SQLite (`api/db.py`), JSON serialization.
+  - Dependencies: PostgreSQL/SQLAlchemy (`api/db.py`), JSON serialization.
   - Failure points: db insert/read errors; JSON decode errors; size-limit rejection; duplicate save when UI re-saves same run.
 
 - Compare results (diff insight) (`/api/compare-results` POST)

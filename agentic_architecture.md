@@ -28,7 +28,7 @@ Browser (Next.js)
   v
 FastAPI (api/index.py)
   |-- Auth guard (Clerk JWT + JWKS)
-  |-- Usage + plan limits (SQLite)
+  |-- Usage + plan limits (PostgreSQL / SQLAlchemy)
   |-- Agent orchestration
   |-- PDF + Email delivery
   |
@@ -38,7 +38,7 @@ FastAPI (api/index.py)
   |     - DeepSeek
   |     - Grok
   |
-  +--> SQLite (data/usage.db)
+  +--> PostgreSQL
   +--> PDF renderer (WeasyPrint)
   +--> Email (Resend)
 ```
@@ -91,10 +91,12 @@ Each agent is a small, controlled LLM workflow:
 - Transient errors → fallback model.
 - Timeouts → retry same model (no fallback on timeout).
 
-### Storage (SQLite)
-`api/db.py` and `data/usage.db`
-- `user_usage`, `saved_results`, `saved_comparisons`, `saved_rank_reports`.
-- Usage counters and quotas enforced per user.
+### Storage (PostgreSQL)
+`api/db.py`, `api/database/models.py`, and Alembic migrations
+- `user_usage`, `saved_results`, `saved_comparisons`, `saved_rank_reports`, `saved_stakeholder_reports`
+- JSON payloads stored as `JSONB`
+- Usage counters and quotas enforced per user in Postgres
+- Schema evolution owned by Alembic
 
 ### PDF + Email
 - PDF HTML rendering: `api/utils/pdf_utils.py` (WeasyPrint).

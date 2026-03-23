@@ -1,0 +1,75 @@
+name: Destroy AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to destroy"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      confirm:
+        description: "Type DESTROY to continue"
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    if: ${{ github.event.inputs.confirm == 'DESTROY' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    env:
+      DEPLOY_ENV: ${{ github.event.inputs.environment }}
+      TFVARS_FILE: terraform/${{ github.event.inputs.environment }}.tfvars
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate environment var-file
+        run: |
+          echo "::group::Validate environment var-file"
+          echo "Destroy environment: ${DEPLOY_ENV}"
+          echo "Terraform var-file: ${TFVARS_FILE}"
+          test -f "${TFVARS_FILE}"
+          tfvars_env="$(awk -F= '/^[[:space:]]*environment[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          echo "Var-file environment: ${tfvars_env}"
+          test "${tfvars_env}" = "${DEPLOY_ENV}"
+          echo "::endgroup::"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.DEFAULT_AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Run destroy
+        run: |
+          echo "::group::Destroy Terraform environment"
+          chmod +x scripts/destroy.sh
+          ./scripts/destroy.sh "${DEPLOY_ENV}" --tfvars-file "${TFVARS_FILE}" --region "${{ vars.DEFAULT_AWS_REGION }}"
+          echo "::endgroup::"
+
+  confirm_failed:
+    if: ${{ github.event.inputs.confirm != 'DESTROY' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail confirmation
+        run: |
+          echo "Confirmation failed. Re-run the workflow and type DESTROY exactly." >&2
+          exit 1

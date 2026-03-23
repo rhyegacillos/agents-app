@@ -84,11 +84,24 @@ Practical effect:
 ## Architecture Snapshot
 - Frontend: Next.js + React + TypeScript
 - Backend: FastAPI orchestration layer
-- Persistence: SQLite (`saved_results`, `saved_comparisons`, `saved_rank_reports`, `saved_stakeholder_reports`)
+- Persistence: **PostgreSQL** (system of record) via **SQLAlchemy 2.x** ORM and session layer
+- Schema: **Alembic** only for DDL (`alembic upgrade head` in `scripts/start_server.sh` before `uvicorn` when a DB URL is set); FastAPI `init_db()` checks connectivity (`SELECT 1`), not schema
 - Reporting: WeasyPrint (HTML -> PDF)
 - Email: Resend
 - Auth: Clerk JWT + JWKS verification
-- Deployment: Docker on AWS App Runner via ECR, custom domain + host allowlist
+- **AWS deployment (highlight)**: **Amazon ECR** (images) → **AWS App Runner** (runtime) → **Amazon RDS for PostgreSQL** (private DB; VPC connector from App Runner) + **AWS Secrets Manager** (e.g. `DATABASE_URL_PROD`, API keys, wired into App Runner as secret-backed env). **Terraform** defines RDS, secrets, and related IAM/networking. **Route 53** + host allowlist for the custom domain.
+
+### Database stack (PostgreSQL + SQLAlchemy + Alembic)
+
+- **PostgreSQL** holds all durable application state: quotas (`user_usage`), saved generation runs (`saved_results`), comparisons (`saved_comparisons`), decision reports (`saved_rank_reports`), and execution / stakeholder dossiers (`saved_stakeholder_reports`). **In AWS production**, that server is **Amazon RDS for PostgreSQL** (managed, typically private subnets); the app reaches it using **`DATABASE_URL_PROD`**, which should be injected from **AWS Secrets Manager** into **App Runner**, not embedded in the container image. Local dev uses Docker Compose Postgres so the **Postgres engine** matches production.
+
+- **SQLAlchemy 2.x** defines **declarative models** in `api/database/models.py` (`Mapped` / `mapped_column`), uses **JSONB** for flexible AI artifact payloads, and applies **indexes and check constraints** in the model layer for list performance and data integrity. `api/database/session.py` builds a pooled engine (`pool_pre_ping`, configurable pool size/overflow/recycle/timeout), exposes a `sessionmaker`, and provides `session_scope()` for bounded sessions. Route and domain logic call into `api/db.py`, which centralizes reads/writes instead of scattering raw SQL.
+
+- **Alembic** (`alembic.ini`, `alembic/env.py`, `alembic/versions/`) is the **only** supported way to evolve schema: new tables/columns/indexes ship as revisions and apply with `alembic upgrade head`. `scripts/start_server.sh` runs migrations automatically before the API starts when `DATABASE_URL_LOCAL` or `DATABASE_URL_PROD` is present, reducing “empty RDS on first deploy” failures.
+
+- **Startup split (matches `ARCHITECTURE.md` §6)**: **Migrations** run in the shell entrypoint **before** the process binds to port 8000. **FastAPI** `startup` calls `db.init_db()`, which only **verifies** the pool can talk to Postgres—it does **not** run DDL. Running raw `uvicorn` without Alembic first can pass startup yet break on first query if tables are missing.
+
+- **Configuration**: `api/config.py` selects a single `database_url` from `APP_ENV` plus `DATABASE_URL_LOCAL` or `DATABASE_URL_PROD` (documented URL form `postgresql+psycopg://...`). Optional pool overrides: `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE`, `DB_ECHO`. Optional **SQLite → Postgres** one-time import: `scripts/import_sqlite_to_postgres.py`; normal runtime is Postgres-only.
 
 ## Production-Like Controls and UX
 - API/token/email/storage quota enforcement
@@ -99,15 +112,23 @@ Practical effect:
 - in-context, panel-level info pills to improve readability for non-technical stakeholders
 
 ## Deployment Notes
-- Custom domain: `ideagen.agentairg.site`
+- **Amazon RDS for PostgreSQL**: production system of record; App Runner uses **VPC connector** / private networking to connect (not a public DB endpoint in the intended design).
+- **AWS Secrets Manager**: store **`DATABASE_URL_PROD`** and sensitive API keys; reference them from **App Runner** so the container receives env vars without baking secrets into **ECR** images.
+- **Amazon ECR** + **AWS App Runner**: build/push image, then run the service with auto deploy from ECR where configured.
+- Custom domain: `ideagen.agentairg.site` (**Route 53** + App Runner custom domain)
 - Host allowlist enforced by `ALLOWED_HOSTS`
 - Health endpoint: `/health`
-- Current persistence uses SQLite (appropriate for demo/portfolio and single-instance deployment)
+- **Container / scripted entry**: `scripts/start_server.sh` runs **Alembic** then **Uvicorn**; FastAPI startup only **pings** the database (migrations hit **RDS** when `DATABASE_URL_PROD` points there)
 
 ## Primary Code References
-- `api/index.py` (route orchestration, grounded finance, validation)
+- `api/index.py` (route orchestration, grounded finance, validation; startup `init_db()` = DB connectivity check only)
 - `api/agent/*.py` (generation/rank/compare/report/recommendation/email agents)
+- `api/config.py` (effective database URL and pool tuning)
+- `api/database/models.py` (SQLAlchemy ORM / table definitions)
+- `api/database/session.py` (engine, pooling, sessions)
 - `api/db.py` (persistence and usage/limit tracking)
+- `alembic/` (schema migrations)
+- `scripts/start_server.sh` (migrations then server)
 - `api/utils/pdf_utils.py` (PDF and presentation renderers)
 - `pages/product.tsx` (workspace UX and report workflows)
-- `ARCHITECTURE.md` (full technical deep dive)
+- `ARCHITECTURE.md` (full technical deep dive; **§6** = PostgreSQL + SQLAlchemy + Alembic persistence)

@@ -1,196 +1,298 @@
 # Technical Backend Documentation
 
-This document describes how the backend works, with a focus on how agents are orchestrated and how the frontend interacts with them.
+This document describes the backend as it exists after the PostgreSQL migration.
 
-## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+The focus is on:
 
-This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+- request orchestration in FastAPI
+- agent execution patterns
+- Postgres persistence and migration ownership
+- how the frontend interacts with the backend
 
-- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
-- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
-- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
-- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
-- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
-- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
-- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
-- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
-- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
-- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
-- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+## 1. Backend Runtime Overview
 
+Main backend entrypoints:
 
-## Architecture Overview
+- API application: [api/index.py](/home/repos/ideagen-saas-aws/api/index.py)
+- app config: [api/config.py](/home/repos/ideagen-saas-aws/api/config.py)
+- persistence layer: [api/db.py](/home/repos/ideagen-saas-aws/api/db.py)
+- SQLAlchemy models: [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py)
+- startup wrapper: [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh)
 
-- FastAPI app: `api/index.py` is the main entrypoint and request router.
-- Agents: `api/agent/*.py` contain model-orchestrated logic (generation, ranking, comparison, recommendations, email).
-- Storage: SQLite DB at `data/usage.db` (see `api/db.py`). Container volume maps `/app/data`.
-- Static frontend: built Next.js output served from `/app/static` in the container.
-- PDF/Email: HTML -> PDF via WeasyPrint in `api/utils/pdf_utils.py`; email delivery via `api/agent/email_agent.py`.
+Runtime shape:
 
-## LLM Clients and Fallback Chains
+```text
+FastAPI
+  -> auth verification
+  -> rate-limit and quota checks
+  -> provider routing
+  -> agent orchestration
+  -> persistence
+  -> PDF/email delivery
+```
 
-`api/index.py` configures client instances and fallback model chains:
+## 2. Storage Architecture
 
-- OpenAI: `openai_client`
-- Gemini: `google_client` (AsyncOpenAI-compatible for REST) and `gemini_client` (google genai)
-- Grok: `grok_client`
-- DeepSeek: `deepseek_client`
+The backend no longer uses SQLite.
 
-Fallback chains are defined in `FALLBACK_CHAINS`. Each model ID maps to a provider and a list of fallback models used by `agent/model_fallback.py`.
+Current storage stack:
 
-## How Agents Are Orchestrated
+- PostgreSQL database
+- SQLAlchemy 2.x models and sessions
+- Alembic-managed schema
 
-There is no direct agent-to-agent messaging. The FastAPI layer in `api/index.py` orchestrates agent calls and passes outputs between them when needed.
+Production database target:
 
-### 1) Idea Generation (multi-model run)
+- Amazon RDS for PostgreSQL
 
-Endpoint: `POST /api` (see `api/index.py`)
+Local database target:
 
-Flow:
-1) Frontend sends `industry`, `constraints`, `tone`, and model labels.
-2) Backend resolves model labels to model IDs (based on provider/fallback chains).
-3) For each model ID, `generate_idea_agentic(...)` is called.
-   - `agent/idea_generation_agent.py` uses `generate_with_fallback(...)` from `agent/model_fallback.py` to:
-     - call a model,
-     - handle timeouts,
-     - fail over to the next model in the chain when appropriate,
-     - validate output formatting (HTML only).
-4) After outputs are collected, if there is more than one model:
-   - `rank_result_agent(...)` is invoked (DeepSeek) to rank the model outputs for this run.
-   - `finalize_rank_result(...)` injects human labels and titles.
-5) Response includes:
-   - `results` (HTML per model),
-   - `rank_result` (if available),
-   - `usage` (token counts).
+- Docker Compose PostgreSQL
 
-Frontend auto-save:
-- The frontend calls `POST /api/saved-results` after generation to persist the run (auto-save behavior lives in `pages/product.tsx`).
+### Why this matters
 
-### 2) Compare Results (Diff Mode)
+This change removes the old limitations of local-file SQLite in an App Runner environment:
 
-Endpoint: `POST /api/compare-results`
+- container-local storage is not treated as durable persistence
+- multiple instances can share the same database
+- migrations are explicit and versioned
+- connection management is centralized
 
-Flow:
-1) Frontend sends two saved run IDs.
-2) Backend loads both runs and validates that industry/persona/constraints/model set match.
-3) If rank results are missing, `rank_result_agent(...)` is run per saved run to produce rankings.
-4) For each run, the top-ranked model output is selected.
-5) `compare_results_agent(...)` (DeepSeek) compares the two top outputs and returns:
-   - winner, summary, key changes, rationale, risks.
-6) The comparison is saved in `saved_comparisons`.
-7) Response includes a comparison snapshot and top outputs for display.
+## 3. Database Configuration Resolution
 
-Caching:
-- If a prior comparison exists, it is returned from `saved_comparisons` without re-running the agent.
+[api/config.py](/home/repos/ideagen-saas-aws/api/config.py) resolves a single effective `database_url`.
 
-### 3) Decision Summary Report (Rank Report)
+Inputs:
 
-Endpoint: `POST /api/rank-report`
+- `APP_ENV`
+- `DATABASE_URL_LOCAL`
+- `DATABASE_URL_PROD`
+- optional pool tuning vars
 
-Flow:
-1) Frontend selects 1-5 saved runs (or “all runs”) and posts run IDs.
-2) Backend loads the saved runs.
-3) If the report is cached (same run set), return cached report; else:
-   - `rank_report_agent(...)` (DeepSeek) creates a decision-ready summary:
-     - overall summary
-     - ranked runs (0-100 scores + rationale)
-     - key insights, risks, next steps
-     - email brief
-4) Report and a snapshot of runs are stored in `saved_rank_reports`.
-5) PDF is generated via `create_rank_report_html(...)` + `html_to_pdf_bytes(...)`.
-6) Optional email uses `send_report_email(...)` (email_agent).
+Behavior:
 
-### 4) Recommendations (Optional)
+- `APP_ENV=local` -> `DATABASE_URL_LOCAL`
+- `APP_ENV=prod` -> `DATABASE_URL_PROD`
+- invalid combinations fail fast at startup
 
-Endpoint: `POST /api/recommend-combination`
+The resolved settings object also controls:
 
-Flow:
-1) Frontend sends industry + available constraints/personas.
-2) `recommend_combination_agent(...)` (Grok) returns a recommended configuration.
+- `DB_POOL_SIZE`
+- `DB_MAX_OVERFLOW`
+- `DB_POOL_TIMEOUT`
+- `DB_POOL_RECYCLE`
+- `DB_ECHO`
 
-### 5) Execution Plan (Grounded Finance v2, run-conditioned)
+## 4. Schema Ownership
 
-Endpoint: `POST /api/stakeholder-report`
+Schema ownership moved to Alembic.
 
-Flow:
-1) Frontend sends source context (decision report / compare result / saved run), selected run/model, and horizon.
-2) Backend resolves source evidence and selected output variant.
-3) In `grounded_v2` mode (default), backend builds finance in two layers:
-   - **deterministic industry baseline** (`ASSUMPTION_PACK` + scenario formulas),
-   - **deterministic run-conditioned adjustment** from constraints, persona, selected output signals, and model confidence.
-4) Adjustments are bounded (clamped multipliers), then used to recompute:
-   - setup + monthly costs,
-   - unit economics,
-   - monthly projection,
-   - scenario outcomes,
-   - weighted expected Year-1 net.
-5) Narrative-only sections are generated by LLM (thesis, blueprint wording, risk wording, stakeholder ask wording), then merged with deterministic finance.
-6) Server validation enforces schema/ranges and computes decision gates + profitability recovery section.
-7) Final dossier is stored in `saved_stakeholder_reports` with assumptions and provenance.
+Relevant files:
 
-Why this was added:
-- Industry-only deterministic finance caused very similar outputs across different ranked variants.
-- Run-conditioned deterministic adjustment keeps outputs reproducible while making per-report financials meaningfully different and still bounded.
+- Alembic config: [alembic.ini](/home/repos/ideagen-saas-aws/alembic.ini)
+- migration environment: [alembic/env.py](/home/repos/ideagen-saas-aws/alembic/env.py)
+- baseline migration: [alembic/versions/20260319_000001_initial_postgres_schema.py](/home/repos/ideagen-saas-aws/alembic/versions/20260319_000001_initial_postgres_schema.py)
 
-## Email Agent (Centralized)
+Important backend rule:
 
-`api/agent/email_agent.py` is the single email sender for all features. It is called from:
+- the app should never depend on ad hoc runtime schema mutation as the source of truth
+- schema drift is resolved by Alembic revisions
 
-- `/api/email` (generated results)
-- `/api/compare-results/{id}/email`
-- `/api/rank-reports/{id}/email`
-- `/api/rank-report` (when output = email or both)
+Current container startup behavior:
 
-This agent builds the final subject and body, attaches PDFs, and handles delivery failures.
+- [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh) runs `alembic upgrade head`
+- then launches `uvicorn`
 
-## Persistence Model
+This was added specifically to prevent production startup against an empty Postgres schema.
 
-Tables (see `api/db.py`):
+## 5. Database Model Summary
 
-- `user_usage`: token usage, API and email counts.
-- `saved_results`: generated results + rank_result per run.
-- `saved_comparisons`: diff/compare outputs.
-- `saved_rank_reports`: decision summary reports with `runs_snapshot`.
-- `saved_stakeholder_reports`: execution plans (dossier + assumptions snapshot + source linkage).
+[api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py) defines:
 
-Snapshots:
-- Decision summary reports store a `runs_snapshot` so PDFs and views still render even if original runs are deleted.
+- `UserUsage`
+- `SavedResult`
+- `SavedRankReport`
+- `SavedComparison`
+- `SavedStakeholderReport`
 
-## Frontend <-> Backend Contract (High-Level)
+Notable Postgres-specific changes:
 
-Key endpoints used by the frontend (see `pages/product.tsx`):
+- JSON payloads are stored as `JSONB`
+- timestamps are stored as timezone-aware datetimes
+- usage counters use numeric columns with check constraints
+- list/read access paths have explicit indexes by `user_id` and `created_at`
 
-- Generation: `POST /api`
-- Save results: `POST /api/saved-results` (auto-save)
-- Load saved results: `GET /api/saved-results` and `GET /api/saved-results/{id}`
-- Compare results: `POST /api/compare-results`
-- Load comparisons: `GET /api/compare-results`
-- Decision summary report: `POST /api/rank-report`
-- Load saved reports: `GET /api/rank-reports` and `GET /api/rank-reports/{id}`
-- PDF/Email:
-  - Generated report: `POST /api/download-pdf`, `POST /api/email`
-  - Compare report: `GET /api/compare-results/{id}/pdf`, `POST /api/compare-results/{id}/email`
-  - Decision summary report: `GET /api/rank-reports/{id}/pdf`, `POST /api/rank-reports/{id}/email`
+## 6. Persistence Behavior (`api/db.py`)
 
-## Logging
+The backend persistence layer keeps the same product-facing behavior while changing the storage engine.
 
-Agents use structured logging with event names:
+### 6.1 Usage and quota handling
 
-- `idea_generation.*` in `agent/idea_generation_agent.py`
-- `model_fallback.*` in `agent/model_fallback.py`
-- `rank_result.*`, `compare_results.*`, `rank_report.*`
+`user_usage` remains the authoritative source for:
 
-The Docker image runs uvicorn with info-level logging, and `logging.basicConfig(..., force=True)` ensures app logs flow to stdout.
+- total token accumulation
+- per-window API call counters
+- per-day email counters
+- plan-aware resets
 
-## Security and Limits
+The main difference now is that the data is updated in Postgres through SQLAlchemy instead of SQLite helper calls.
 
-- Auth: `fastapi_clerk_auth` with `ClerkHTTPBearer`.
-- Usage limits and counters in `user_usage`.
-- Token counts are updated when LLM usage is returned.
+### 6.2 Saved artifacts
 
-## Where to Look in Code
+The artifact tables remain conceptually the same:
 
-- API routing and orchestration: `api/index.py`
-- Agents: `api/agent/*.py`
-- Database helpers: `api/db.py`
-- PDF rendering: `api/utils/pdf_utils.py`
+- `saved_results`
+- `saved_comparisons`
+- `saved_rank_reports`
+- `saved_stakeholder_reports`
+
+What changed:
+
+- JSON payloads are stored natively instead of stringified text blobs
+- timestamp ordering is based on actual Postgres datetime columns
+- indexes are present for the dominant read paths
+
+### 6.3 Snapshot durability
+
+The application still stores report snapshots so views and PDFs can continue to render even if underlying source runs change or are deleted.
+
+That design did not change in the migration. What changed is the storage engine and schema management discipline around it.
+
+## 7. LLM Client and Fallback Architecture
+
+[api/index.py](/home/repos/ideagen-saas-aws/api/index.py) configures:
+
+- `openai_client`
+- `google_client`
+- `deepseek_client`
+- `grok_client`
+
+Model chains are defined in `FALLBACK_CHAINS`.
+
+Current primary model IDs include:
+
+- `grok-4-1-fast-reasoning`
+- `gemini-2.5-flash`
+- `gpt-5-nano`
+- `deepseek-chat`
+
+Each chain has an explicit fallback model. The shared fallback execution is implemented in [api/agent/model_fallback.py](/home/repos/ideagen-saas-aws/api/agent/model_fallback.py).
+
+## 8. Agent Orchestration
+
+There is still no external queue or autonomous multi-agent runtime.
+
+The backend uses request-scoped orchestration:
+
+- endpoint receives request
+- backend validates auth/limits
+- backend chooses provider/model flow
+- backend orchestrates agent(s)
+- backend persists outputs
+- backend returns response
+
+### 8.1 Idea generation
+
+Endpoint:
+
+- `POST /api`
+
+Behavior:
+
+1. check API quota with `user_usage`
+2. resolve requested model/provider labels
+3. run one generation coroutine per selected model
+4. apply provider fallback chains and validation retries
+5. optionally run ranking for the multi-model output set
+6. aggregate token usage
+7. persist or return output for frontend auto-save
+
+### 8.2 Compare results
+
+Endpoint:
+
+- `POST /api/compare-results`
+
+Behavior:
+
+1. load two saved runs
+2. backfill rank data if missing
+3. resolve the top output from each run
+4. run comparison agent
+5. persist comparison artifact
+
+### 8.3 Decision summary
+
+Endpoint:
+
+- `POST /api/rank-report`
+
+Behavior:
+
+1. load selected saved runs
+2. reuse cached report when the run-set cache key matches
+3. otherwise run the decision summary agent
+4. persist report plus run snapshot
+
+### 8.4 Execution plan
+
+Endpoint:
+
+- `POST /api/stakeholder-report`
+
+Behavior:
+
+1. resolve source evidence from saved artifact(s)
+2. resolve the selected winning output variant
+3. build deterministic finance baseline and bounded adjustments
+4. generate narrative sections with the configured model chain
+5. merge finance + narrative + provenance
+6. persist execution plan dossier
+
+## 9. Frontend-to-Backend Contract
+
+The main UI in [pages/product.tsx](/home/repos/ideagen-saas-aws/pages/product.tsx) depends on:
+
+- `POST /api`
+- `GET/POST/DELETE /api/saved-results`
+- `POST /api/compare-results`
+- `GET/DELETE /api/compare-results`
+- `POST /api/rank-report`
+- `GET/DELETE /api/rank-reports`
+- `POST /api/stakeholder-report`
+- `GET/DELETE /api/stakeholder-reports`
+- report PDF/email endpoints
+
+The migration to Postgres was intentionally designed not to change those HTTP contracts in phase 1.
+
+## 10. Logging and Operational Signals
+
+The backend logs:
+
+- provider/model fallback events
+- validation failures
+- report generation events
+- auth failures
+- startup migration events
+
+Important runtime logs now include:
+
+- `Running Alembic migrations`
+- migration revision upgrade logs
+- `Starting uvicorn`
+
+In AWS, these are visible in CloudWatch through the App Runner application log group.
+
+## 11. Security-Relevant Backend Behavior
+
+- Clerk JWT verification is handled in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py)
+- host allowlist enforcement is also in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py)
+- secrets are injected through environment variables / Secrets Manager, not hardcoded in code
+- database credentials are selected from env and not embedded in the image
+
+## 12. What to Read Next
+
+- architecture overview: [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md)
+- data model details: [data_model.md](/home/repos/ideagen-saas-aws/data_model.md)
+- deployment runbook: [deployment_runbook.md](/home/repos/ideagen-saas-aws/deployment_runbook.md)
+- Terraform guide: [terraform/README.md](/home/repos/ideagen-saas-aws/terraform/README.md)

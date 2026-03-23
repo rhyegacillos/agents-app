@@ -1,105 +1,174 @@
 # Current Usage Implementation Details
 
-This document outlines the architecture and implementation of the user usage tracking system (quotas, rate limits, and token usage) for the IdeaGen application.
+This document explains how IdeaGen tracks user quotas and usage after the migration from SQLite to PostgreSQL.
 
-## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+## 1. What Changed in the Migration
 
-This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+Usage tracking still works the same at the product level, but the storage mechanism changed significantly.
 
-- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
-- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
-- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
-- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
-- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
-- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
-- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
-- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
-- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
-- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
-- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+Old model:
 
+- usage counters persisted in SQLite
+- container-local durability assumptions
+- ad hoc schema mutation during startup
 
-## 1. Database Schema (SQLite)
+Current model:
 
-Data is persisted in a SQLite database located at `data/usage.db` (inside the container volume).
+- usage counters persist in PostgreSQL
+- schema is created by Alembic
+- SQLAlchemy manages reads/writes
+- production durability comes from RDS, not the container filesystem
 
-**Table:** `user_usage`
+The authoritative usage table is still `user_usage`, now implemented by the `UserUsage` model in [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py).
+
+## 2. `user_usage` Table Shape
+
+The current Postgres-backed `user_usage` shape is:
 
 | Column | Type | Description |
 | :--- | :--- | :--- |
-| `user_id` | TEXT (PK) | The unique Subject ID from Clerk. |
-| `plan` | TEXT | Current plan ('free' or 'premium'). Used to detect plan changes. |
-| `total_tokens` | INTEGER | Cumulative count of tokens used by all AI models. |
-| `api_calls_count` | INTEGER | Number of API calls made in the current 60s window. |
-| `api_window_start` | REAL | Timestamp (epoch) when the current API rate limit window started. |
-| `emails_sent_count` | INTEGER | Number of emails sent in the current day (UTC). |
-| `emails_last_sent_date` | TEXT | Date string (YYYY-MM-DD) of the last email sent. |
-| `tokens_last_reset_date`| TEXT | Month string (YYYY-MM) of the last token reset. |
+| `user_id` | `text` PK | Clerk subject ID |
+| `plan` | `text` | current user plan |
+| `total_tokens` | `bigint` | accumulated token usage for current billing month |
+| `api_calls_count` | `integer` | calls in the active rate-limit window |
+| `api_window_start` | `timestamptz` | start of the current API-call window |
+| `emails_sent_count` | `integer` | emails sent during the current UTC day |
+| `emails_last_sent_date` | `date` | last email-sent UTC day |
+| `tokens_last_reset_month` | `text` | billing reset marker in `YYYY-MM` form |
+| `created_at` | `timestamptz` | row creation timestamp |
+| `updated_at` | `timestamptz` | last update timestamp |
 
-**Persistence:**
-The database file is persisted using a Docker volume (`VOLUME /app/data`) ensuring data survives container restarts and redeployments.
+Check constraints enforce non-negative counters.
 
-## 2. Backend Logic (`api/db.py`)
+## 3. Backend Logic (`api/db.py`)
 
-The database module handles all state transitions and checks.
+Usage logic still lives in [api/db.py](/home/repos/ideagen-saas-aws/api/db.py). The user-visible semantics did not change; the persistence engine did.
 
-### Rate Limiting (API Calls)
-*   **Limit:** 5 calls/min (Premium), 1 call/min (Free).
-*   **Logic:**
-    *   On every call, check `time.time() - api_window_start`.
-    *   If > 60 seconds, reset `api_calls_count` to 0 and update `api_window_start`.
-    *   If count < limit, increment count and allow.
-    *   Else, return `False` (429 Too Many Requests).
+### 3.1 API call rate limiting
 
-### Quotas (Emails)
-*   **Limit:** 10 emails/day (Premium), 0 (Free).
-*   **Logic:**
-    *   On call, check if `current_date != emails_last_sent_date`.
-    *   If different, reset `emails_sent_count` to 0.
-    *   If count < limit, increment and update date.
-    *   Else, return `False`.
+Product rule:
 
-### Token Tracking
-*   **Accumulation:** Adds tokens from every model run to `total_tokens`.
-*   **Monthly Reset:** Before updating, checks if `current_month != tokens_last_reset_date`. If so, resets `total_tokens` to 0 before adding the new usage.
-*   **Monthly Limit:** Enforced before generation. If `total_tokens` is at or above the plan limit, the API call is blocked until the next monthly reset. Defaults are 50k (Free) and 500k (Premium), configurable via `TOKEN_LIMIT_FREE` and `TOKEN_LIMIT_PREMIUM`.
+- Free: 1 call / minute
+- Premium: 5 calls / minute
 
-### Plan Synchronization
-*   On every request, the user's plan from the Clerk token is compared with the DB record.
-*   If the plan changes (upgrade/downgrade), usage counters (`api_calls_count`, `emails_sent_count`) are reset immediately.
+Behavior:
 
-## 3. API Endpoints (`api/index.py`)
+1. load or create the user row
+2. compare current time with `api_window_start`
+3. if more than 60 seconds elapsed, reset the call counter and move the window
+4. if the current count is below the plan limit, increment and allow
+5. otherwise block with a rate-limit message
+
+### 3.2 Email quota
+
+Product rule:
+
+- Free: 0 emails / day
+- Premium: 10 emails / day
+
+Behavior:
+
+1. compare current UTC date with `emails_last_sent_date`
+2. if the date changed, reset the email counter
+3. if count is below the plan limit, increment and allow
+4. otherwise block
+
+### 3.3 Token tracking
+
+Token behavior:
+
+- total tokens are accumulated from model usage returned by generation/report agents
+- the tracked value resets when the month marker changes
+- limits are plan-aware
+
+Current defaults:
+
+- `TOKEN_LIMIT_FREE=50000`
+- `TOKEN_LIMIT_PREMIUM=500000`
+
+These are environment-configurable.
+
+### 3.4 Plan synchronization
+
+The app still treats Clerk as the source of current plan truth.
+
+On each request:
+
+1. plan is read from the authenticated token/session context
+2. stored plan is compared with the DB value
+3. if it changed, short-window counters are reset
+
+This keeps usage behavior aligned with upgrades/downgrades without a separate billing-sync process.
+
+## 4. API Endpoints That Depend on Usage State
 
 ### `GET /api/subscription`
-*   Returns the user's plan status and **persistent usage stats** from the DB.
-*   Response: `{ ..., usage: { "total_tokens": 1234, "api_calls_count": 2, "emails_sent_count": 5 } }`
 
-### `POST /api` (Idea Generation)
-*   **Check:** Calls `db.check_and_increment_api_call`. Raises 429 if limited.
-*   **Track:** After generation, aggregates tokens from all models and calls `db.track_token_usage`.
-*   **Response:** Returns generation results AND an updated `usage` object containing the latest counters from the DB (to update frontend immediately).
+Purpose:
+
+- returns current plan
+- returns usage counters
+- ensures the user row exists
+
+### `POST /api`
+
+Purpose:
+
+- idea generation
+
+Usage behavior:
+
+- checks `check_and_increment_api_call`
+- after generation, aggregates returned token usage
+- persists updated usage totals
 
 ### `POST /api/recommend-combination`
-*   **Check:** Calls `db.check_and_increment_api_call`.
-*   **Track:** Calls `db.track_token_usage`.
 
-### `POST /api/email`
-*   **Check:** Calls `db.check_and_increment_email`.
+Usage behavior:
 
-## 4. Frontend Integration (`pages/product.tsx`)
+- checks API call quota
+- tracks tokens if the recommendation agent returns usage metadata
 
-### State Management
-*   `tokenUsage` state holds: `total_tokens`, `api_calls_count`, `emails_sent_count`.
-*   **Initialization:** Fetches `/api/subscription` on mount to get persistent data.
-*   **Updates:**
-    *   **Real-time:** After every `generateIdeas` or `recommendCombination` call, the response includes updated usage, which is merged into the state via `addUsage`.
-    *   **Polling:** A `useEffect` polls `/api/subscription` every **3 seconds**. This ensures that when the 60s rate limit window expires on the server, the frontend receives the reset counter (`api_calls_count: 0`) almost immediately, re-enabling the buttons.
-    *   **Monthly Tokens:** The subscription poll also reflects the monthly token reset so buttons re-enable after the period rolls over.
+### Email endpoints
 
-### UI Components
-*   **Current Usage Card:** Displays the 3 metrics (Tokens, API Calls, Emails) in a grid, showing `Current / Limit`.
-*   **Button Disabling:**
-    *   "Generate Ideas" & "Recommend Combination" buttons are disabled if `api_calls_count >= limit`.
-    *   Both buttons are also disabled if `total_tokens >= token_limit`.
-    *   "Send Email" button is disabled if `emails_sent_count >= limit`.
-*   **Error Modal:** If a request fails with 429 (detected in catch block), a `LimitModal` appears informing the user.
+Usage behavior:
+
+- call `check_and_increment_email`
+
+## 5. Frontend Integration
+
+The frontend in [pages/product.tsx](/home/repos/ideagen-saas-aws/pages/product.tsx) still treats the backend as the authoritative source of usage state.
+
+Current frontend pattern:
+
+- fetch `/api/subscription` on load
+- merge fresh usage from generation/recommendation responses
+- poll `/api/subscription` periodically to reflect server-side resets
+
+This is important because:
+
+- rate-limit windows expire on the server, not in the browser
+- monthly token resets also happen on the server
+- the UI should never be the source of truth for quota enforcement
+
+## 6. Operational Notes After the Migration
+
+### Database precondition
+
+If the `user_usage` table does not exist, usage-gated endpoints will fail even before model calls run.
+
+That is why container startup now runs Alembic before `uvicorn`.
+
+### Production storage
+
+In production, usage data is expected to live in RDS PostgreSQL.
+
+This avoids:
+
+- loss of counters on container restart
+- non-durable local filesystem assumptions
+- multi-instance divergence
+
+### Local development
+
+Local development should use Postgres too, not SQLite, so quota behavior is exercised against the same engine used in production.

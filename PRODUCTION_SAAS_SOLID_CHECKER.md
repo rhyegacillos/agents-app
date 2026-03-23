@@ -220,9 +220,9 @@ Date: ____________________
 
 ## 7) IdeaGen-Specific Notes (Current Stack Implications)
 
-- If running on App Runner with ephemeral containers, local SQLite is not
-  sufficient for paid production durability. Move persistent data to managed
-  storage (for example PostgreSQL/RDS) before Gate C.
+- For the current stack, production durability depends on the managed PostgreSQL
+  path staying healthy: RDS, Alembic migrations, secret injection, and restore
+  readiness should all be verified before Gate C.
 - Keep `ALLOWED_HOSTS` set to production domain(s) and verify health-check path
   behavior after each deployment.
 - Keep server-side usage enforcement authoritative; UI limits are guidance only.
@@ -238,4 +238,3 @@ IdeaGen is "production SaaS solid" when:
 3. Backup restore drill succeeded in the last 30 days
 4. Billing lifecycle test matrix is fully passing
 5. Reliability metrics are within agreed thresholds for two consecutive weeks
-

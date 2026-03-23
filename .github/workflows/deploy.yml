@@ -1,0 +1,305 @@
+name: Deploy AWS
+
+on:
+  push:
+    branches: ["ideagen-saas-aws"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ideagen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ideagen_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
+      TFVARS_FILE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}.tfvars
+      APP_ENV: local
+      DATABASE_URL_LOCAL: postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_test
+      TF_VAR_project_name: ${{ vars.PROJECT_NAME }}
+      TF_VAR_aws_region: ${{ vars.DEFAULT_AWS_REGION }}
+      TF_VAR_allowed_hosts: ${{ vars.ALLOWED_HOSTS }}
+      TF_VAR_next_public_clerk_publishable_key: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+      TF_VAR_clerk_jwks_url: ${{ secrets.CLERK_JWKS_URL }}
+      TF_VAR_gemini_api_url: ${{ secrets.GEMINI_API_URL }}
+      TF_VAR_deepseek_api_url: ${{ secrets.DEEPSEEK_API_URL }}
+      TF_VAR_grok_api_url: ${{ secrets.GROK_API_URL }}
+      TF_VAR_email_from: ${{ secrets.EMAIL_FROM }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          echo "::group::Install backend dependencies"
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          echo "::endgroup::"
+
+      - name: Run backend tests
+        run: |
+          echo "::group::Run backend tests"
+          pytest tests -q
+          echo "::endgroup::"
+
+      - name: Validate environment var-file
+        run: |
+          echo "::group::Validate environment var-file"
+          echo "Deploy environment: ${DEPLOY_ENV}"
+          echo "Terraform var-file: ${TFVARS_FILE}"
+          test -f "${TFVARS_FILE}"
+          tfvars_env="$(awk -F= '/^[[:space:]]*environment[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          echo "Var-file environment: ${tfvars_env}"
+          test "${tfvars_env}" = "${DEPLOY_ENV}"
+          echo "::endgroup::"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.DEFAULT_AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Bootstrap Terraform backend
+        id: tf_backend
+        run: |
+          echo "::group::Bootstrap Terraform backend"
+          echo "Project: ${{ vars.PROJECT_NAME }}"
+          echo "Region: ${{ vars.DEFAULT_AWS_REGION }}"
+          chmod +x scripts/bootstrap_tf_backend.sh
+          ./scripts/bootstrap_tf_backend.sh \
+            --project-name "${{ vars.PROJECT_NAME }}" \
+            --region "${{ vars.DEFAULT_AWS_REGION }}" \
+            --github-output
+          echo "Backend bucket: ${{ steps.tf_backend.outputs.bucket }}"
+          echo "Backend lock table: ${{ steps.tf_backend.outputs.lock_table }}"
+          echo "::endgroup::"
+
+      - name: Terraform init
+        run: |
+          echo "::group::Terraform init"
+          echo "State key: ideagen/${DEPLOY_ENV}/terraform.tfstate"
+          terraform -chdir=terraform init \
+            -reconfigure \
+            -backend-config="bucket=${{ steps.tf_backend.outputs.bucket }}" \
+            -backend-config="dynamodb_table=${{ steps.tf_backend.outputs.lock_table }}" \
+            -backend-config="key=ideagen/${DEPLOY_ENV}/terraform.tfstate" \
+            -backend-config="region=${{ steps.tf_backend.outputs.aws_region }}"
+          echo "::endgroup::"
+
+      - name: Select workspace
+        run: |
+          echo "::group::Select Terraform workspace"
+          target_env="${DEPLOY_ENV}"
+          echo "Workspace: ${target_env}"
+          terraform -chdir=terraform workspace new "${target_env}" || true
+          terraform -chdir=terraform workspace select "${target_env}"
+          terraform -chdir=terraform workspace show
+          echo "::endgroup::"
+
+      - name: Bootstrap infrastructure on first deploy only
+        run: |
+          echo "::group::Terraform bootstrap apply"
+          if terraform -chdir=terraform state show 'aws_apprunner_service.app[0]' >/dev/null 2>&1; then
+            echo "Managed App Runner already exists in Terraform state. Skipping bootstrap apply."
+          else
+            echo "First deploy detected. Bootstrapping prerequisite infrastructure without App Runner."
+            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_FILE}" \
+              -var="allowed_hosts=${{ vars.ALLOWED_HOSTS }}" \
+              -var="next_public_clerk_publishable_key=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}" \
+              -var="clerk_jwks_url=${{ secrets.CLERK_JWKS_URL }}" \
+              -var="gemini_api_url=${{ secrets.GEMINI_API_URL }}" \
+              -var="deepseek_api_url=${{ secrets.DEEPSEEK_API_URL }}" \
+              -var="grok_api_url=${{ secrets.GROK_API_URL }}" \
+              -var="email_from=${{ secrets.EMAIL_FROM }}" \
+              -target=aws_vpc.main \
+              -target=aws_internet_gateway.main \
+              -target=aws_subnet.public \
+              -target=aws_subnet.private_app \
+              -target=aws_subnet.private_db \
+              -target=aws_eip.nat \
+              -target=aws_nat_gateway.main \
+              -target=aws_route_table.public \
+              -target=aws_route.public_internet \
+              -target=aws_route_table_association.public \
+              -target=aws_route_table.private \
+              -target=aws_route.private_nat \
+              -target=aws_route_table_association.private_app \
+              -target=aws_route_table_association.private_db \
+              -target=aws_security_group.app_runner \
+              -target=aws_security_group.db \
+              -target=aws_db_subnet_group.postgres \
+              -target=aws_db_instance.postgres \
+              -target=aws_ecr_repository.app \
+              -target=aws_ecr_lifecycle_policy.app \
+              -target=aws_iam_role.apprunner_ecr_access \
+              -target=aws_iam_role_policy_attachment.apprunner_ecr_access \
+              -target=aws_iam_role.apprunner_instance \
+              -target=aws_iam_role_policy.apprunner_instance_secrets \
+              -target=aws_apprunner_vpc_connector.main \
+              -target=aws_apprunner_auto_scaling_configuration_version.main \
+              -target=aws_secretsmanager_secret.database_url_prod \
+              -target=aws_secretsmanager_secret.openai_api_key \
+              -target=aws_secretsmanager_secret.gemini_api_key \
+              -target=aws_secretsmanager_secret.deepseek_api_key \
+              -target=aws_secretsmanager_secret.grok_api_key \
+              -target=aws_secretsmanager_secret.resend_api_key
+          fi
+          echo "::endgroup::"
+
+      - name: Read ECR output
+        id: tf_bootstrap
+        run: |
+          echo "::group::Read Terraform outputs"
+          echo "ecr_repository_url=$(terraform -chdir=terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
+          echo "rds_endpoint=$(terraform -chdir=terraform output -raw rds_endpoint)" >> $GITHUB_OUTPUT
+          echo "rds_port=$(terraform -chdir=terraform output -raw rds_port)" >> $GITHUB_OUTPUT
+          echo "rds_master_user_secret_arn=$(terraform -chdir=terraform output -raw rds_master_user_secret_arn)" >> $GITHUB_OUTPUT
+          echo "ECR repository: $(terraform -chdir=terraform output -raw ecr_repository_url)"
+          echo "RDS endpoint: $(terraform -chdir=terraform output -raw rds_endpoint)"
+          echo "RDS port: $(terraform -chdir=terraform output -raw rds_port)"
+          echo "::endgroup::"
+
+      - name: Sync runtime secrets to AWS Secrets Manager
+        run: |
+          echo "::group::Sync runtime secrets"
+          echo "Environment: ${DEPLOY_ENV}"
+          chmod +x scripts/sync_app_secrets.sh
+          ./scripts/sync_app_secrets.sh \
+            --project-name "${{ vars.PROJECT_NAME }}" \
+            --environment "${DEPLOY_ENV}" \
+            --region "${{ vars.DEFAULT_AWS_REGION }}" \
+            --db-host "${{ steps.tf_bootstrap.outputs.rds_endpoint }}" \
+            --db-port "${{ steps.tf_bootstrap.outputs.rds_port }}" \
+            --db-name "ideagen" \
+            --db-username "ideagen" \
+            --db-master-secret-arn "${{ steps.tf_bootstrap.outputs.rds_master_user_secret_arn }}"
+          echo "::endgroup::"
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.tf_bootstrap.outputs.ecr_repository_url }}:latest
+            ${{ steps.tf_bootstrap.outputs.ecr_repository_url }}:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+        env:
+          DOCKER_BUILD_SUMMARY: "true"
+
+      - name: Deploy App Runner
+        run: |
+          echo "::group::Deploy App Runner"
+          echo "Target environment: ${DEPLOY_ENV}"
+          existing_service_arn="$(awk -F= '/^[[:space:]]*existing_app_runner_service_arn[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          if [[ -n "${existing_service_arn}" ]]; then
+            echo "Existing App Runner ARN detected in ${TFVARS_FILE}. Updating existing service."
+            chmod +x scripts/update_existing_app_runner_service.sh
+            ./scripts/update_existing_app_runner_service.sh --terraform-dir terraform --tfvars-file "${TFVARS_FILE}" --image-tag latest
+          else
+            echo "No existing App Runner ARN configured. Creating or updating managed service."
+            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_FILE}" \
+              -var="allowed_hosts=${{ vars.ALLOWED_HOSTS }}" \
+              -var="next_public_clerk_publishable_key=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}" \
+              -var="clerk_jwks_url=${{ secrets.CLERK_JWKS_URL }}" \
+              -var="gemini_api_url=${{ secrets.GEMINI_API_URL }}" \
+              -var="deepseek_api_url=${{ secrets.DEEPSEEK_API_URL }}" \
+              -var="grok_api_url=${{ secrets.GROK_API_URL }}" \
+              -var="email_from=${{ secrets.EMAIL_FROM }}" \
+              -var="app_runner_enabled=true"
+            service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn)"
+            service_url="$(terraform -chdir=terraform output -raw app_runner_service_url)"
+            custom_domain="$(terraform -chdir=terraform console -var-file="${TFVARS_FILE}" <<< 'trimspace(var.app_runner_custom_domain)' | sed 's/^"//; s/"$//')"
+            custom_domain_dns_target="$(terraform -chdir=terraform output -raw app_runner_custom_domain_dns_target 2>/dev/null || true)"
+            custom_domain_status="$(terraform -chdir=terraform output -raw app_runner_custom_domain_status 2>/dev/null || true)"
+            custom_domain_validation_records="$(terraform -chdir=terraform output -json app_runner_custom_domain_validation_records 2>/dev/null || echo '[]')"
+            echo "Service ARN: ${service_arn}"
+            echo "Service URL: ${service_url}"
+            if [[ -n "${custom_domain}" ]]; then
+              echo "Custom domain: https://${custom_domain}"
+              if [[ -n "${custom_domain_dns_target}" ]]; then
+                echo "Custom domain DNS target: ${custom_domain_dns_target}"
+              fi
+              if [[ "${custom_domain_validation_records}" != "[]" ]]; then
+                echo "Custom domain validation records: ${custom_domain_validation_records}"
+              fi
+              if [[ -n "${custom_domain_status}" ]]; then
+                echo "Custom domain status: ${custom_domain_status}"
+              fi
+            fi
+            service_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ vars.DEFAULT_AWS_REGION }}" --query 'Service.Status' --output text)"
+            echo "Current App Runner status: ${service_status}"
+            if [[ "${service_status}" == "RUNNING" ]]; then
+              echo "Triggering App Runner deployment"
+              aws apprunner start-deployment --service-arn "${service_arn}" --region "${{ vars.DEFAULT_AWS_REGION }}"
+            else
+              echo "Terraform already triggered a rollout. Waiting for RUNNING instead of starting another deployment."
+            fi
+            set -euo pipefail
+            for i in $(seq 1 60); do
+              current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ vars.DEFAULT_AWS_REGION }}" --query 'Service.Status' --output text)"
+              echo "Service status ${i}/60: ${current_status}"
+              if [[ "${current_status}" != "RUNNING" ]]; then
+                sleep 10
+                continue
+              fi
+              echo "Health check attempt ${i}/60: ${service_url}/health"
+              if curl -fsS "${service_url}/health" >/dev/null; then
+                echo "Health check passed"
+                break
+              fi
+              sleep 10
+            done
+            curl -fsS "${service_url}/health"
+          fi
+          echo "::endgroup::"

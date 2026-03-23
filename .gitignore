@@ -23,6 +23,9 @@
 # misc
 .DS_Store
 *.pem
+__pycache__/
+.pytest_cache/
+.terraform/
 
 # debug
 npm-debug.log*
@@ -30,8 +33,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files
+.env
+.env.*
+!.env.example
+!.env.postgres.example
+.envrc
 
 # vercel
 .vercel
@@ -39,5 +46,4 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-.env*.local
 /aws/

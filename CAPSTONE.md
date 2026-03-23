@@ -58,7 +58,7 @@ Primary ownership:
 
 - API orchestration and agent pipeline design (`api/index.py`)
 - agent modules for generation, ranking, comparison, reporting, recommendation, and email (`api/agent/*.py`)
-- persistence, quotas, and schema migration (`api/db.py`)
+- persistence and quotas backed by PostgreSQL: SQLAlchemy models and session lifecycle (`api/database/models.py`, `api/database/session.py`), repository-style helpers (`api/db.py`), environment-driven DB URL resolution (`api/config.py`), and versioned schema evolution (`alembic/`)
 - reporting and PDF generation (`api/utils/pdf_utils.py`)
 - workspace UX, saved-results modal workflows, and delivery actions (`pages/product.tsx`)
 - Dockerized deployment path and runtime integration (`Dockerfile`, `next.config.ts`)
@@ -72,17 +72,22 @@ Primary ownership:
 Browser (Next.js static UI)
   -> FastAPI API
       -> Auth verification (Clerk JWT + JWKS)
-      -> Quota and plan checks (SQLite)
+      -> Quota and plan checks (PostgreSQL / SQLAlchemy)
       -> Agent orchestration
       -> PDF rendering (WeasyPrint)
       -> Email dispatch (Resend)
   -> LLM providers (OpenAI, Gemini, DeepSeek, Grok)
+
+AWS production (typical): ECR image -> App Runner service
+  -> env from Secrets Manager (DATABASE_URL_PROD, API keys) + plain config
+  -> DATABASE_URL_PROD -> Amazon RDS for PostgreSQL (private; VPC connector)
 ```
 
 Core runtime properties:
 
 - Single Docker image serving both static frontend and API
-- SQLite persistence under `/app/data/usage.db`
+- PostgreSQL persistence for usage and artifacts
+- Alembic-managed schema migrations
 - Route-level orchestration (no external queue in current version)
 - User-scoped saved artifacts and usage meters
 
@@ -99,7 +104,8 @@ Backend:
 
 - FastAPI, Python
 - OpenAI SDK + Google GenAI SDK (provider integrations)
-- SQLite for usage and artifact persistence
+- PostgreSQL + SQLAlchemy for usage and artifact persistence
+- Alembic for schema migrations
 - WeasyPrint for HTML-to-PDF
 - Resend for transactional email
 
@@ -108,6 +114,9 @@ Deployment:
 - Multi-stage Docker build
 - Uvicorn runtime
 - Health endpoint and Docker healthcheck
+- **Amazon RDS for PostgreSQL** (managed relational DB in VPC; not co-located with the container)
+- **AWS Secrets Manager** for production secrets (including **`DATABASE_URL_PROD`** and provider API keys, provisioned via Terraform and wired into **AWS App Runner**)
+- **Terraform**-managed AWS infrastructure (ECR, App Runner, RDS, secrets, networking)
 
 ---
 
@@ -330,23 +339,59 @@ Frontend behavior:
 
 ---
 
-## 10. Data Model and Persistence Strategy
+## 10. Data Model and Persistence Strategy (PostgreSQL + SQLAlchemy + Alembic)
 
-Main tables:
+The capstone treats the database as a first-class production concern: a managed **PostgreSQL** instance is the system of record, **SQLAlchemy 2.x** is the application access layer, and **Alembic** owns schema history and upgrades. This trio replaces an earlier SQLite-in-container pattern and is what makes horizontal scaling, RDS deployment, and reviewable schema changes realistic for portfolio and interview conversations.
 
-- `user_usage`
-- `saved_results`
-- `saved_comparisons`
-- `saved_rank_reports`
+The longest-form technical treatment of this stack (connection flow, pool semantics, Alembic vs `init_db()`, and table-level reference) is **`ARCHITECTURE.md` §6**.
 
-Design choices:
+### 10.1 Why PostgreSQL (not filesystem SQLite)
 
-- user-scoped queries for isolation
-- JSON payload storage for flexible artifact evolution
-- startup-time additive schema migration
-- snapshot strategy for report reproducibility
+- **Durability and ops**: Data survives container restarts and redeploys; production targets **Amazon RDS for PostgreSQL** (private subnets, Terraform-provisioned) rather than a file inside the image.
+- **Concurrency**: Multiple App Runner instances (or local workers) can share one database with ACID semantics and row-level locking where needed.
+- **Rich types**: Artifact payloads use **native JSONB** (`sqlalchemy.dialects.postgresql.JSONB`) for structured blobs with efficient indexing and Postgres-native JSON operators when queries evolve.
+- **Integrity**: Check constraints and indexes are declared alongside models (for example non-negative usage counters, allowed `source_type` values on execution-plan rows) so the database enforces invariants, not only Python validators.
 
-This supports fast iteration while preserving operational continuity.
+### 10.2 SQLAlchemy 2.x: how the app talks to Postgres
+
+- **Declarative ORM models** live in `api/database/models.py`: mapped columns use `Mapped[...]` / `mapped_column`, aligned with SQLAlchemy 2 style. Tables include `user_usage`, `saved_results`, `saved_comparisons`, `saved_rank_reports`, and `saved_stakeholder_reports` (execution plans / stakeholder dossiers).
+- **Engine and sessions** are centralized in `api/database/session.py`: a single lazily created engine from `create_engine(settings.database_url, future=True)`, **connection pooling** (`pool_size`, `max_overflow`, `pool_pre_ping`, `pool_recycle`, `pool_timeout` from settings), and a `sessionmaker` with `autoflush=False` and `expire_on_commit=False` so long-lived in-memory objects behave predictably after commit.
+- **Session lifecycle**: route-level and helper code typically uses `session_scope()` (context manager: create session, yield, always close) so connections return to the pool and transactions are bounded.
+- **Repository-style API**: `api/db.py` implements the persistence operations the FastAPI layer calls (load/save/delete artifacts, usage accounting, user-scoped listing). It uses the ORM models and sessions rather than raw SQL scattered through the codebase—keeping SQLAlchemy as the single abstraction over the wire protocol.
+
+### 10.3 Configuration: one effective database URL
+
+`api/config.py` resolves **one** `database_url` at runtime from `APP_ENV`:
+
+- `APP_ENV=local` → `DATABASE_URL_LOCAL` (e.g. Docker Compose Postgres on the developer machine).
+- `APP_ENV=prod` → **`DATABASE_URL_PROD`**, which in the **AWS** path should be the full SQLAlchemy URL to **Amazon RDS** (host, port, database, user, password), typically **injected via AWS Secrets Manager** into **App Runner**—provisioned by **Terraform** (`terraform/secrets.tf`), not checked into source control.
+
+The driver stack uses the **`postgresql+psycopg`** SQLAlchemy URL form (Psycopg 3) in documented examples. Same engine family locally and in production reduces “works on my machine” drift.
+
+Optional **pool tuning** (read by `get_settings()` and passed to `create_engine`): `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE`, and `DB_ECHO`. **`pool_pre_ping`** is enabled in code so idle or dropped connections to RDS are less likely to surface as mysterious request failures.
+
+### 10.4 Alembic and FastAPI startup: who does what
+
+- **Ownership**: The canonical **shape** of the database is defined by Alembic **revision files** under `alembic/versions/` (with `alembic.ini` and `alembic/env.py` wiring metadata and `target_metadata` from the SQLAlchemy `Base`).
+- **Workflow**: New columns, tables, indexes, or constraints are added by generating a new revision and applying `alembic upgrade head`. That history is diffable in PRs and replayable across dev, staging, and prod.
+- **Deploy integration**: `scripts/start_server.sh` runs `alembic upgrade head` **before** `uvicorn` when `DATABASE_URL_LOCAL` or `DATABASE_URL_PROD` is set, so fresh RDS instances or new containers do not serve traffic against an empty or stale schema.
+- **FastAPI `init_db()` is not DDL**: On app startup, `api/index.py` calls `db.init_db()`, which **only** runs `verify_database_connection()` (a `SELECT 1` through the SQLAlchemy engine). It does **not** create or migrate tables. Schema must already match **head** from Alembic—or the first real query will fail even though startup “succeeded.” Local bare-metal `uvicorn` without `start_server.sh` still requires the developer to run `alembic upgrade head` first (see README / runbooks).
+
+### 10.5 Data design summary (what lives where)
+
+| Area | Role |
+|------|------|
+| `user_usage` | Per-user plan, token totals, API call windows, email counts—**quota enforcement** and metering. |
+| `saved_results` | Generated runs: config + `results_json` + optional `rank_result_json`. |
+| `saved_comparisons` | Pairwise compare artifacts keyed by run IDs. |
+| `saved_rank_reports` | Decision summaries with **snapshot** fields (`runs_json`, `report_json`) for reproducibility. |
+| `saved_stakeholder_reports` | Execution plans / stakeholder dossiers with `dossier_json`, `assumptions_json`, and typed `source_type` linkage. |
+
+Cross-cutting choices: **user-scoped** queries everywhere for isolation; **JSONB** for fast evolution of AI-shaped payloads; **indexes** on `(user_id, created_at)` and domain keys (e.g. compare pair, report cache key) for list and lookup performance.
+
+### 10.6 Optional migration path from legacy SQLite
+
+For one-time imports from an older SQLite deployment, the repo includes `scripts/import_sqlite_to_postgres.py`. Normal runtime paths read and write **only** PostgreSQL through SQLAlchemy.
 
 ---
 
@@ -363,7 +408,8 @@ Operational controls:
 
 - `/health` endpoint
 - Docker healthcheck
-- mounted persistent data volume for SQLite durability
+- **Schema**: `alembic upgrade head` via `scripts/start_server.sh` before `uvicorn` when a DB URL is configured
+- **Connectivity**: FastAPI startup `db.init_db()` verifies the pool can reach Postgres (no DDL)
 - structured logs around generation, fallback, validation, and delivery paths
 
 ---
@@ -389,9 +435,9 @@ Goal: reduce friction between generation, evaluation, and report delivery in one
 
 ## 13. Tradeoffs and Engineering Decisions
 
-1. SQLite over managed SQL  
-Why: lower ops complexity and fast iteration.  
-Tradeoff: lower write concurrency at larger scale.
+1. **PostgreSQL + SQLAlchemy + Alembic** over local-file SQLite and ad hoc DDL  
+Why: production durability, a single portable access layer (ORM + pooling), reviewable schema evolution, and compatibility with App Runner plus **RDS PostgreSQL** (shared state across instances).  
+Tradeoff: more infrastructure, explicit migration discipline, and operational attention to connection pooling and RDS connectivity (VPC connector, secrets).
 
 2. Request-scope orchestration over background job queue  
 Why: deterministic flow and simpler debugging.  
@@ -431,15 +477,16 @@ This capstone demonstrates practical ability to:
 2. Design agentic workflows with deterministic orchestration.
 3. Engineer reliability under provider and output instability.
 4. Apply contract-first output governance for downstream safety.
-5. Connect AI pipelines to production product UX and delivery channels.
-6. Ship and operate a deployable stack with clear tradeoffs and roadmap.
+5. Model **production-grade persistence**: PostgreSQL as the system of record, SQLAlchemy for typed access and pooling, Alembic for reviewable schema migrations, and RDS-aligned deployment assumptions.
+6. Connect AI pipelines to production product UX and delivery channels.
+7. Ship and operate a deployable stack with clear tradeoffs and roadmap.
 
 ---
 
 ## 16. Next Iteration Roadmap
 
 1. Move report/email execution to async jobs with status polling.
-2. Migrate persistence from SQLite to managed Postgres.
+2. Harden Postgres operations with backup drills, staging rehearsal, and richer migration checks.
 3. Standardize API error envelope across all endpoints.
 4. Add request correlation IDs across frontend, backend, and provider calls.
 5. Add metrics for validation-failure rate, fallback rate, and per-endpoint latency.
@@ -453,6 +500,7 @@ This capstone demonstrates practical ability to:
 - Implemented contract-first output validation, correction loops, and deterministic fallback behavior across generation and analysis agents to improve runtime reliability.
 - Engineered multi-provider inference orchestration (OpenAI, Gemini, DeepSeek, Grok) with ordered fallback chains, token tracking, and plan-aware quota enforcement.
 - Delivered report pipeline integration (HTML -> PDF via WeasyPrint, email via Resend) with saved artifact lifecycle and snapshot-backed reproducibility.
+- Migrated persistence to **PostgreSQL** with **SQLAlchemy 2.x** models/sessions/pooling and **Alembic** migrations (**DDL before Uvicorn**; FastAPI `init_db()` only verifies connectivity), targeting **Amazon RDS** for production with **`DATABASE_URL_PROD` from AWS Secrets Manager**, plus JSONB-backed artifact storage and user-scoped access patterns.
 - Designed and shipped full-stack user workflows for saved results, compare insights, and decision summary reporting with production-oriented guardrails.
 
 ---
@@ -462,14 +510,15 @@ This capstone demonstrates practical ability to:
 1. Problem framing: why generation-only tools are insufficient for decision workflows.
 2. Architecture overview: orchestrator-worker model and provider integration.
 3. Reliability deep dive: validation, retries, fallbacks, and caching.
-4. Feature deep dive: compare and decision-report pipelines.
-5. Tradeoffs and roadmap: what is production-ready today and what scales next.
+4. Data layer: PostgreSQL as system of record, SQLAlchemy session/pool model, **Alembic before Uvicorn** vs **`init_db()` connectivity-only** at FastAPI startup, JSONB artifacts vs normalized core tables.
+5. Feature deep dive: compare and decision-report pipelines.
+6. Tradeoffs and roadmap: what is production-ready today and what scales next.
 
 ---
 
-## 19. AWS Deployment (ECR + App Runner)
+## 19. AWS Deployment (ECR, App Runner, RDS, Secrets Manager)
 
-This project is designed to run in AWS with a containerized deployment flow:
+This project is designed to run in AWS with a containerized deployment flow. **Two managed services are especially important to call out in interviews:** **Amazon RDS** holds all durable application data, and **AWS Secrets Manager** is the intended store for sensitive runtime configuration (database URL and API keys) that **App Runner** injects into the container—so secrets are not baked into the image.
 
 ```text
 Local build
@@ -477,10 +526,28 @@ Local build
   -> Push to Amazon ECR
   -> App Runner service pulls image
   -> App Runner runs FastAPI container on port 8000
+        -> reads env from plain config + Secrets Manager references (production)
+        -> DATABASE_URL_PROD -> Amazon RDS for PostgreSQL (via VPC connector / private subnets)
   -> Health check: /health
 ```
 
-### 19.1 Deployment Steps
+### 19.1 Amazon RDS and AWS Secrets Manager (highlight)
+
+**Amazon RDS for PostgreSQL**
+
+- RDS is the **production system of record**: quotas, saved runs, comparisons, decision reports, execution plans—all persist in Postgres on RDS, not on the App Runner instance disk.
+- The documented Terraform layout places RDS in **private subnets**; the App Runner service reaches it through **private VPC egress** (VPC connector), which matches how you would explain “database not on the public internet” in a capstone review.
+- **Alembic** still runs inside the container at startup (`scripts/start_server.sh`); the migration target is whatever host/credentials **`DATABASE_URL_PROD`** points at—**in production that URL should resolve to the RDS endpoint**.
+
+**AWS Secrets Manager**
+
+- Terraform defines application secrets (see `terraform/secrets.tf`), including a dedicated secret for **`DATABASE_URL_PROD`** (naming pattern like `{prefix}/app/DATABASE_URL_PROD`) and separate secrets for LLM and email API keys.
+- **App Runner** is configured to expose those values to the container as **environment variables** (secret references), so the Python app continues to use `os.getenv` / `DATABASE_URL_PROD` without embedding credentials in the image or repo.
+- **Interview framing**: “RDS for durable state + Secrets Manager for credential injection + App Runner for compute” is a standard small-SaaS pattern on AWS.
+
+Supporting pieces (also Terraform-backed in this repo): **Amazon ECR** for images, **AWS App Runner** for the service, optional **Route 53** for the custom domain, and **IAM** least-privilege wiring between services.
+
+### 19.2 Deployment Steps
 
 1. Authenticate Docker to ECR.
 2. Build the container image using build args for Clerk public config.
@@ -490,7 +557,7 @@ Local build
 6. Set health check path to `/health`.
 7. Deploy and verify API plus static app routes.
 
-### 19.2 Build and Push Commands
+### 19.3 Build and Push Commands
 
 ```bash
 aws ecr get-login-password --region $DEFAULT_AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com
@@ -504,7 +571,7 @@ docker tag ideagen-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazon
 docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/ideagen-app:latest
 ```
 
-### 19.3 App Runner Runtime Configuration
+### 19.4 App Runner Runtime Configuration
 
 Container settings:
 
@@ -515,6 +582,8 @@ Container settings:
 
 Environment variables to configure in App Runner:
 
+- **`APP_ENV=prod`** (required so the app selects `DATABASE_URL_PROD`; see `api/config.py`)
+- **`DATABASE_URL_PROD`** — **reference an AWS Secrets Manager secret** in production (full JDBC-style URL to RDS). Do not commit this value to git.
 - `CLERK_JWKS_URL`
 - `OPENAI_API_KEY`
 - `GEMINI_API_KEY`
@@ -531,7 +600,9 @@ Environment variables to configure in App Runner:
 - `SAVED_RESULTS_LIMIT_FREE_BYTES` (optional)
 - `SAVED_RESULTS_LIMIT_PREMIUM_BYTES` (optional)
 
-### 19.4 Custom Domain Setup (Route 53 + App Runner)
+In production, treat **`DATABASE_URL_PROD`** and provider keys as **Secrets Manager**–backed references in App Runner rather than plaintext console entry where possible.
+
+### 19.5 Custom Domain Setup (Route 53 + App Runner)
 
 Implemented target:
 
@@ -552,7 +623,7 @@ dig ideagen.agentairg.site +short
 curl -I https://ideagen.agentairg.site
 ```
 
-### 19.5 Restricting Access to Canonical Domain
+### 19.6 Restricting Access to Canonical Domain
 
 To prevent normal app access via the default App Runner URL (`*.awsapprunner.com`), host allowlist middleware is used.
 
@@ -568,42 +639,49 @@ Production recommendation:
 ALLOWED_HOSTS=ideagen.agentairg.site
 ```
 
-### 19.6 Data Persistence Caveat (Important)
+### 19.7 Data Persistence Model
 
-Current implementation uses SQLite (`/app/data/usage.db`) for:
+Runtime persistence is **PostgreSQL** accessed only through **SQLAlchemy** (see **§10** for the application narrative; **`ARCHITECTURE.md` §6** for connection and migration detail). Tables cover usage metering, saved generation runs, comparisons, decision reports, and execution plans (`saved_stakeholder_reports`).
 
-- usage counters,
-- saved results,
-- saved comparisons,
-- saved decision reports.
+Production target (aligned with **§19.1**):
 
-App Runner containers are ephemeral and can restart or scale horizontally. That means local SQLite storage is not durable/reliable for production multi-instance workloads.
+- **Amazon RDS for PostgreSQL** in private subnets (managed backups/patching path via AWS)
+- **App Runner** private egress through a **VPC connector** to reach RDS
+- **`DATABASE_URL_PROD`** supplied from **AWS Secrets Manager** into the container environment
+- Schema upgrades via **Alembic** at container start (`scripts/start_server.sh`)
 
-Practical production implication:
+Practical implication:
 
-- For serious production use on App Runner, migrate persistence to managed storage (for example Amazon RDS PostgreSQL) and keep object/report artifacts in durable backing stores where needed.
+- data is not tied to the container filesystem
+- schema updates are **version-controlled revisions**, not opaque image state
+- multiple App Runner instances share one **RDS** backend with pooled SQLAlchemy connections
 
-### 19.7 AWS-Ready Strengths in Current Design
+### 19.8 AWS-Ready Strengths in Current Design
 
 - Single-container deploy simplicity (frontend + API together)
 - Health endpoint and Docker healthcheck built in
-- Environment-based secret/config management
-- No hardcoded cloud dependencies in application logic
+- **RDS + Secrets Manager** as first-class production pattern for data durability and credential handling
+- No hardcoded cloud dependencies in application logic (URLs and keys from environment / secrets)
 
-### 19.8 AWS Hardening Next Steps
+### 19.9 AWS Hardening Next Steps
 
-1. Replace SQLite with RDS PostgreSQL.
-2. Add centralized logging/metrics dashboards (CloudWatch).
-3. Add structured request IDs for traceability across provider calls.
-4. Add staged environments (dev/staging/prod) with separate ECR tags and App Runner services.
-5. Add CI/CD pipeline for automated build, scan, push, and deploy.
+1. Add centralized logging/metrics dashboards (CloudWatch).
+2. Add structured request IDs for traceability across provider calls.
+3. Add staged environments (dev/staging/prod) with separate ECR tags and App Runner services where quotas allow.
+4. Add stronger rollback rehearsal and database restore drills.
+5. Add CI/CD pipeline hardening for deploy approvals and post-deploy smoke tests.
 
 ---
 
 ## 20. Key File References
 
-- `api/index.py`
-- `api/db.py`
+- `api/index.py` (FastAPI app; startup calls `db.init_db()` for **database connectivity check only**)
+- `api/config.py` (database URL and pool settings)
+- `api/database/models.py` (SQLAlchemy ORM tables)
+- `api/database/session.py` (engine, session factory, `session_scope`)
+- `api/db.py` (persistence helpers used by routes)
+- `alembic.ini`, `alembic/env.py`, `alembic/versions/*.py`
+- `scripts/start_server.sh` (Alembic then Uvicorn)
 - `api/agent/idea_generation_agent.py`
 - `api/agent/model_fallback.py`
 - `api/agent/rank_result_agent.py`
@@ -615,4 +693,4 @@ Practical production implication:
 - `pages/product.tsx`
 - `Dockerfile`
 - `next.config.ts`
-- `ARCHITECTURE.md`
+- `ARCHITECTURE.md` (full system design; **§6** = persistence: PostgreSQL, SQLAlchemy, Alembic)

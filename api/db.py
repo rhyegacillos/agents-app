@@ -1,1163 +1,729 @@
-import sqlite3
-import time
-import os
-import json
-from datetime import datetime, timezone
+from __future__ import annotations
 
-DB_PATH = os.getenv("DB_PATH", "/app/data/usage.db")
+import os
+from datetime import date, datetime, timezone
+from typing import Any
+
+from sqlalchemy import Text, and_, cast, delete, func, or_, select, update
+from sqlalchemy.orm import Session
+
+from database.models import SavedComparison, SavedRankReport, SavedResult, SavedStakeholderReport, UserUsage
+from database.session import get_session, session_scope, verify_database_connection
 
 TOKEN_LIMIT_FREE = int(os.getenv("TOKEN_LIMIT_FREE", "50000"))
 TOKEN_LIMIT_PREMIUM = int(os.getenv("TOKEN_LIMIT_PREMIUM", "500000"))
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
-def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_usage (
-            user_id TEXT PRIMARY KEY,
-            plan TEXT,
-            total_tokens INTEGER DEFAULT 0,
-            api_calls_count INTEGER DEFAULT 0,
-            api_window_start REAL DEFAULT 0,
-            emails_sent_count INTEGER DEFAULT 0,
-            emails_last_sent_date TEXT DEFAULT ''
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _current_month() -> str:
+    return _utcnow().strftime("%Y-%m")
+
+
+def _current_day() -> date:
+    return _utcnow().date()
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _normalize_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _normalize_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _month_changed(user: UserUsage) -> bool:
+    current_month = _current_month()
+    if user.tokens_last_reset_month != current_month:
+        user.total_tokens = 0
+        user.tokens_last_reset_month = current_month
+        user.updated_at = _utcnow()
+        return True
+    return False
+
+
+def _get_usage_user(session: Session, user_id: str, for_update: bool = False) -> UserUsage | None:
+    stmt = select(UserUsage).where(UserUsage.user_id == user_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def _serialize_saved_result(row: SavedResult, include_full: bool = False) -> dict[str, Any]:
+    models = _normalize_list(row.models_json)
+    constraints = _normalize_list(row.constraints_json)
+    payload = {
+        "id": row.id,
+        "created_at": _isoformat(row.created_at),
+        "industry": row.industry,
+        "tone": row.tone,
+        "constraints": constraints,
+        "models": models,
+    }
+    if include_full:
+        payload["results"] = _normalize_dict(row.results_json)
+        payload["rank_result"] = row.rank_result_json if isinstance(row.rank_result_json, dict) else None
+    else:
+        payload["model_count"] = len(models)
+    return payload
+
+
+def _serialize_rank_report(row: SavedRankReport) -> dict[str, Any]:
+    run_ids = _normalize_list(row.run_ids_json)
+    runs_snapshot = _normalize_list(row.runs_json)
+    if not run_ids and runs_snapshot:
+        recovered_ids: list[int] = []
+        for run in runs_snapshot:
+            if isinstance(run, dict):
+                try:
+                    recovered_ids.append(int(run.get("id")))
+                except (TypeError, ValueError):
+                    continue
+        run_ids = recovered_ids
+    cleaned_run_ids: list[int] = []
+    for run_id in run_ids:
+        try:
+            cleaned_run_ids.append(int(run_id))
+        except (TypeError, ValueError):
+            continue
+    return {
+        "id": row.id,
+        "created_at": _isoformat(row.created_at),
+        "run_ids": cleaned_run_ids,
+        "run_ids_key": row.run_ids_key,
+        "report": _normalize_dict(row.report_json),
+        "runs_snapshot": runs_snapshot,
+        "model": row.model,
+    }
+
+
+def _serialize_comparison(row: SavedComparison) -> dict[str, Any]:
+    return {
+        "comparison_id": row.id,
+        "created_at": _isoformat(row.created_at),
+        "run_a_id": row.run_a_id,
+        "run_b_id": row.run_b_id,
+        "winner_run_id": row.winner_run_id,
+        "comparison": _normalize_dict(row.comparison_json),
+        "cached": True,
+    }
+
+
+def _serialize_stakeholder_report(row: SavedStakeholderReport) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "created_at": _isoformat(row.created_at),
+        "source_type": row.source_type,
+        "source_id": row.source_id,
+        "scenario_profile": row.scenario_profile,
+        "horizon_months": row.horizon_months,
+        "currency": row.currency,
+        "region": row.region,
+        "model": row.model,
+        "assumptions": _normalize_list(row.assumptions_json),
+        "dossier": _normalize_dict(row.dossier_json),
+    }
+
+
+def get_db() -> Session:
+    return get_session()
+
+
+def init_db() -> None:
+    verify_database_connection()
+
+
+def ensure_user(user_id: str, current_plan: str) -> None:
+    with session_scope() as session:
+        with session.begin():
+            get_or_create_user(session, user_id, current_plan, for_update=True)
+
+
+def get_or_create_user(conn: Session, user_id: str, current_plan: str, for_update: bool = False) -> UserUsage:
+    user = _get_usage_user(conn, user_id, for_update=for_update)
+    if user is None:
+        now = _utcnow()
+        user = UserUsage(
+            user_id=user_id,
+            plan=current_plan,
+            total_tokens=0,
+            api_calls_count=0,
+            api_window_start=now,
+            emails_sent_count=0,
+            emails_last_sent_date=None,
+            tokens_last_reset_month=now.strftime("%Y-%m"),
+            created_at=now,
+            updated_at=now,
         )
-    ''')
+        conn.add(user)
+        conn.flush()
+        return user
 
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS saved_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            created_at TEXT,
-            industry TEXT,
-            tone TEXT,
-            constraints_json TEXT,
-            models_json TEXT,
-            results_json TEXT,
-            rank_result_json TEXT
-        )
-    ''')
+    if user.plan != current_plan:
+        user.plan = current_plan
+        user.api_calls_count = 0
+        user.emails_sent_count = 0
+        user.updated_at = _utcnow()
+        conn.flush()
+    return user
 
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS saved_rank_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            created_at TEXT,
-            run_ids_key TEXT,
-            run_ids_json TEXT,
-            report_json TEXT,
-            runs_json TEXT,
-            model TEXT
-        )
-    ''')
 
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS saved_comparisons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            created_at TEXT,
-            run_a_id INTEGER,
-            run_b_id INTEGER,
-            winner_run_id INTEGER,
-            comparison_json TEXT,
-            model TEXT
-        )
-    ''')
+def get_user(conn: Session, user_id: str) -> UserUsage | None:
+    return _get_usage_user(conn, user_id)
 
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS saved_stakeholder_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            created_at TEXT,
-            source_type TEXT,
-            source_id INTEGER,
-            scenario_profile TEXT,
-            horizon_months INTEGER,
-            currency TEXT,
-            region TEXT,
-            dossier_json TEXT,
-            assumptions_json TEXT,
-            model TEXT
-        )
-    ''')
-    
-    # Migration for new column
-    try:
-        c.execute("ALTER TABLE user_usage ADD COLUMN tokens_last_reset_date TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass # Column already exists
-    try:
-        c.execute("ALTER TABLE saved_results ADD COLUMN rank_result_json TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute("ALTER TABLE saved_rank_reports ADD COLUMN runs_json TEXT")
-    except sqlite3.OperationalError:
-        pass
-    conn.commit()
-    conn.close()
 
-def get_or_create_user(conn, user_id, current_plan):
-    c = conn.cursor()
-    c.execute("SELECT * FROM user_usage WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    
-    if row is None:
-        c.execute('''
-            INSERT INTO user_usage (user_id, plan, api_window_start, tokens_last_reset_date) 
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, current_plan, time.time(), datetime.now(timezone.utc).strftime("%Y-%m")))
-        conn.commit()
-        return get_user(conn, user_id)
-    
-    # Check for plan change (upgrade/downgrade)
-    db_plan = row["plan"]
-    if db_plan != current_plan:
-        # Reset counters on plan change
-        c.execute('''
-            UPDATE user_usage 
-            SET plan = ?, api_calls_count = 0, emails_sent_count = 0 
-            WHERE user_id = ?
-        ''', (current_plan, user_id))
-        conn.commit()
-        return get_user(conn, user_id)
-        
-    return row
-
-def get_user(conn, user_id):
-    c = conn.cursor()
-    c.execute("SELECT * FROM user_usage WHERE user_id = ?", (user_id,))
-    return c.fetchone()
-
-def get_token_limit(plan):
+def get_token_limit(plan: str) -> int:
     return TOKEN_LIMIT_PREMIUM if "premium" in plan else TOKEN_LIMIT_FREE
 
 
-def check_token_limit(user_id, plan):
-    conn = get_db()
-    try:
-        user = get_or_create_user(conn, user_id, plan)
+def check_token_limit(user_id: str, plan: str) -> tuple[bool, str | None]:
+    with session_scope() as session:
+        with session.begin():
+            user = get_or_create_user(session, user_id, plan, for_update=True)
+            total_tokens = user.total_tokens or 0
+            did_reset, _ = _reset_tokens_if_new_month(session, user_id, user.tokens_last_reset_month)
+            if did_reset:
+                total_tokens = 0
+            token_limit = get_token_limit(plan)
+            if total_tokens >= token_limit:
+                return False, f"Monthly token limit exceeded. Limit: {token_limit} tokens."
+            return True, None
 
-        last_month = user["tokens_last_reset_date"] if "tokens_last_reset_date" in user.keys() else ""
-        total_tokens = user["total_tokens"] or 0
-        did_reset, _ = _reset_tokens_if_new_month(conn, user_id, last_month)
-        if did_reset:
-            total_tokens = 0
 
-        token_limit = get_token_limit(plan)
-        if total_tokens >= token_limit:
-            return False, f"Monthly token limit exceeded. Limit: {token_limit} tokens."
-        return True, None
-    finally:
-        conn.close()
-
-def _reset_tokens_if_new_month(conn, user_id, last_month):
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+def _reset_tokens_if_new_month(conn: Session, user_id: str, last_month: str) -> tuple[bool, str]:
+    current_month = _current_month()
     if last_month != current_month:
-        conn.execute('''
-            UPDATE user_usage 
-            SET total_tokens = 0, tokens_last_reset_date = ?
-            WHERE user_id = ?
-        ''', (current_month, user_id))
-        conn.commit()
+        user = _get_usage_user(conn, user_id, for_update=True)
+        if user is not None:
+            user.total_tokens = 0
+            user.tokens_last_reset_month = current_month
+            user.updated_at = _utcnow()
+            conn.flush()
         return True, current_month
     return False, current_month
 
-def check_and_increment_api_call(user_id, plan):
-    conn = get_db()
-    try:
-        user = get_or_create_user(conn, user_id, plan)
-        
-        last_month = user["tokens_last_reset_date"] if "tokens_last_reset_date" in user.keys() else ""
-        total_tokens = user["total_tokens"] or 0
-        did_reset, _ = _reset_tokens_if_new_month(conn, user_id, last_month)
-        if did_reset:
-            total_tokens = 0
 
-        token_limit = get_token_limit(plan)
-        if total_tokens >= token_limit:
-            return False, f"Monthly token limit exceeded. Limit: {token_limit} tokens."
+def check_and_increment_api_call(user_id: str, plan: str) -> tuple[bool, str | None]:
+    with session_scope() as session:
+        with session.begin():
+            user = get_or_create_user(session, user_id, plan, for_update=True)
+            total_tokens = user.total_tokens or 0
+            if _month_changed(user):
+                total_tokens = 0
 
-        limit = 5 if "premium" in plan else 1
-        now = time.time()
-        window_start = user["api_window_start"]
-        count = user["api_calls_count"]
-        
-        # Reset window if > 60s
-        if now - window_start > 60:
-            count = 0
-            window_start = now
-            conn.execute('''
-                UPDATE user_usage 
-                SET api_calls_count = 0, api_window_start = ? 
-                WHERE user_id = ?
-            ''', (window_start, user_id))
-            
-        if count >= limit:
-            return False, f"API rate limit exceeded. Limit: {limit}/min."
-            
-        conn.execute('''
-            UPDATE user_usage 
-            SET api_calls_count = api_calls_count + 1 
-            WHERE user_id = ?
-        ''', (user_id,))
-        conn.commit()
-        return True, None
-    finally:
-        conn.close()
+            token_limit = get_token_limit(plan)
+            if total_tokens >= token_limit:
+                return False, f"Monthly token limit exceeded. Limit: {token_limit} tokens."
 
-def check_and_increment_email(user_id, plan):
-    conn = get_db()
-    try:
-        user = get_or_create_user(conn, user_id, plan)
-        
-        # Free users get 0 emails
-        limit = 10 if "premium" in plan else 0
-        if limit == 0:
-             return False, "Email sending is a Premium feature."
+            limit = 5 if "premium" in plan else 1
+            now = _utcnow()
+            window_start = user.api_window_start
+            count = user.api_calls_count
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        last_date = user["emails_last_sent_date"]
-        count = user["emails_sent_count"]
-        
-        # Reset daily quota
-        if last_date != today:
-            count = 0
-            conn.execute('''
-                UPDATE user_usage 
-                SET emails_sent_count = 0, emails_last_sent_date = ? 
-                WHERE user_id = ?
-            ''', (today, user_id))
-            
-        if count >= limit:
-            return False, f"Daily email limit exceeded. Limit: {limit}/day."
-            
-        conn.execute('''
-            UPDATE user_usage 
-            SET emails_sent_count = emails_sent_count + 1, emails_last_sent_date = ?
-            WHERE user_id = ?
-        ''', (today, user_id))
-        conn.commit()
-        return True, None
-    finally:
-        conn.close()
+            if (now - window_start).total_seconds() > 60:
+                count = 0
+                user.api_calls_count = 0
+                user.api_window_start = now
 
-def track_token_usage(user_id, tokens):
-    conn = get_db()
-    try:
-        # Check for monthly reset
-        c = conn.cursor()
-        c.execute("SELECT tokens_last_reset_date FROM user_usage WHERE user_id = ?", (user_id,))
-        row = c.fetchone()
-        
-        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
-        last_month = row["tokens_last_reset_date"] if row and "tokens_last_reset_date" in row.keys() else ""
-        
-        if last_month != current_month:
-            conn.execute('''
-                UPDATE user_usage 
-                SET total_tokens = ?, tokens_last_reset_date = ?
-                WHERE user_id = ?
-            ''', (tokens, current_month, user_id))
-        else:
-            conn.execute('''
-                UPDATE user_usage 
-                SET total_tokens = total_tokens + ? 
-                WHERE user_id = ?
-            ''', (tokens, user_id))
-            
-        conn.commit()
-    finally:
-        conn.close()
+            if count >= limit:
+                return False, f"API rate limit exceeded. Limit: {limit}/min."
 
-def get_user_stats(user_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT * FROM user_usage WHERE user_id = ?", (user_id,))
-        row = c.fetchone()
-        if not row:
-            return {"total_tokens": 0, "api_calls_count": 0, "emails_sent_count": 0}
-            
-        last_month = row["tokens_last_reset_date"] if "tokens_last_reset_date" in row.keys() else ""
-        total_tokens = row["total_tokens"] or 0
-        did_reset, _ = _reset_tokens_if_new_month(conn, user_id, last_month)
-        if did_reset:
-            total_tokens = 0
-
-        # Lazy update for view: check if API window expired
-        now = time.time()
-        window_start = row["api_window_start"]
-        api_count = row["api_calls_count"]
-        
-        if now - window_start > 60 and api_count > 0:
-            # It expired, so for display purposes (and DB consistency), reset it
-            conn.execute('''
-                UPDATE user_usage 
-                SET api_calls_count = 0, api_window_start = ? 
-                WHERE user_id = ?
-            ''', (now, user_id))
-            conn.commit()
-            api_count = 0
-            
-        return {
-            "total_tokens": total_tokens, 
-            "api_calls_count": api_count, 
-            "emails_sent_count": row["emails_sent_count"]
-        }
-    finally:
-        conn.close()
-
-def save_results(user_id, industry, tone, constraints, models, results, rank_result=None):
-    conn = get_db()
-    try:
-        created_at = datetime.now(timezone.utc).isoformat()
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO saved_results (
-                user_id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id,
-            created_at,
-            industry,
-            tone,
-            json.dumps(constraints or []),
-            json.dumps(models or []),
-            json.dumps(results or {}),
-            json.dumps(rank_result) if rank_result is not None else None,
-        ))
-        conn.commit()
-        return {"id": c.lastrowid, "created_at": created_at}
-    finally:
-        conn.close()
-
-def list_saved_results(user_id, limit=10):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT id, created_at, industry, tone, constraints_json, models_json
-            FROM saved_results
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        ''', (user_id, limit))
-        rows = c.fetchall()
-        out = []
-        for row in rows:
-            models = []
-            constraints = []
-            if row["models_json"]:
-                try:
-                    models = json.loads(row["models_json"])
-                except json.JSONDecodeError:
-                    models = []
-            if row["constraints_json"]:
-                try:
-                    constraints = json.loads(row["constraints_json"])
-                except json.JSONDecodeError:
-                    constraints = []
-            out.append({
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "industry": row["industry"],
-                "tone": row["tone"],
-                "constraints": constraints,
-                "models": models,
-                "model_count": len(models) if isinstance(models, list) else 0,
-            })
-        return out
-    finally:
-        conn.close()
+            user.api_calls_count += 1
+            user.updated_at = now
+            return True, None
 
 
-def list_saved_results_full(user_id, limit=None):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        if limit is None:
-            c.execute('''
-                SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
-                FROM saved_results
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-            ''', (user_id,))
-        else:
-            c.execute('''
-                SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
-                FROM saved_results
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            ''', (user_id, limit))
-        rows = c.fetchall()
-        out = []
-        for row in rows:
-            try:
-                constraints = json.loads(row["constraints_json"]) if row["constraints_json"] else []
-            except json.JSONDecodeError:
-                constraints = []
-            try:
-                models = json.loads(row["models_json"]) if row["models_json"] else []
-            except json.JSONDecodeError:
-                models = []
-            try:
-                results = json.loads(row["results_json"]) if row["results_json"] else {}
-            except json.JSONDecodeError:
-                results = {}
-            try:
-                rank_result = json.loads(row["rank_result_json"]) if row["rank_result_json"] else None
-            except json.JSONDecodeError:
-                rank_result = None
-            out.append({
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "industry": row["industry"],
-                "tone": row["tone"],
-                "constraints": constraints,
-                "models": models,
-                "results": results,
-                "rank_result": rank_result,
-            })
-        return out
-    finally:
-        conn.close()
+def check_and_increment_email(user_id: str, plan: str) -> tuple[bool, str | None]:
+    with session_scope() as session:
+        with session.begin():
+            user = get_or_create_user(session, user_id, plan, for_update=True)
+            limit = 10 if "premium" in plan else 0
+            if limit == 0:
+                return False, "Email sending is a Premium feature."
 
-def get_saved_result(user_id, saved_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
-            FROM saved_results
-            WHERE id = ? AND user_id = ?
-        ''', (saved_id, user_id))
-        row = c.fetchone()
-        if not row:
+            today = _current_day()
+            count = user.emails_sent_count
+            if user.emails_last_sent_date != today:
+                count = 0
+                user.emails_sent_count = 0
+                user.emails_last_sent_date = today
+
+            if count >= limit:
+                return False, f"Daily email limit exceeded. Limit: {limit}/day."
+
+            user.emails_sent_count += 1
+            user.emails_last_sent_date = today
+            user.updated_at = _utcnow()
+            return True, None
+
+
+def track_token_usage(user_id: str, tokens: int) -> None:
+    with session_scope() as session:
+        with session.begin():
+            user = _get_usage_user(session, user_id, for_update=True)
+            if user is None:
+                return
+            current_month = _current_month()
+            if user.tokens_last_reset_month != current_month:
+                user.total_tokens = tokens
+                user.tokens_last_reset_month = current_month
+            else:
+                user.total_tokens += tokens
+            user.updated_at = _utcnow()
+
+
+def get_user_stats(user_id: str) -> dict[str, int]:
+    with session_scope() as session:
+        with session.begin():
+            user = _get_usage_user(session, user_id, for_update=True)
+            if not user:
+                return {"total_tokens": 0, "api_calls_count": 0, "emails_sent_count": 0}
+
+            total_tokens = user.total_tokens or 0
+            if _month_changed(user):
+                total_tokens = 0
+
+            now = _utcnow()
+            api_count = user.api_calls_count
+            if (now - user.api_window_start).total_seconds() > 60 and api_count > 0:
+                user.api_calls_count = 0
+                user.api_window_start = now
+                user.updated_at = now
+                api_count = 0
+
+            return {
+                "total_tokens": int(total_tokens),
+                "api_calls_count": int(api_count),
+                "emails_sent_count": int(user.emails_sent_count or 0),
+            }
+
+
+def save_results(user_id: str, industry: str, tone: str, constraints: Any, models: Any, results: Any, rank_result: Any = None):
+    with session_scope() as session:
+        with session.begin():
+            created_at = _utcnow()
+            row = SavedResult(
+                user_id=user_id,
+                created_at=created_at,
+                industry=industry,
+                tone=tone,
+                constraints_json=_normalize_list(constraints),
+                models_json=_normalize_list(models),
+                results_json=_normalize_dict(results),
+                rank_result_json=rank_result if isinstance(rank_result, dict) else rank_result,
+            )
+            session.add(row)
+            session.flush()
+            return {"id": row.id, "created_at": _isoformat(created_at)}
+
+
+def list_saved_results(user_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(SavedResult)
+            .where(SavedResult.user_id == user_id)
+            .order_by(SavedResult.created_at.desc())
+            .limit(limit)
+        ).scalars()
+        return [_serialize_saved_result(row, include_full=False) for row in rows]
+
+
+def list_saved_results_full(user_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        stmt = (
+            select(SavedResult)
+            .where(SavedResult.user_id == user_id)
+            .order_by(SavedResult.created_at.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        rows = session.execute(stmt).scalars()
+        return [_serialize_saved_result(row, include_full=True) for row in rows]
+
+
+def get_saved_result(user_id: str, saved_id: int) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(SavedResult).where(and_(SavedResult.id == saved_id, SavedResult.user_id == user_id))
+        ).scalar_one_or_none()
+        if row is None:
             return None
-        try:
-            constraints = json.loads(row["constraints_json"]) if row["constraints_json"] else []
-        except json.JSONDecodeError:
-            constraints = []
-        try:
-            models = json.loads(row["models_json"]) if row["models_json"] else []
-        except json.JSONDecodeError:
-            models = []
-        try:
-            results = json.loads(row["results_json"]) if row["results_json"] else {}
-        except json.JSONDecodeError:
-            results = {}
-        try:
-            rank_result = json.loads(row["rank_result_json"]) if row["rank_result_json"] else None
-        except json.JSONDecodeError:
-            rank_result = None
-        return {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "industry": row["industry"],
-            "tone": row["tone"],
-            "constraints": constraints,
-            "models": models,
-            "results": results,
-            "rank_result": rank_result,
-        }
-    finally:
-        conn.close()
+        return _serialize_saved_result(row, include_full=True)
 
-def get_saved_rank_report(user_id, run_ids_key):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT *
-            FROM saved_rank_reports
-            WHERE user_id = ? AND run_ids_key = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-        ''', (user_id, run_ids_key))
-        row = c.fetchone()
-        if not row:
+
+def get_saved_rank_report(user_id: str, run_ids_key: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(SavedRankReport)
+            .where(and_(SavedRankReport.user_id == user_id, SavedRankReport.run_ids_key == run_ids_key))
+            .order_by(SavedRankReport.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
             return None
-        report = {}
-        if row["report_json"]:
-            try:
-                report = json.loads(row["report_json"])
-            except json.JSONDecodeError:
-                report = {}
-        run_ids = []
-        if row["run_ids_json"]:
-            try:
-                run_ids = json.loads(row["run_ids_json"])
-            except json.JSONDecodeError:
-                run_ids = []
-        runs_snapshot = []
-        if "runs_json" in row.keys() and row["runs_json"]:
-            try:
-                runs_snapshot = json.loads(row["runs_json"]) or []
-            except json.JSONDecodeError:
-                runs_snapshot = []
-        if not run_ids and runs_snapshot:
-            for run in runs_snapshot:
-                try:
-                    run_ids.append(int(run.get("id")))
-                except (TypeError, ValueError, AttributeError):
-                    continue
-        return {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "run_ids": run_ids,
-            "run_ids_key": row["run_ids_key"],
-            "report": report,
-            "runs_snapshot": runs_snapshot,
-            "model": row["model"],
-        }
-    finally:
-        conn.close()
+        return _serialize_rank_report(row)
 
-def save_rank_report(
-    user_id,
-    run_ids_key,
-    run_ids,
-    report,
-    model,
-    runs_snapshot=None,
-):
-    conn = get_db()
-    try:
-        created_at = datetime.now(timezone.utc).isoformat()
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO saved_rank_reports (
-                user_id, created_at, run_ids_key, run_ids_json, report_json, runs_json, model
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id,
-            created_at,
-            run_ids_key,
-            json.dumps(run_ids or []),
-            json.dumps(report or {}),
-            json.dumps(runs_snapshot or []),
-            model,
-        ))
-        conn.commit()
-        return {"id": c.lastrowid, "created_at": created_at}
-    finally:
-        conn.close()
 
-def get_saved_rank_report_by_id(user_id, report_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT *
-            FROM saved_rank_reports
-            WHERE user_id = ? AND id = ?
-            LIMIT 1
-        ''', (user_id, report_id))
-        row = c.fetchone()
-        if not row:
+def save_rank_report(user_id: str, run_ids_key: str, run_ids: Any, report: Any, model: str, runs_snapshot: Any = None):
+    with session_scope() as session:
+        with session.begin():
+            created_at = _utcnow()
+            row = SavedRankReport(
+                user_id=user_id,
+                created_at=created_at,
+                run_ids_key=run_ids_key,
+                run_ids_json=_normalize_list(run_ids),
+                report_json=_normalize_dict(report),
+                runs_json=_normalize_list(runs_snapshot),
+                model=model,
+            )
+            session.add(row)
+            session.flush()
+            return {"id": row.id, "created_at": _isoformat(created_at)}
+
+
+def get_saved_rank_report_by_id(user_id: str, report_id: int) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(SavedRankReport).where(and_(SavedRankReport.user_id == user_id, SavedRankReport.id == report_id))
+        ).scalar_one_or_none()
+        if row is None:
             return None
-        report = {}
-        if row["report_json"]:
-            try:
-                report = json.loads(row["report_json"])
-            except json.JSONDecodeError:
-                report = {}
-        run_ids = []
-        if row["run_ids_json"]:
-            try:
-                run_ids = json.loads(row["run_ids_json"])
-            except json.JSONDecodeError:
-                run_ids = []
-        runs_snapshot = []
-        if "runs_json" in row.keys() and row["runs_json"]:
-            try:
-                runs_snapshot = json.loads(row["runs_json"]) or []
-            except json.JSONDecodeError:
-                runs_snapshot = []
-        if not run_ids and runs_snapshot:
-            for run in runs_snapshot:
-                try:
-                    run_ids.append(int(run.get("id")))
-                except (TypeError, ValueError, AttributeError):
-                    continue
-        return {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "run_ids": run_ids,
-            "run_ids_key": row["run_ids_key"],
-            "report": report,
-            "runs_snapshot": runs_snapshot,
-            "model": row["model"],
-        }
-    finally:
-        conn.close()
-
-def delete_saved_rank_report(user_id, report_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            DELETE FROM saved_rank_reports
-            WHERE user_id = ? AND id = ?
-        ''', (user_id, report_id))
-        conn.commit()
-        return c.rowcount > 0
-    finally:
-        conn.close()
+        return _serialize_rank_report(row)
 
 
-def delete_all_saved_rank_reports(user_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            DELETE FROM saved_rank_reports
-            WHERE user_id = ?
-        ''', (user_id,))
-        conn.commit()
-        return c.rowcount or 0
-    finally:
-        conn.close()
+def delete_saved_rank_report(user_id: str, report_id: int) -> bool:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                delete(SavedRankReport).where(and_(SavedRankReport.user_id == user_id, SavedRankReport.id == report_id))
+            )
+            return (result.rowcount or 0) > 0
 
 
-def list_saved_rank_reports(user_id, limit=6):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT id, created_at, run_ids_json, report_json, runs_json, model
-            FROM saved_rank_reports
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        ''', (user_id, limit))
-        rows = c.fetchall()
-        out = []
+def delete_all_saved_rank_reports(user_id: str) -> int:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(delete(SavedRankReport).where(SavedRankReport.user_id == user_id))
+            return result.rowcount or 0
+
+
+def list_saved_rank_reports(user_id: str, limit: int = 6) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(SavedRankReport)
+            .where(SavedRankReport.user_id == user_id)
+            .order_by(SavedRankReport.created_at.desc())
+            .limit(limit)
+        ).scalars()
+        out: list[dict[str, Any]] = []
         for row in rows:
-            run_ids = []
-            if row["run_ids_json"]:
-                try:
-                    run_ids = json.loads(row["run_ids_json"])
-                except json.JSONDecodeError:
-                    run_ids = []
-            runs_snapshot = []
-            if "runs_json" in row.keys() and row["runs_json"]:
-                try:
-                    runs_snapshot = json.loads(row["runs_json"]) or []
-                except json.JSONDecodeError:
-                    runs_snapshot = []
-            if not run_ids and runs_snapshot:
-                for run in runs_snapshot:
-                    try:
-                        run_ids.append(int(run.get("id")))
-                    except (TypeError, ValueError, AttributeError):
-                        continue
-            cleaned_run_ids = []
-            for run_id in run_ids:
-                try:
-                    cleaned_run_ids.append(int(run_id))
-                except (TypeError, ValueError):
-                    continue
-            run_ids = cleaned_run_ids
-            report = {}
-            if row["report_json"]:
-                try:
-                    report = json.loads(row["report_json"])
-                except json.JSONDecodeError:
-                    report = {}
+            serialized = _serialize_rank_report(row)
+            report = serialized["report"]
             summary = str(report.get("summary", "") or "")
             ranked_runs = report.get("ranked_runs", []) or []
             top_run_id = None
             if isinstance(ranked_runs, list) and ranked_runs:
                 try:
                     top_run_id = int(ranked_runs[0].get("run_id"))
-                except (TypeError, ValueError):
+                except (AttributeError, TypeError, ValueError):
                     top_run_id = None
-            out.append({
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "run_ids": run_ids,
-                "summary": summary,
-                "top_run_id": top_run_id,
-                "model": row["model"],
-            })
+            out.append(
+                {
+                    "id": serialized["id"],
+                    "created_at": serialized["created_at"],
+                    "run_ids": serialized["run_ids"],
+                    "summary": summary,
+                    "top_run_id": top_run_id,
+                    "model": serialized["model"],
+                }
+            )
         return out
-    finally:
-        conn.close()
 
-def update_rank_report_snapshot(
-    user_id,
-    report_id,
-    runs_snapshot=None,
-):
-    fields = []
-    params = []
-    if runs_snapshot is not None:
-        fields.append("runs_json = ?")
-        params.append(json.dumps(runs_snapshot))
-    if not fields:
+
+def update_rank_report_snapshot(user_id: str, report_id: int, runs_snapshot: Any = None) -> bool:
+    if runs_snapshot is None:
         return False
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute(
-            f'''
-            UPDATE saved_rank_reports
-            SET {", ".join(fields)}
-            WHERE user_id = ? AND id = ?
-            ''',
-            (*params, user_id, report_id),
-        )
-        conn.commit()
-        return c.rowcount > 0
-    finally:
-        conn.close()
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                update(SavedRankReport)
+                .where(and_(SavedRankReport.user_id == user_id, SavedRankReport.id == report_id))
+                .values(runs_json=_normalize_list(runs_snapshot))
+            )
+            return (result.rowcount or 0) > 0
 
-def get_saved_results_by_ids(user_id, ids):
+
+def get_saved_results_by_ids(user_id: str, ids: list[int]) -> list[dict[str, Any]]:
     if not ids:
         return []
-    placeholders = ",".join("?" for _ in ids)
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute(
-            f'''
-            SELECT id, created_at, industry, tone, constraints_json, models_json, results_json, rank_result_json
-            FROM saved_results
-            WHERE user_id = ? AND id IN ({placeholders})
-            ''',
-            (user_id, *ids),
-        )
-        rows = c.fetchall()
-        out = []
-        for row in rows:
-            try:
-                constraints = json.loads(row["constraints_json"]) if row["constraints_json"] else []
-            except json.JSONDecodeError:
-                constraints = []
-            try:
-                models = json.loads(row["models_json"]) if row["models_json"] else []
-            except json.JSONDecodeError:
-                models = []
-            try:
-                results = json.loads(row["results_json"]) if row["results_json"] else {}
-            except json.JSONDecodeError:
-                results = {}
-            try:
-                rank_result = json.loads(row["rank_result_json"]) if row["rank_result_json"] else None
-            except json.JSONDecodeError:
-                rank_result = None
-            out.append({
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "industry": row["industry"],
-                "tone": row["tone"],
-                "constraints": constraints,
-                "models": models,
-                "results": results,
-                "rank_result": rank_result,
-            })
-        return out
-    finally:
-        conn.close()
+    with session_scope() as session:
+        rows = session.execute(
+            select(SavedResult).where(and_(SavedResult.user_id == user_id, SavedResult.id.in_(ids)))
+        ).scalars()
+        by_id = {row.id: _serialize_saved_result(row, include_full=True) for row in rows}
+        return [by_id[result_id] for result_id in ids if result_id in by_id]
 
-def get_saved_comparison(user_id, run_a_id, run_b_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT *
-            FROM saved_comparisons
-            WHERE user_id = ?
-              AND ((run_a_id = ? AND run_b_id = ?) OR (run_a_id = ? AND run_b_id = ?))
-            ORDER BY created_at DESC
-            LIMIT 1
-        ''', (user_id, run_a_id, run_b_id, run_b_id, run_a_id))
-        row = c.fetchone()
-        if not row:
+
+def get_saved_comparison(user_id: str, run_a_id: int, run_b_id: int) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(SavedComparison)
+            .where(
+                and_(
+                    SavedComparison.user_id == user_id,
+                    or_(
+                        and_(SavedComparison.run_a_id == run_a_id, SavedComparison.run_b_id == run_b_id),
+                        and_(SavedComparison.run_a_id == run_b_id, SavedComparison.run_b_id == run_a_id),
+                    ),
+                )
+            )
+            .order_by(SavedComparison.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
             return None
-        comparison = {}
-        if row["comparison_json"]:
-            try:
-                comparison = json.loads(row["comparison_json"])
-            except json.JSONDecodeError:
-                comparison = {}
-        winner_run_id = row["winner_run_id"]
+        payload = _serialize_comparison(row)
+        winner_run_id = row.winner_run_id
         if winner_run_id == run_a_id:
             winner = "A"
         elif winner_run_id == run_b_id:
             winner = "B"
         else:
             winner = "tie"
-        comparison["winner"] = winner
-        return {
-            "comparison_id": row["id"],
-            "created_at": row["created_at"],
-            "run_a_id": row["run_a_id"],
-            "run_b_id": row["run_b_id"],
-            "winner_run_id": winner_run_id,
-            "comparison": comparison,
-            "cached": True,
-        }
-    finally:
-        conn.close()
+        payload["comparison"]["winner"] = winner
+        return payload
 
-def get_saved_comparison_by_id(user_id, comparison_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT *
-            FROM saved_comparisons
-            WHERE user_id = ? AND id = ?
-            LIMIT 1
-        ''', (user_id, comparison_id))
-        row = c.fetchone()
-        if not row:
+
+def get_saved_comparison_by_id(user_id: str, comparison_id: int) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(SavedComparison).where(
+                and_(SavedComparison.user_id == user_id, SavedComparison.id == comparison_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
             return None
-        comparison = {}
-        if row["comparison_json"]:
-            try:
-                comparison = json.loads(row["comparison_json"])
-            except json.JSONDecodeError:
-                comparison = {}
-        return {
-            "comparison_id": row["id"],
-            "created_at": row["created_at"],
-            "run_a_id": row["run_a_id"],
-            "run_b_id": row["run_b_id"],
-            "winner_run_id": row["winner_run_id"],
-            "comparison": comparison,
-            "cached": True,
-        }
-    finally:
-        conn.close()
-
-def delete_saved_comparison(user_id, comparison_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            DELETE FROM saved_comparisons
-            WHERE user_id = ? AND id = ?
-        ''', (user_id, comparison_id))
-        conn.commit()
-        return c.rowcount > 0
-    finally:
-        conn.close()
+        return _serialize_comparison(row)
 
 
-def delete_all_saved_comparisons(user_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            DELETE FROM saved_comparisons
-            WHERE user_id = ?
-        ''', (user_id,))
-        conn.commit()
-        return c.rowcount or 0
-    finally:
-        conn.close()
+def delete_saved_comparison(user_id: str, comparison_id: int) -> bool:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                delete(SavedComparison).where(
+                    and_(SavedComparison.user_id == user_id, SavedComparison.id == comparison_id)
+                )
+            )
+            return (result.rowcount or 0) > 0
 
 
-def save_comparison(user_id, run_a_id, run_b_id, winner_run_id, comparison, model):
-    conn = get_db()
-    try:
-        created_at = datetime.now(timezone.utc).isoformat()
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO saved_comparisons (
-                user_id, created_at, run_a_id, run_b_id, winner_run_id, comparison_json, model
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id,
-            created_at,
-            run_a_id,
-            run_b_id,
-            winner_run_id,
-            json.dumps(comparison or {}),
-            model,
-        ))
-        conn.commit()
-        return {"id": c.lastrowid, "created_at": created_at}
-    finally:
-        conn.close()
+def delete_all_saved_comparisons(user_id: str) -> int:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(delete(SavedComparison).where(SavedComparison.user_id == user_id))
+            return result.rowcount or 0
 
-def list_saved_comparisons(user_id, limit=8):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT id, created_at, run_a_id, run_b_id, winner_run_id, comparison_json
-            FROM saved_comparisons
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-        ''', (user_id, limit))
-        rows = c.fetchall()
-        out = []
+
+def save_comparison(user_id: str, run_a_id: int, run_b_id: int, winner_run_id: int | None, comparison: Any, model: str):
+    with session_scope() as session:
+        with session.begin():
+            created_at = _utcnow()
+            row = SavedComparison(
+                user_id=user_id,
+                created_at=created_at,
+                run_a_id=run_a_id,
+                run_b_id=run_b_id,
+                winner_run_id=winner_run_id,
+                comparison_json=_normalize_dict(comparison),
+                model=model,
+            )
+            session.add(row)
+            session.flush()
+            return {"id": row.id, "created_at": _isoformat(created_at)}
+
+
+def list_saved_comparisons(user_id: str, limit: int = 8) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(SavedComparison)
+            .where(SavedComparison.user_id == user_id)
+            .order_by(SavedComparison.created_at.desc())
+            .limit(limit)
+        ).scalars()
+        out: list[dict[str, Any]] = []
         for row in rows:
-            top_outputs = None
-            if row["comparison_json"]:
-                try:
-                    comparison = json.loads(row["comparison_json"])
-                    top_outputs = comparison.get("top_outputs")
-                except json.JSONDecodeError:
-                    top_outputs = None
-            out.append({
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "run_a_id": row["run_a_id"],
-                "run_b_id": row["run_b_id"],
-                "winner_run_id": row["winner_run_id"],
-                "top_outputs": top_outputs,
-            })
+            comparison = _normalize_dict(row.comparison_json)
+            out.append(
+                {
+                    "id": row.id,
+                    "created_at": _isoformat(row.created_at),
+                    "run_a_id": row.run_a_id,
+                    "run_b_id": row.run_b_id,
+                    "winner_run_id": row.winner_run_id,
+                    "top_outputs": comparison.get("top_outputs"),
+                }
+            )
         return out
-    finally:
-        conn.close()
-
-def delete_saved_result(user_id, saved_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            DELETE FROM saved_results
-            WHERE id = ? AND user_id = ?
-        ''', (saved_id, user_id))
-        conn.commit()
-        return c.rowcount > 0
-    finally:
-        conn.close()
 
 
-def delete_all_saved_results(user_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            DELETE FROM saved_results
-            WHERE user_id = ?
-        ''', (user_id,))
-        conn.commit()
-        return c.rowcount or 0
-    finally:
-        conn.close()
+def delete_saved_result(user_id: str, saved_id: int) -> bool:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                delete(SavedResult).where(and_(SavedResult.id == saved_id, SavedResult.user_id == user_id))
+            )
+            return (result.rowcount or 0) > 0
 
 
-def update_saved_result_rank(user_id, saved_id, rank_result):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            UPDATE saved_results
-            SET rank_result_json = ?
-            WHERE id = ? AND user_id = ?
-        ''', (json.dumps(rank_result or {}), saved_id, user_id))
-        conn.commit()
-        return c.rowcount > 0
-    finally:
-        conn.close()
+def delete_all_saved_results(user_id: str) -> int:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(delete(SavedResult).where(SavedResult.user_id == user_id))
+            return result.rowcount or 0
 
-def get_saved_results_usage_bytes(user_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute('''
-            SELECT COALESCE(SUM(
-                LENGTH(COALESCE(industry, '')) +
-                LENGTH(COALESCE(tone, '')) +
-                LENGTH(COALESCE(constraints_json, '')) +
-                LENGTH(COALESCE(models_json, '')) +
-                LENGTH(COALESCE(results_json, '')) +
-                LENGTH(COALESCE(rank_result_json, ''))
-            ), 0) AS total
-            FROM saved_results
-            WHERE user_id = ?
-        ''', (user_id,))
-        row = c.fetchone()
-        return int(row["total"] or 0)
-    finally:
-        conn.close()
+
+def update_saved_result_rank(user_id: str, saved_id: int, rank_result: Any) -> bool:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                update(SavedResult)
+                .where(and_(SavedResult.id == saved_id, SavedResult.user_id == user_id))
+                .values(rank_result_json=rank_result if isinstance(rank_result, dict) else {})
+            )
+            return (result.rowcount or 0) > 0
+
+
+def get_saved_results_usage_bytes(user_id: str) -> int:
+    with session_scope() as session:
+        total_expr = func.coalesce(
+            func.sum(
+                func.length(func.coalesce(SavedResult.industry, ""))
+                + func.length(func.coalesce(SavedResult.tone, ""))
+                + func.length(func.coalesce(cast(SavedResult.constraints_json, Text), ""))
+                + func.length(func.coalesce(cast(SavedResult.models_json, Text), ""))
+                + func.length(func.coalesce(cast(SavedResult.results_json, Text), ""))
+                + func.length(func.coalesce(cast(SavedResult.rank_result_json, Text), ""))
+            ),
+            0,
+        )
+        total = session.execute(select(total_expr).where(SavedResult.user_id == user_id)).scalar_one()
+        return int(total or 0)
 
 
 def save_stakeholder_report(
-    user_id,
-    source_type,
-    source_id,
-    scenario_profile,
-    horizon_months,
-    currency,
-    region,
-    dossier,
-    assumptions,
-    model=None,
+    user_id: str,
+    source_type: str,
+    source_id: int,
+    scenario_profile: str,
+    horizon_months: int,
+    currency: str,
+    region: str,
+    dossier: Any,
+    assumptions: Any,
+    model: str | None = None,
 ):
-    conn = get_db()
-    try:
-        created_at = datetime.now(timezone.utc).isoformat()
-        c = conn.cursor()
-        c.execute(
-            '''
-            INSERT INTO saved_stakeholder_reports (
-                user_id, created_at, source_type, source_id, scenario_profile, horizon_months,
-                currency, region, dossier_json, assumptions_json, model
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                user_id,
-                created_at,
-                source_type,
-                source_id,
-                scenario_profile,
-                horizon_months,
-                currency,
-                region,
-                json.dumps(dossier or {}),
-                json.dumps(assumptions or []),
-                model,
-            ),
-        )
-        conn.commit()
-        return {"id": c.lastrowid, "created_at": created_at}
-    finally:
-        conn.close()
+    with session_scope() as session:
+        with session.begin():
+            created_at = _utcnow()
+            row = SavedStakeholderReport(
+                user_id=user_id,
+                created_at=created_at,
+                source_type=source_type,
+                source_id=source_id,
+                scenario_profile=scenario_profile,
+                horizon_months=horizon_months,
+                currency=currency,
+                region=region,
+                dossier_json=_normalize_dict(dossier),
+                assumptions_json=_normalize_list(assumptions),
+                model=model,
+            )
+            session.add(row)
+            session.flush()
+            return {"id": row.id, "created_at": _isoformat(created_at)}
 
 
-def get_saved_stakeholder_report_by_id(user_id, report_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute(
-            '''
-            SELECT *
-            FROM saved_stakeholder_reports
-            WHERE user_id = ? AND id = ?
-            LIMIT 1
-            ''',
-            (user_id, report_id),
-        )
-        row = c.fetchone()
-        if not row:
+def get_saved_stakeholder_report_by_id(user_id: str, report_id: int) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(SavedStakeholderReport).where(
+                and_(SavedStakeholderReport.user_id == user_id, SavedStakeholderReport.id == report_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
             return None
-        dossier = {}
-        assumptions = []
-        if row["dossier_json"]:
-            try:
-                dossier = json.loads(row["dossier_json"])
-            except json.JSONDecodeError:
-                dossier = {}
-        if row["assumptions_json"]:
-            try:
-                assumptions = json.loads(row["assumptions_json"])
-            except json.JSONDecodeError:
-                assumptions = []
-        return {
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "source_type": row["source_type"],
-            "source_id": row["source_id"],
-            "scenario_profile": row["scenario_profile"],
-            "horizon_months": row["horizon_months"],
-            "currency": row["currency"],
-            "region": row["region"],
-            "model": row["model"],
-            "assumptions": assumptions,
-            "dossier": dossier,
-        }
-    finally:
-        conn.close()
+        return _serialize_stakeholder_report(row)
 
 
-def list_saved_stakeholder_reports(user_id, limit=6):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute(
-            '''
-            SELECT id, created_at, source_type, source_id, scenario_profile, horizon_months, currency, region, model, dossier_json
-            FROM saved_stakeholder_reports
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            ''',
-            (user_id, limit),
-        )
-        rows = c.fetchall()
-        out = []
+def list_saved_stakeholder_reports(user_id: str, limit: int = 6) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(SavedStakeholderReport)
+            .where(SavedStakeholderReport.user_id == user_id)
+            .order_by(SavedStakeholderReport.created_at.desc())
+            .limit(limit)
+        ).scalars()
+        out: list[dict[str, Any]] = []
         for row in rows:
+            dossier = _normalize_dict(row.dossier_json)
             title = "Untitled execution plan"
             recommendation = "conditional_go"
-            if row["dossier_json"]:
-                try:
-                    dossier = json.loads(row["dossier_json"]) if row["dossier_json"] else {}
-                except json.JSONDecodeError:
-                    dossier = {}
-                decision = dossier.get("decision") if isinstance(dossier.get("decision"), dict) else {}
-                winner = decision.get("winner") if isinstance(decision.get("winner"), dict) else {}
-                winner_title = str(winner.get("title") or "").strip()
-                if winner_title:
-                    title = winner_title
-                raw_recommendation = str(decision.get("go_no_go") or "").strip().lower()
-                if raw_recommendation in {"go", "conditional_go", "no_go"}:
-                    recommendation = raw_recommendation
+            decision = dossier.get("decision") if isinstance(dossier.get("decision"), dict) else {}
+            winner = decision.get("winner") if isinstance(decision.get("winner"), dict) else {}
+            winner_title = str(winner.get("title") or "").strip()
+            if winner_title:
+                title = winner_title
+            raw_recommendation = str(decision.get("go_no_go") or "").strip().lower()
+            if raw_recommendation in {"go", "conditional_go", "no_go"}:
+                recommendation = raw_recommendation
             out.append(
                 {
-                    "id": row["id"],
-                    "created_at": row["created_at"],
-                    "source_type": row["source_type"],
-                    "source_id": row["source_id"],
-                    "scenario_profile": row["scenario_profile"],
-                    "horizon_months": row["horizon_months"],
-                    "currency": row["currency"],
-                    "region": row["region"],
-                    "model": row["model"],
+                    "id": row.id,
+                    "created_at": _isoformat(row.created_at),
+                    "source_type": row.source_type,
+                    "source_id": row.source_id,
+                    "scenario_profile": row.scenario_profile,
+                    "horizon_months": row.horizon_months,
+                    "currency": row.currency,
+                    "region": row.region,
+                    "model": row.model,
                     "title": title,
                     "recommendation": recommendation,
                 }
             )
         return out
-    finally:
-        conn.close()
 
 
-def delete_saved_stakeholder_report(user_id, report_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute(
-            '''
-            DELETE FROM saved_stakeholder_reports
-            WHERE user_id = ? AND id = ?
-            ''',
-            (user_id, report_id),
-        )
-        conn.commit()
-        return c.rowcount > 0
-    finally:
-        conn.close()
+def delete_saved_stakeholder_report(user_id: str, report_id: int) -> bool:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                delete(SavedStakeholderReport).where(
+                    and_(SavedStakeholderReport.user_id == user_id, SavedStakeholderReport.id == report_id)
+                )
+            )
+            return (result.rowcount or 0) > 0
 
 
-def delete_all_saved_stakeholder_reports(user_id):
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute(
-            '''
-            DELETE FROM saved_stakeholder_reports
-            WHERE user_id = ?
-            ''',
-            (user_id,),
-        )
-        conn.commit()
-        return c.rowcount or 0
-    finally:
-        conn.close()
+def delete_all_saved_stakeholder_reports(user_id: str) -> int:
+    with session_scope() as session:
+        with session.begin():
+            result = session.execute(
+                delete(SavedStakeholderReport).where(SavedStakeholderReport.user_id == user_id)
+            )
+            return result.rowcount or 0

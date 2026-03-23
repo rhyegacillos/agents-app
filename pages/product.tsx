@@ -8972,10 +8972,6 @@ function IdeaGenerator({
                       </div>
                     ) : null}
 
-                    <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                      Source: {stakeholderReport.source_type} #{stakeholderReport.source_id} · Model: {stakeholderReport.model || "N/A"} ·
-                      Generator: {stakeholderReport.dossier?.provenance?.generator_version || "N/A"}
-                    </div>
                   </div>
                 )}
 

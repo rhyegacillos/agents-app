@@ -1,46 +1,109 @@
 # Security + Privacy Overview
 
-## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+This document summarizes the current security and data-handling posture after the PostgreSQL migration.
 
-This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+## 1. Data Handling
 
-- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
-- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
-- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
-- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
-- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
-- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
-- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
-- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
-- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
-- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
-- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+Stored application data includes:
 
+- industry, tone, constraints, persona-related selections
+- generated model outputs
+- per-run rankings
+- compare results
+- decision summary reports
+- execution plans / stakeholder dossiers
+- usage counters for tokens, API calls, and email sends
 
-## Data Handling
-- Stored data includes: industry, persona, constraints, generated outputs, rankings, comparisons, and decision summaries.
-- Email addresses are used only for sending reports when requested.
-- Usage metrics (tokens, API calls, emails) are tracked per user.
+Email addresses are used only when a user requests report delivery.
 
-## Data Retention
-- Saved runs and reports are persisted in SQLite until deleted by the user.
-- No automated purge is implemented.
+## 2. Current Storage Model
 
-## Third-Party Services
-- **Clerk**: authentication and user identity.
-- **LLM Providers**: OpenAI, Google Gemini, DeepSeek, Grok.
-- **Resend**: email delivery.
+Persistent application data is stored in PostgreSQL.
 
-## Email Policy
-- Emails are transactional and sent only when the user requests delivery.
-- Sender uses a no-reply address by default.
-- Reports are attached as PDFs.
+Current intended deployment shape:
 
-## Storage Security
-- SQLite database stored in `/app/data/usage.db` inside the container volume.
-- Access is controlled by server-side auth (Clerk token required for API requests).
+- local development -> local PostgreSQL
+- AWS deployment -> Amazon RDS for PostgreSQL
 
-## Recommendations
-- Use HTTPS in production.
-- Store secrets only in environment variables.
-- Restrict container access and rotate API keys regularly.
+Security implications of the migration:
+
+- sensitive/runtime data is no longer tied to a local SQLite file inside the container
+- production durability comes from managed database infrastructure
+- schema changes are versioned and reviewable via Alembic
+
+## 3. Data Retention
+
+Artifact retention remains product-driven:
+
+- saved runs and reports remain until deleted by the user
+- no automated purge policy is currently implemented in the app
+
+From a storage standpoint, those records now live in Postgres tables rather than SQLite text rows.
+
+## 4. Auth and Request Protection
+
+Authentication stack:
+
+- Clerk for identity
+- JWT verification against JWKS in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py)
+
+Request access controls:
+
+- protected routes require a valid Clerk bearer token
+- host allowlist middleware rejects unexpected hosts
+- `/health` bypasses host allowlist checks so App Runner health probes can succeed
+
+## 5. Secrets Handling
+
+Application/provider secrets are environment-driven.
+
+Current intended production path:
+
+- runtime secret values are stored in AWS Secrets Manager
+- App Runner receives secret references, not hardcoded values in source
+- RDS master password is AWS-managed in Secrets Manager
+
+This is a material improvement over mixing operational config into ad hoc local runtime state.
+
+## 6. Storage Security Considerations
+
+Current production assumptions:
+
+- RDS is deployed in private subnets
+- App Runner reaches RDS through a VPC connector
+- public traffic reaches only the App Runner service ingress
+
+Important consequence:
+
+- database access is not expected directly from the public internet
+
+## 7. Third-Party Services
+
+- Clerk: authentication and identity
+- OpenAI: model provider
+- Google Gemini: model provider
+- DeepSeek: model provider
+- Grok / xAI: model provider
+- Resend: transactional email
+- AWS:
+  - App Runner
+  - RDS PostgreSQL
+  - ECR
+  - Secrets Manager
+  - Route 53
+  - CloudWatch
+
+## 8. Email Policy
+
+- emails are transactional
+- delivery happens only on explicit user action
+- reports are attached as PDFs when supported by the route
+- sender defaults to a no-reply address unless overridden by `EMAIL_FROM`
+
+## 9. Recommendations
+
+- keep `ALLOWED_HOSTS` restricted to intended domains
+- rotate provider and email API keys periodically
+- prefer Secrets Manager or equivalent secret injection in production
+- treat Alembic revisions as part of the security/change-control process for database evolution
+- use HTTPS-only public access in production

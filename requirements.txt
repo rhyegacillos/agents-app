@@ -7,3 +7,6 @@ weasyprint
 google-genai
 python-dotenv
 pyjwt
+sqlalchemy
+alembic
+psycopg[binary]

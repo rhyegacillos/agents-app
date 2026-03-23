@@ -1,142 +1,220 @@
 # Data Model / Schema
 
-Database: SQLite
-Path: `data/usage.db` (persisted via Docker volume `/app/data`)
+Current primary database:
 
-## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+- PostgreSQL
 
-This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+Schema ownership:
 
-- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
-- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
-- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
-- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
-- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
-- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
-- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
-- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
-- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
-- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
-- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+- SQLAlchemy models in [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py)
+- Alembic revisions in [alembic/versions](/home/repos/ideagen-saas-aws/alembic/versions)
 
+Production hosting target:
 
-## Tables
+- Amazon RDS for PostgreSQL
 
-### user_usage
-Stores usage counters and plan status per user.
+Local development target:
 
-Columns:
-- `user_id` TEXT PRIMARY KEY
-- `plan` TEXT
-- `total_tokens` INTEGER
-- `api_calls_count` INTEGER
-- `api_window_start` REAL
-- `emails_sent_count` INTEGER
-- `emails_last_sent_date` TEXT
-- `tokens_last_reset_date` TEXT
+- local PostgreSQL via Docker Compose
 
-Relationships:
-- One row per user (keyed by Clerk `sub`).
+## 1. Schema Overview
 
----
+The application stores five core persistent entities:
 
-### saved_results
-Stores generated runs for reuse.
+- `user_usage`
+- `saved_results`
+- `saved_rank_reports`
+- `saved_comparisons`
+- `saved_stakeholder_reports`
+
+The migration from SQLite to PostgreSQL changed several storage details:
+
+- JSON payloads are now `JSONB`
+- timestamps are stored as timezone-aware datetimes
+- primary keys on saved artifacts use Postgres identity columns
+- dominant access patterns have explicit indexes
+- schema evolution is versioned with Alembic instead of startup-time `ALTER TABLE` logic
+
+## 2. Tables
+
+### 2.1 `user_usage`
+
+Stores usage counters and plan state per authenticated user.
 
 Columns:
-- `id` INTEGER PRIMARY KEY AUTOINCREMENT
-- `user_id` TEXT
-- `created_at` TEXT
-- `industry` TEXT
-- `tone` TEXT
-- `constraints_json` TEXT
-- `models_json` TEXT
-- `results_json` TEXT
-- `rank_result_json` TEXT
+
+- `user_id` `text` primary key
+- `plan` `text`
+- `total_tokens` `bigint`
+- `api_calls_count` `integer`
+- `api_window_start` `timestamptz`
+- `emails_sent_count` `integer`
+- `emails_last_sent_date` `date`
+- `tokens_last_reset_month` `text`
+- `created_at` `timestamptz`
+- `updated_at` `timestamptz`
+
+Constraints:
+
+- non-negative checks on token, API-call, and email counters
 
 Relationships:
-- Many rows per user.
-- Referenced by `saved_comparisons.run_a_id` and `saved_comparisons.run_b_id`.
-- Referenced by `saved_rank_reports.run_ids_json`.
 
----
+- one row per Clerk user subject
 
-### saved_rank_reports
-Stores Decision Summary Reports (ranked runs + summary).
+### 2.2 `saved_results`
+
+Stores generated multi-model runs.
 
 Columns:
-- `id` INTEGER PRIMARY KEY AUTOINCREMENT
-- `user_id` TEXT
-- `created_at` TEXT
-- `run_ids_key` TEXT
-- `run_ids_json` TEXT
-- `report_json` TEXT
-- `runs_json` TEXT (snapshot of runs at report time)
-- `model` TEXT
+
+- `id` `bigint` identity primary key
+- `user_id` `text`
+- `created_at` `timestamptz`
+- `industry` `text`
+- `tone` `text`
+- `constraints_json` `jsonb`
+- `models_json` `jsonb`
+- `results_json` `jsonb`
+- `rank_result_json` `jsonb`
+
+Indexes:
+
+- `(user_id, created_at)`
+- `(user_id, id)`
 
 Relationships:
-- `run_ids_json` references `saved_results.id` values.
 
----
+- referenced logically by comparisons, rank reports, and stakeholder reports
 
-### saved_comparisons
-Stores Compare Results (Diff Insight) output.
+### 2.3 `saved_rank_reports`
+
+Stores decision summary reports derived from one or more saved runs.
 
 Columns:
-- `id` INTEGER PRIMARY KEY AUTOINCREMENT
-- `user_id` TEXT
-- `created_at` TEXT
-- `run_a_id` INTEGER
-- `run_b_id` INTEGER
-- `winner_run_id` INTEGER
-- `comparison_json` TEXT
-- `model` TEXT
 
-Relationships:
-- `run_a_id` and `run_b_id` reference `saved_results.id`.
+- `id` `bigint` identity primary key
+- `user_id` `text`
+- `created_at` `timestamptz`
+- `run_ids_key` `text`
+- `run_ids_json` `jsonb`
+- `report_json` `jsonb`
+- `runs_json` `jsonb`
+- `model` `text`
 
----
+Indexes:
 
-### saved_stakeholder_reports
-Stores Stakeholder Execution Dossiers (JSON artifact, no user input mode).
+- `(user_id, created_at)`
+- `(user_id, run_ids_key, created_at)`
+
+Notes:
+
+- `runs_json` is a snapshot, not just a pointer list
+- this is intentional so reports still render after source runs are changed or deleted
+
+### 2.4 `saved_comparisons`
+
+Stores compare-result artifacts.
 
 Columns:
-- `id` INTEGER PRIMARY KEY AUTOINCREMENT
-- `user_id` TEXT
-- `created_at` TEXT
-- `source_type` TEXT (`decision_report`, `compare_result`, `saved_run`)
-- `source_id` INTEGER
-- `scenario_profile` TEXT (`conservative`, `base`, `aggressive`, `all`)
-- `horizon_months` INTEGER
-- `currency` TEXT (current: `USD`)
-- `region` TEXT (current: `US`)
-- `dossier_json` TEXT
-- `assumptions_json` TEXT
-- `model` TEXT
 
-Relationships:
-- `source_type/source_id` references one of:
-  - `saved_rank_reports.id`
-  - `saved_comparisons.id`
-  - `saved_results.id`
-- Relationship integrity is enforced in application logic.
+- `id` `bigint` identity primary key
+- `user_id` `text`
+- `created_at` `timestamptz`
+- `run_a_id` `bigint`
+- `run_b_id` `bigint`
+- `winner_run_id` `bigint`
+- `comparison_json` `jsonb`
+- `model` `text`
 
-Execution Plan payload conventions (stored inside `dossier_json`):
-- `proposal_disclaimer`: marks report as benchmark-grounded estimate.
-- `sensitivity_analysis`: ARPU / conversion / OpEx stress-test results.
-- `decision_support`: gate status, required actions, and profitability recovery plan.
-- `provenance.finance_mode`: `grounded_v2` (default) or `llm_v1`.
-- `provenance.financials_grounded`: boolean indicating deterministic finance application.
+Indexes:
 
----
+- `(user_id, created_at)`
+- `(user_id, run_a_id, run_b_id, created_at)`
 
-## Migrations / Alterations
-Applied at startup in `init_db()`:
-- Add `tokens_last_reset_date` to `user_usage`.
-- Add `rank_result_json` to `saved_results` (if missing).
-- Add `runs_json` to `saved_rank_reports` (if missing).
+Notes:
 
-## Notes
-- JSON fields are stored as stringified JSON and parsed in `api/db.py`.
-- There are no foreign key constraints; relationships are managed in application logic.
-- `model` in `saved_stakeholder_reports` records the narrative model used; finance values may still be deterministic via `grounded_v2`.
+- comparison caching still uses app-level logic keyed on the compared run pair
+
+### 2.5 `saved_stakeholder_reports`
+
+Stores Execution Plan / stakeholder dossier artifacts.
+
+Columns:
+
+- `id` `bigint` identity primary key
+- `user_id` `text`
+- `created_at` `timestamptz`
+- `source_type` `text`
+- `source_id` `bigint`
+- `scenario_profile` `text`
+- `horizon_months` `integer`
+- `currency` `text`
+- `region` `text`
+- `dossier_json` `jsonb`
+- `assumptions_json` `jsonb`
+- `model` `text`
+
+Constraints:
+
+- `source_type` limited to `decision_report`, `compare_result`, `saved_run`
+
+Indexes:
+
+- `(user_id, created_at)`
+- `(user_id, source_type, source_id, created_at)`
+
+Notes:
+
+- `model` records the narrative-generation model used for the report
+- the finance sections may still be deterministic even when `model` is present
+
+## 3. Relationship Strategy
+
+The schema still uses application-managed relationships for cross-artifact references.
+
+That means:
+
+- the app resolves `source_type/source_id`
+- the app resolves `run_ids_json`
+- some foreign-key-like guarantees remain enforced in application logic rather than relational constraints
+
+This is deliberate because the artifacts are JSON-heavy and snapshot-oriented.
+
+## 4. JSON Payload Conventions
+
+The migration kept the same artifact concepts while changing storage from stringified JSON to native `JSONB`.
+
+Examples:
+
+- generated results payloads
+- compare report payloads
+- rank report payloads
+- execution plan dossiers
+- assumptions snapshots
+
+Practical benefits:
+
+- no repeated JSON serialization/deserialization around storage boundaries
+- simpler querying and validation
+- fewer string-decoding edge cases compared with the old SQLite text fields
+
+## 5. Migration and Evolution
+
+Schema changes now belong in Alembic revisions.
+
+Current operational rule:
+
+- do not modify production schema via ad hoc startup DDL
+- create a revision
+- apply with `alembic upgrade head`
+
+The container startup wrapper runs Alembic automatically in the deployed container, but local direct backend runs still require the developer to run Alembic manually first.
+
+## 6. Data Import Path
+
+The repo includes a SQLite-to-Postgres import tool for historical data migration:
+
+- [scripts/import_sqlite_to_postgres.py](/home/repos/ideagen-saas-aws/scripts/import_sqlite_to_postgres.py)
+
+That tool exists for one-time migration/import scenarios. The application itself should now read and write only through PostgreSQL in normal operation.
