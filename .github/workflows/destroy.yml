@@ -6,7 +6,7 @@ on:
       environment:
         description: "Environment to destroy"
         required: true
-        default: "dev"
+        default: "prod"
         type: choice
         options:
           - dev
