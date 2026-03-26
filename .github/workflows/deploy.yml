@@ -8,6 +8,11 @@ on:
         required: false
         default: "prod"
         type: string
+      github_environment:
+        description: "GitHub environment providing environment-scoped secrets"
+        required: false
+        default: "prod"
+        type: string
   workflow_dispatch:
     inputs:
       environment:
@@ -19,6 +24,11 @@ on:
           - dev
           - test
           - prod
+      github_environment:
+        description: "GitHub environment providing environment-scoped secrets"
+        required: false
+        default: "prod"
+        type: string
 
 permissions:
   id-token: write
@@ -27,7 +37,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'prod' }}
+    environment: ${{ inputs.github_environment || inputs.environment || 'prod' }}
     services:
       postgres:
         image: postgres:16

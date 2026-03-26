@@ -105,4 +105,5 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: prod
+      github_environment: ideagen-prod
     secrets: inherit
