@@ -46,6 +46,7 @@ jobs:
     env:
       DEPLOY_ENV: ${{ inputs.environment || 'prod' }}
       TFVARS_FILE: terraform/${{ inputs.environment || 'prod' }}.tfvars
+      TFVARS_NAME: ${{ inputs.environment || 'prod' }}.tfvars
       APP_ENV: local
       DATABASE_URL_LOCAL: postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_test
       TF_VAR_next_public_clerk_publishable_key: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
@@ -158,7 +159,7 @@ jobs:
             echo "Managed App Runner already exists in Terraform state. Skipping bootstrap apply."
           else
             echo "First deploy detected. Bootstrapping prerequisite infrastructure without App Runner."
-            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_FILE}" \
+            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_NAME}" \
               -target=aws_vpc.main \
               -target=aws_internet_gateway.main \
               -target=aws_subnet.public \
@@ -253,11 +254,11 @@ jobs:
             ./scripts/update_existing_app_runner_service.sh --terraform-dir terraform --tfvars-file "${TFVARS_FILE}" --image-tag latest
           else
             echo "No existing App Runner ARN configured. Creating or updating managed service."
-            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_FILE}" \
+            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_NAME}" \
               -var="app_runner_enabled=true"
             service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn)"
             service_url="$(terraform -chdir=terraform output -raw app_runner_service_url)"
-            custom_domain="$(terraform -chdir=terraform console -var-file="${TFVARS_FILE}" <<< 'trimspace(var.app_runner_custom_domain)' | sed 's/^"//; s/"$//')"
+            custom_domain="$(terraform -chdir=terraform console -var-file="${TFVARS_NAME}" <<< 'trimspace(var.app_runner_custom_domain)' | sed 's/^"//; s/"$//')"
             custom_domain_dns_target="$(terraform -chdir=terraform output -raw app_runner_custom_domain_dns_target 2>/dev/null || true)"
             custom_domain_status="$(terraform -chdir=terraform output -raw app_runner_custom_domain_status 2>/dev/null || true)"
             custom_domain_validation_records="$(terraform -chdir=terraform output -json app_runner_custom_domain_validation_records 2>/dev/null || echo '[]')"
