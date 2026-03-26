@@ -43,9 +43,6 @@ jobs:
       TFVARS_FILE: terraform/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}.tfvars
       APP_ENV: local
       DATABASE_URL_LOCAL: postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_test
-      TF_VAR_project_name: ${{ vars.PROJECT_NAME }}
-      TF_VAR_aws_region: ${{ vars.DEFAULT_AWS_REGION }}
-      TF_VAR_allowed_hosts: ${{ vars.ALLOWED_HOSTS }}
       TF_VAR_next_public_clerk_publishable_key: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
       TF_VAR_clerk_jwks_url: ${{ secrets.CLERK_JWKS_URL }}
       TF_VAR_gemini_api_url: ${{ secrets.GEMINI_API_URL }}
@@ -81,21 +78,31 @@ jobs:
           echo "::endgroup::"
 
       - name: Validate environment var-file
+        id: tfvars_meta
         run: |
           echo "::group::Validate environment var-file"
           echo "Deploy environment: ${DEPLOY_ENV}"
           echo "Terraform var-file: ${TFVARS_FILE}"
+          chmod +x scripts/read_tfvars_value.sh
           test -f "${TFVARS_FILE}"
-          tfvars_env="$(awk -F= '/^[[:space:]]*environment[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          tfvars_env="$(./scripts/read_tfvars_value.sh "${TFVARS_FILE}" environment)"
+          tfvars_project_name="$(./scripts/read_tfvars_value.sh "${TFVARS_FILE}" project_name)"
+          tfvars_aws_region="$(./scripts/read_tfvars_value.sh "${TFVARS_FILE}" aws_region)"
           echo "Var-file environment: ${tfvars_env}"
+          echo "Var-file project_name: ${tfvars_project_name}"
+          echo "Var-file aws_region: ${tfvars_aws_region}"
           test "${tfvars_env}" = "${DEPLOY_ENV}"
+          test -n "${tfvars_project_name}"
+          test -n "${tfvars_aws_region}"
+          echo "project_name=${tfvars_project_name}" >> "${GITHUB_OUTPUT}"
+          echo "aws_region=${tfvars_aws_region}" >> "${GITHUB_OUTPUT}"
           echo "::endgroup::"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.DEFAULT_AWS_REGION }}
+          aws-region: ${{ steps.tfvars_meta.outputs.aws_region }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -106,12 +113,12 @@ jobs:
         id: tf_backend
         run: |
           echo "::group::Bootstrap Terraform backend"
-          echo "Project: ${{ vars.PROJECT_NAME }}"
-          echo "Region: ${{ vars.DEFAULT_AWS_REGION }}"
+          echo "Project: ${{ steps.tfvars_meta.outputs.project_name }}"
+          echo "Region: ${{ steps.tfvars_meta.outputs.aws_region }}"
           chmod +x scripts/bootstrap_tf_backend.sh
           ./scripts/bootstrap_tf_backend.sh \
-            --project-name "${{ vars.PROJECT_NAME }}" \
-            --region "${{ vars.DEFAULT_AWS_REGION }}" \
+            --project-name "${{ steps.tfvars_meta.outputs.project_name }}" \
+            --region "${{ steps.tfvars_meta.outputs.aws_region }}" \
             --github-output
           echo "Backend bucket: ${{ steps.tf_backend.outputs.bucket }}"
           echo "Backend lock table: ${{ steps.tf_backend.outputs.lock_table }}"
@@ -120,12 +127,12 @@ jobs:
       - name: Terraform init
         run: |
           echo "::group::Terraform init"
-          echo "State key: ideagen/${DEPLOY_ENV}/terraform.tfstate"
+          echo "State key: ${{ steps.tfvars_meta.outputs.project_name }}/${DEPLOY_ENV}/terraform.tfstate"
           terraform -chdir=terraform init \
             -reconfigure \
             -backend-config="bucket=${{ steps.tf_backend.outputs.bucket }}" \
             -backend-config="dynamodb_table=${{ steps.tf_backend.outputs.lock_table }}" \
-            -backend-config="key=ideagen/${DEPLOY_ENV}/terraform.tfstate" \
+            -backend-config="key=${{ steps.tfvars_meta.outputs.project_name }}/${DEPLOY_ENV}/terraform.tfstate" \
             -backend-config="region=${{ steps.tf_backend.outputs.aws_region }}"
           echo "::endgroup::"
 
@@ -147,13 +154,6 @@ jobs:
           else
             echo "First deploy detected. Bootstrapping prerequisite infrastructure without App Runner."
             terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_FILE}" \
-              -var="allowed_hosts=${{ vars.ALLOWED_HOSTS }}" \
-              -var="next_public_clerk_publishable_key=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}" \
-              -var="clerk_jwks_url=${{ secrets.CLERK_JWKS_URL }}" \
-              -var="gemini_api_url=${{ secrets.GEMINI_API_URL }}" \
-              -var="deepseek_api_url=${{ secrets.DEEPSEEK_API_URL }}" \
-              -var="grok_api_url=${{ secrets.GROK_API_URL }}" \
-              -var="email_from=${{ secrets.EMAIL_FROM }}" \
               -target=aws_vpc.main \
               -target=aws_internet_gateway.main \
               -target=aws_subnet.public \
@@ -208,9 +208,9 @@ jobs:
           echo "Environment: ${DEPLOY_ENV}"
           chmod +x scripts/sync_app_secrets.sh
           ./scripts/sync_app_secrets.sh \
-            --project-name "${{ vars.PROJECT_NAME }}" \
+            --project-name "${{ steps.tfvars_meta.outputs.project_name }}" \
             --environment "${DEPLOY_ENV}" \
-            --region "${{ vars.DEFAULT_AWS_REGION }}" \
+            --region "${{ steps.tfvars_meta.outputs.aws_region }}" \
             --db-host "${{ steps.tf_bootstrap.outputs.rds_endpoint }}" \
             --db-port "${{ steps.tf_bootstrap.outputs.rds_port }}" \
             --db-name "ideagen" \
@@ -249,13 +249,6 @@ jobs:
           else
             echo "No existing App Runner ARN configured. Creating or updating managed service."
             terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_FILE}" \
-              -var="allowed_hosts=${{ vars.ALLOWED_HOSTS }}" \
-              -var="next_public_clerk_publishable_key=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}" \
-              -var="clerk_jwks_url=${{ secrets.CLERK_JWKS_URL }}" \
-              -var="gemini_api_url=${{ secrets.GEMINI_API_URL }}" \
-              -var="deepseek_api_url=${{ secrets.DEEPSEEK_API_URL }}" \
-              -var="grok_api_url=${{ secrets.GROK_API_URL }}" \
-              -var="email_from=${{ secrets.EMAIL_FROM }}" \
               -var="app_runner_enabled=true"
             service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn)"
             service_url="$(terraform -chdir=terraform output -raw app_runner_service_url)"
@@ -277,17 +270,17 @@ jobs:
                 echo "Custom domain status: ${custom_domain_status}"
               fi
             fi
-            service_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ vars.DEFAULT_AWS_REGION }}" --query 'Service.Status' --output text)"
+            service_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
             echo "Current App Runner status: ${service_status}"
             if [[ "${service_status}" == "RUNNING" ]]; then
               echo "Triggering App Runner deployment"
-              aws apprunner start-deployment --service-arn "${service_arn}" --region "${{ vars.DEFAULT_AWS_REGION }}"
+              aws apprunner start-deployment --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}"
             else
               echo "Terraform already triggered a rollout. Waiting for RUNNING instead of starting another deployment."
             fi
             set -euo pipefail
             for i in $(seq 1 60); do
-              current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ vars.DEFAULT_AWS_REGION }}" --query 'Service.Status' --output text)"
+              current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
               echo "Service status ${i}/60: ${current_status}"
               if [[ "${current_status}" != "RUNNING" ]]; then
                 sleep 10

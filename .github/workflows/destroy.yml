@@ -37,21 +37,31 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate environment var-file
+        id: tfvars_meta
         run: |
           echo "::group::Validate environment var-file"
           echo "Destroy environment: ${DEPLOY_ENV}"
           echo "Terraform var-file: ${TFVARS_FILE}"
+          chmod +x scripts/read_tfvars_value.sh
           test -f "${TFVARS_FILE}"
-          tfvars_env="$(awk -F= '/^[[:space:]]*environment[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          tfvars_env="$(./scripts/read_tfvars_value.sh "${TFVARS_FILE}" environment)"
+          tfvars_project_name="$(./scripts/read_tfvars_value.sh "${TFVARS_FILE}" project_name)"
+          tfvars_aws_region="$(./scripts/read_tfvars_value.sh "${TFVARS_FILE}" aws_region)"
           echo "Var-file environment: ${tfvars_env}"
+          echo "Var-file project_name: ${tfvars_project_name}"
+          echo "Var-file aws_region: ${tfvars_aws_region}"
           test "${tfvars_env}" = "${DEPLOY_ENV}"
+          test -n "${tfvars_project_name}"
+          test -n "${tfvars_aws_region}"
+          echo "project_name=${tfvars_project_name}" >> "${GITHUB_OUTPUT}"
+          echo "aws_region=${tfvars_aws_region}" >> "${GITHUB_OUTPUT}"
           echo "::endgroup::"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.DEFAULT_AWS_REGION }}
+          aws-region: ${{ steps.tfvars_meta.outputs.aws_region }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -62,7 +72,7 @@ jobs:
         run: |
           echo "::group::Destroy Terraform environment"
           chmod +x scripts/destroy.sh
-          ./scripts/destroy.sh "${DEPLOY_ENV}" --tfvars-file "${TFVARS_FILE}" --region "${{ vars.DEFAULT_AWS_REGION }}"
+          ./scripts/destroy.sh "${DEPLOY_ENV}" --tfvars-file "${TFVARS_FILE}" --project-name "${{ steps.tfvars_meta.outputs.project_name }}" --region "${{ steps.tfvars_meta.outputs.aws_region }}"
           echo "::endgroup::"
 
   confirm_failed:
