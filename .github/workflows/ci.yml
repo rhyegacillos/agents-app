@@ -5,8 +5,12 @@ on:
   push:
     branches: ["ideagen-saas-aws"]
 
+permissions:
+  contents: read
+
 jobs:
-  backend-tests:
+  test:
+    name: Test
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -41,14 +45,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run tests
+      - name: Run backend tests
         run: pytest tests -q
-
-  frontend-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -61,12 +59,6 @@ jobs:
 
       - name: Lint frontend
         run: npm run lint
-
-  terraform-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -82,7 +74,8 @@ jobs:
       - name: Terraform validate
         run: terraform -chdir=terraform validate
 
-  docker-build:
+  docker_build:
+    name: Docker Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -99,3 +92,17 @@ jobs:
           tags: ideagen:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA==
+
+  deploy_prod:
+    name: Deploy / prod
+    if: github.event_name == 'push'
+    needs:
+      - test
+      - docker_build
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+    secrets: inherit
