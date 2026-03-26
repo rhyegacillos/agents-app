@@ -22,7 +22,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'prod' }}
     services:
       postgres:
         image: postgres:16
@@ -39,8 +39,8 @@ jobs:
           --health-retries 10
 
     env:
-      DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
-      TFVARS_FILE: terraform/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}.tfvars
+      DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'prod' }}
+      TFVARS_FILE: terraform/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'prod' }}.tfvars
       APP_ENV: local
       DATABASE_URL_LOCAL: postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_test
       TF_VAR_next_public_clerk_publishable_key: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
