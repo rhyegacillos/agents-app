@@ -40,7 +40,7 @@ jobs:
 
     env:
       DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}
-      TFVARS_FILE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}.tfvars
+      TFVARS_FILE: terraform/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'dev' }}.tfvars
       APP_ENV: local
       DATABASE_URL_LOCAL: postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_test
       TF_VAR_project_name: ${{ vars.PROJECT_NAME }}

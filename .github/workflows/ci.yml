@@ -98,4 +98,4 @@ jobs:
           load: true
           tags: ideagen:${{ github.sha }}
           build-args: |
-            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=dummy
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA==

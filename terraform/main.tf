@@ -5,9 +5,9 @@ data "aws_availability_zones" "available" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  name_prefix              = "${var.project_name}-${var.environment}"
-  app_runner_service_name  = trimspace(var.app_runner_service_name) != "" ? trimspace(var.app_runner_service_name) : "${local.name_prefix}-service"
-  azs                      = slice(data.aws_availability_zones.available.names, 0, 2)
+  name_prefix             = "${var.project_name}-${var.environment}"
+  app_runner_service_name = trimspace(var.app_runner_service_name) != "" ? trimspace(var.app_runner_service_name) : "${local.name_prefix}-service"
+  azs                     = slice(data.aws_availability_zones.available.names, 0, 2)
   common_tags = {
     Project     = var.project_name
     Environment = var.environment
@@ -386,7 +386,7 @@ resource "aws_apprunner_service" "app" {
 resource "aws_apprunner_custom_domain_association" "app" {
   count = var.app_runner_enabled && trimspace(var.app_runner_custom_domain) != "" ? 1 : 0
 
-  domain_name           = trimspace(var.app_runner_custom_domain)
-  enable_www_subdomain  = var.app_runner_enable_www_subdomain
-  service_arn           = aws_apprunner_service.app[0].arn
+  domain_name          = trimspace(var.app_runner_custom_domain)
+  enable_www_subdomain = var.app_runner_enable_www_subdomain
+  service_arn          = aws_apprunner_service.app[0].arn
 }

@@ -971,15 +971,14 @@ function ConstraintMultiSelectDropdown({
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       if (!containerRef.current) return;
-      if (!containerRef.current.contains(e.target as Node)) setOpen(false);
+      if (!containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setHoverBubble(null);
+      }
     };
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
-
-  useEffect(() => {
-    if (!open) setHoverBubble(null);
-  }, [open]);
 
   const toggle = (opt: string, isOptionPremiumLocked: boolean) => {
     if (isOptionPremiumLocked) {
@@ -1027,7 +1026,12 @@ function ConstraintMultiSelectDropdown({
     <div className="relative" ref={containerRef}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() =>
+          setOpen((wasOpen) => {
+            if (wasOpen) setHoverBubble(null);
+            return !wasOpen;
+          })
+        }
         className={cx(
           "w-full rounded-xl border px-3 py-2.5 text-sm outline-none flex items-center justify-between gap-2",
           "bg-white/60 dark:bg-white/5 border-black/10 dark:border-white/10",
