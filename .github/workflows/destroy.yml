@@ -1,0 +1,59 @@
+name: Destroy AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to destroy"
+        required: true
+        default: "prod"
+        type: choice
+        options:
+          - dev
+          - prod
+      confirm:
+        description: "Type DESTROY to continue"
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    if: ${{ github.event.inputs.confirm == 'DESTROY' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment == 'prod' && 'healthcare-prod' || 'healthcare-dev' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.DEFAULT_AWS_REGION != '' && vars.DEFAULT_AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Run destroy
+        run: |
+          echo "::group::Destroy Terraform environment"
+          chmod +x scripts/destroy.sh
+          ./scripts/destroy.sh "${{ github.event.inputs.environment }}" --tfvars-file "terraform/${{ github.event.inputs.environment }}.tfvars"
+          echo "::endgroup::"
+
+  confirm_failed:
+    if: ${{ github.event.inputs.confirm != 'DESTROY' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail confirmation
+        run: |
+          echo "Confirmation failed. Re-run the workflow and type DESTROY exactly." >&2
+          exit 1

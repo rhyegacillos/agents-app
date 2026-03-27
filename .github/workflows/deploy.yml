@@ -1,0 +1,80 @@
+name: Deploy AWS
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        type: string
+      github_environment:
+        description: "GitHub environment providing environment-scoped secrets"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        default: "prod"
+        type: choice
+        options:
+          - dev
+          - prod
+      github_environment:
+        description: "GitHub environment providing environment-scoped secrets"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment != '' && inputs.github_environment || (inputs.environment == 'prod' && 'healthcare-prod' || 'healthcare-dev') }}
+    env:
+      DEPLOY_ENV: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.DEFAULT_AWS_REGION != '' && vars.DEFAULT_AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Deploy infrastructure and application
+        env:
+          TF_VAR_next_public_clerk_publishable_key: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          TF_VAR_next_public_clerk_jwt_template: ${{ secrets.NEXT_PUBLIC_CLERK_JWT_TEMPLATE }}
+          TF_VAR_gemini_api_url: ${{ secrets.GEMINI_API_URL }}
+          TF_VAR_deepseek_api_url: ${{ secrets.DEEPSEEK_API_URL }}
+          TF_VAR_grok_api_url: ${{ secrets.GROK_API_URL }}
+          TF_VAR_resend_from: ${{ secrets.RESEND_FROM != '' && secrets.RESEND_FROM || 'MediNotes <no-reply@agentairg.site>' }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_CLERK_JWT_TEMPLATE: ${{ secrets.NEXT_PUBLIC_CLERK_JWT_TEMPLATE }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_JWKS_URL: ${{ secrets.CLERK_JWKS_URL }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          chmod +x scripts/deploy.sh
+          ./scripts/deploy.sh "${DEPLOY_ENV}" \
+            --tfvars-file "terraform/${DEPLOY_ENV}.tfvars" \
+            --image-sha "${GITHUB_SHA}"

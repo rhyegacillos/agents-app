@@ -40,6 +40,31 @@ The agent remembers.
 *   **Continuity:** The generated summary automatically flags changes from previous visits (e.g., "Condition has improved since Jan 12").
 *   **Plain-Text Storage:** Summaries are stored as plain text to keep chat/RAG results readable.
 
+#### DynamoDB-backed persistence
+The memory store now uses DynamoDB only. Local file-backed memory storage is no longer used.
+
+Required in every environment:
+*   `DYNAMODB_TABLE_NAME=<your-table-name>`
+*   `AWS_REGION` or `DEFAULT_AWS_REGION`
+
+Table schema:
+*   Partition key: `pk` (String)
+*   Sort key: `sk` (String)
+
+Local development only:
+*   Set `DYNAMODB_ENDPOINT_URL=http://localhost:8001`
+*   Use dummy AWS credentials if you are pointing at DynamoDB Local
+*   Start DynamoDB Local with `docker compose -f docker-compose.local.yml up -d`
+
+AWS deployment:
+*   Do not set `DYNAMODB_ENDPOINT_URL`
+*   The app will automatically use real AWS DynamoDB in the configured region
+
+Create the table with the helper script:
+```bash
+bash tools/create_memory_table.sh medinotes-memory
+```
+
 ### 5b. Patient History Workspace
 Clinicians can browse prior visits without leaving the app.
 *   **Searchable roster:** Paginated patient list with last-visit metadata and sort.
@@ -96,7 +121,7 @@ The centerpiece of the user experience is the **MediNotes Assistant**, an intera
 The Assistant is powered by the `chat_agent.py` and follows a sophisticated loop for every user message:
 
 1.  **State Injection:** The frontend passes the user's message history, the current `patientName`, and the current `summary` text to the `/api/chat` endpoint.
-2.  **Memory Recall (RAG):** The `ChatAgent` takes the user's last message and the `patientName` and sends a query to the `MemoryAgent`. The `MemoryAgent` performs a semantic search on the vector store (`memory_db.json`) to find the most relevant historical documents.
+2.  **Memory Recall (RAG):** The `ChatAgent` takes the user's last message and the `patientName` and sends a query to the `MemoryAgent`. The `MemoryAgent` performs a semantic search on the DynamoDB-backed vector store to find the most relevant historical documents.
 3.  **Prompt Engineering:** The `ChatAgent` dynamically constructs a rich prompt for the LLM, including:
     *   Its core persona ("You are MediNotes Pro...").
     *   The full conversation history.
@@ -245,6 +270,15 @@ Ensure you have the following keys in your `.env.local`:
 *   `CLERK_JWKS_URL`: For authentication.
 *   `UPSTASH_REDIS_REST_URL`: The REST URL for Upstash Redis, used for job persistence and real-time streaming.
 *   `UPSTASH_REDIS_REST_TOKEN`: The API token for authenticating with Upstash Redis.
+*   `DYNAMODB_TABLE_NAME`: The memory table name.
+
+For local development against DynamoDB Local only:
+*   `DYNAMODB_ENDPOINT_URL=http://localhost:8001`
+*   `AWS_ACCESS_KEY_ID=dummy`
+*   `AWS_SECRET_ACCESS_KEY=dummy`
+
+For AWS deployment:
+*   leave `DYNAMODB_ENDPOINT_URL` unset so boto3 connects to AWS DynamoDB
 
 Node.js (`npx`) is required at runtime to launch the Brave MCP server.
 
@@ -262,6 +296,18 @@ Node.js (`npx`) is required at runtime to launch the Brave MCP server.
 *   `api/index.py`: API Gateway/Router that delegates requests to specific agents.
 
 # Local Docker Deployment
+Start DynamoDB Local first:
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+export DYNAMODB_TABLE_NAME=medinotes-memory
+export DYNAMODB_ENDPOINT_URL=http://localhost:8001
+export AWS_REGION=${AWS_REGION:-ap-southeast-1}
+export AWS_ACCESS_KEY_ID=dummy
+export AWS_SECRET_ACCESS_KEY=dummy
+bash tools/create_memory_table.sh "$DYNAMODB_TABLE_NAME"
+```
+
 export $(cat .env | grep -v '^#' | xargs)
 
 docker build \
@@ -270,7 +316,7 @@ docker build \
   -t consultation-app .
 
  docker run -p 8000:8000 \
-  -v memory_db:/app/data \
+  --add-host=host.docker.internal:host-gateway \
   -e CLERK_SECRET_KEY="$CLERK_SECRET_KEY" \
   -e CLERK_JWKS_URL="$CLERK_JWKS_URL" \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
@@ -280,10 +326,19 @@ docker build \
   -e BRAVE_API_KEY="$BRAVE_API_KEY" \
   -e DEEPSEEK_API_URL="$DEEPSEEK_API_URL" \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  -e DYNAMODB_TABLE_NAME="$DYNAMODB_TABLE_NAME" \
+  -e DYNAMODB_ENDPOINT_URL="http://host.docker.internal:8001" \
+  -e AWS_REGION="$AWS_REGION" \
+  -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+  -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
   -e NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
   consultation-app 
 
 ## AWS DEPLOYMENT ECR
+
+For AWS deployment, do not set `DYNAMODB_ENDPOINT_URL`. The app should use:
+*   `DYNAMODB_TABLE_NAME=<aws-table-name>`
+*   `AWS_REGION=<aws-region>`
 
 # aws configure
 

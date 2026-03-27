@@ -14,7 +14,7 @@ MediNotes is an agentic clinical documentation platform that converts unstructur
 - **Inputs**: notes, PDFs/DOCX/TXT, audio (Whisper), prescription images (vision model).
 - **Models**: DeepSeek (summary), Gemini (critic + chat), OpenAI (OCR + embeddings).
 - **External tools**: MCP Brave Search for drug interactions/guidelines.
-- **Persistence**: JSON vector store with deduped encounter IDs.
+- **Persistence**: DynamoDB-backed vector store with deduped encounter IDs.
 
 ## Deployment
 - Dockerized single container

@@ -65,7 +65,7 @@ Global fallback chain: `gpt-5-nano` → `gpt-4o-mini` → `gpt-3.5-turbo`.
 ---
 
 ### 4) Retrieval + Grounding Strategy
-- **RAG store**: JSON vector store with embeddings (`text-embedding-3-small`).
+- **RAG store**: DynamoDB-backed vector store with embeddings (`text-embedding-3-small`).
 - **Doc types**: `visit_summary`, `visit_notes`, `visit_evidence`.
 - **Dedup**: `(patient, date, type, template_id, encounter_id)` ensures stable overwrites.
 

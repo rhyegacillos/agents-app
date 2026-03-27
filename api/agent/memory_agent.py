@@ -47,48 +47,16 @@ async def remember_visit(
 
 def rename_patient(old_name: str, new_name: str) -> int:
     """Rename patient across stored documents. Returns count updated."""
-    old_key = old_name.lower().strip()
-    new_key = new_name.lower().strip()
-    docs = store.get_all_documents()
-    updated = 0
-    for doc in docs:
-        meta = doc.get("metadata", {}) or {}
-        if meta.get("patient_name") == old_key:
-            meta["patient_name"] = new_key
-            updated += 1
-    if updated:
-        store.save_all(docs)
-    return updated
+    return store.rename_patient(old_name, new_name)
 
 
 def soft_delete_doc(doc_id: str) -> int:
     """Soft delete by doc_id; marks metadata.deleted flag."""
-    docs = store.get_all_documents()
-    updated = 0
-    now = time.time()
-    for doc in docs:
-        meta = doc.get("metadata", {}) or {}
-        if meta.get("doc_id") == doc_id:
-            meta["deleted"] = True
-            meta["deleted_at"] = now
-            updated += 1
-    if updated:
-        store.save_all(docs)
-    return updated
+    return store.soft_delete_doc(doc_id)
 
 def restore_doc(doc_id: str) -> int:
     """Restore a soft-deleted doc by doc_id."""
-    docs = store.get_all_documents()
-    updated = 0
-    for doc in docs:
-        meta = doc.get("metadata", {}) or {}
-        if meta.get("doc_id") == doc_id and meta.get("deleted"):
-            meta.pop("deleted", None)
-            meta.pop("deleted_at", None)
-            updated += 1
-    if updated:
-        store.save_all(docs)
-    return updated
+    return store.restore_doc(doc_id)
 
 async def recall_patient_history(
     patient_name: str, 

@@ -30,7 +30,7 @@ The goal is to move from *processing* data to *understanding and acting* on it.
 **Goal:** Enable the agent to "know" the patient's history.
 - [x] **Feature:** Retrieve past summaries during generation to highlight changes/trends.
 - [x] **Agent:** `memory_agent.py`
-- [x] **Tech:** Vector Database (Local JSON VectorStore).
+- [x] **Tech:** Vector Database (DynamoDB-backed VectorStore).
 - [x] **Tools:**
     - `store_visit_summary` (Completed)
     - `query_patient_history` (Completed)

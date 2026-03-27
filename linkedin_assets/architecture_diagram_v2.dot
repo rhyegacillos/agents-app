@@ -1,0 +1,82 @@
+digraph MediNotesArchitectureV2 {
+  graph [
+    rankdir=LR,
+    labelloc="t",
+    label="MediNotes Agentic Healthcare SaaS - High-Level Architecture\nStreaming (SSE) + resumable job events + evidence mapping + tool-based research",
+    fontsize=19,
+    fontname="Helvetica",
+    pad="0.25",
+    nodesep="0.5",
+    ranksep="0.85",
+    bgcolor="white",
+    splines=polyline
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=11,
+    color="#0f172a",
+    fillcolor="#f8fafc",
+    margin="0.12,0.08"
+  ];
+
+  edge [
+    color="#334155",
+    penwidth=1.2,
+    arrowsize=0.75,
+    fontname="Helvetica",
+    fontsize=10
+  ];
+
+  subgraph cluster_user {
+    label="User Layer";
+    color="#cbd5e1";
+    style="rounded";
+    input [label="Clinical Inputs\n(notes, audio, docs, images)", fillcolor="#eff6ff"];
+    ui [label="Web App\nNext.js + React + Clerk", fillcolor="#e0f2fe"];
+  }
+
+  subgraph cluster_runtime {
+    label="Application + Agent Runtime";
+    color="#a7f3d0";
+    style="rounded";
+    api [label="FastAPI API\nSSE Endpoints", fillcolor="#dcfce7"];
+    orchestrator [label="Summary Agent\n(Orchestrator)", fillcolor="#ccfbf1"];
+    workers [label="Specialized Agents\nExtraction, Research (MCP), Critic,\nEvidence, Coordinator, Memory,\nEmail, Chat", fillcolor="#f0fdfa"];
+  }
+
+  subgraph cluster_external {
+    label="External Services";
+    color="#cbd5e1";
+    style="rounded";
+    llm [label="LLM Providers\nOpenAI / DeepSeek / Gemini", fillcolor="#fef3c7"];
+    brave [label="Brave Search MCP", fillcolor="#fef3c7"];
+    resend [label="Resend Email API", fillcolor="#fef3c7"];
+  }
+
+  subgraph cluster_persistence {
+    label="Persistence";
+    color="#cbd5e1";
+    style="rounded";
+    memory_store [label="Vector Store (RAG Memory)\nvisit_summary / notes / evidence", fillcolor="#ede9fe"];
+    redis [label="Upstash Redis\n(SSE job events / resume)", fillcolor="#ede9fe"];
+  }
+
+  input -> ui [label="capture + upload"];
+  ui -> api [label="consultation request"];
+  api -> orchestrator [label="run pipeline"];
+  orchestrator -> workers [label="orchestrates"];
+  workers -> orchestrator [label="agent outputs"];
+
+  workers -> llm [label="reasoning + generation"];
+  workers -> brave [label="tool-based research"];
+  workers -> resend [label="email dispatch"];
+
+  workers -> memory_store [label="RAG recall/store", fontsize=11.5, constraint=false];
+  api -> redis [label="persist SSE events", fontsize=11.5, constraint=false];
+  redis -> api [label="resume on reconnect", fontsize=11.5, style=dashed, constraint=false];
+
+  api -> ui [label="SSE stream: status + evidence + summary", dir=both, constraint=false];
+}

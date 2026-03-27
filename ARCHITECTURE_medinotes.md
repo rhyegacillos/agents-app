@@ -137,7 +137,7 @@ The concrete runtime path for one summary request:
       - `visit_summary`
       - `visit_notes`
       - `visit_evidence`
-    - Stored in `data/memory_db.json` with embeddings.
+    - Stored in DynamoDB with embeddings.
 
 11. **Streaming output**
     - SSE emits:
@@ -243,7 +243,7 @@ There are three persistence domains:
    - Optional Upstash Redis for resumable SSE across reconnects.
 
 2. **Long-term memory (RAG)**
-   - JSON vector store at `data/memory_db.json`.
+   - DynamoDB-backed vector store.
    - Embeddings: `text-embedding-3-small`.
    - Doc types: `visit_summary`, `visit_notes`, `visit_evidence`.
    - Soft delete supported by metadata flag.
@@ -262,7 +262,7 @@ flowchart TD
     D -- Yes --> F{Existing doc soft-deleted?}
     F -- Yes --> E
     F -- No --> G[Overwrite existing doc]
-    E --> H[Persist memory_db.json]
+    E --> H[Persist DynamoDB documents]
     G --> H
 ```
 

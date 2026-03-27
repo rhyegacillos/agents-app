@@ -43,3 +43,6 @@ next-env.d.ts
 
 *.zip
 /aws/
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*

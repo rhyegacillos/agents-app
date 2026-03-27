@@ -1,0 +1,96 @@
+digraph MediNotesArchitectureV5 {
+  graph [
+    rankdir=LR,
+    labelloc="t",
+    label="MediNotes Agentic Healthcare SaaS - High-Level Architecture\nStreaming (SSE) + resumable job events + evidence mapping + tool-based research",
+    fontsize=20,
+    fontname="Helvetica",
+    pad="0.35",
+    nodesep="0.78",
+    ranksep="1.15",
+    bgcolor="white",
+    splines=true
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=12,
+    color="#0f172a",
+    fillcolor="#f8fafc",
+    margin="0.14,0.1"
+  ];
+
+  edge [
+    color="#334155",
+    penwidth=1.35,
+    arrowsize=0.8,
+    fontname="Helvetica",
+    fontsize=11
+  ];
+
+  subgraph cluster_user {
+    label="User Layer";
+    color="#cbd5e1";
+    style="rounded";
+    input [label="Clinical Inputs\n(notes, audio, docs, images)", fillcolor="#eff6ff"];
+    web [label="Web App\nNext.js + React + Clerk", fillcolor="#e0f2fe"];
+  }
+
+  subgraph cluster_runtime {
+    label="Application + Agent Runtime";
+    color="#a7f3d0";
+    style="rounded";
+    api [label="FastAPI API\nSSE Endpoints", fillcolor="#dcfce7"];
+    summary [label="Summary Agent\n(Orchestrator)", fillcolor="#dbeafe", color="#1d4ed8", penwidth=1.45];
+    workers [label="Specialized Agents\nExtraction, Research (MCP), Critic,\nEvidence, Coordinator, Memory, Email", fillcolor="#f0fdfa"];
+    chat [label="Chat Agent\n(Context-Aware Q&A)", fillcolor="#fefce8", color="#ca8a04", penwidth=1.55];
+    chat_scope [shape=note, label="Scope: visit summaries +\ncurrent consultation only", fillcolor="#fff7ed", color="#ca8a04", fontsize=10.5];
+  }
+
+  subgraph cluster_storage {
+    label="Persistence";
+    color="#cbd5e1";
+    style="rounded";
+    vector [label="Vector Store (RAG Memory)\nvisit_summary / notes / evidence", fillcolor="#ede9fe"];
+    redis [label="Upstash Redis\n(SSE job events / resume)", fillcolor="#ede9fe"];
+  }
+
+  subgraph cluster_external {
+    label="External Services";
+    color="#cbd5e1";
+    style="rounded";
+    llm [label="LLM Providers\nOpenAI / DeepSeek / Gemini", fillcolor="#fef3c7"];
+    brave [label="Brave Search MCP", fillcolor="#fef3c7"];
+    resend [label="Resend Email API", fillcolor="#fef3c7"];
+  }
+
+  { rank=same; input; web; }
+  { rank=same; api; summary; workers; }
+  { rank=same; chat; chat_scope; }
+
+  input -> web [label="capture + upload"];
+
+  web -> api [label="consultation request", color="#1d4ed8", fontcolor="#1d4ed8"];
+  api -> summary [label="run pipeline", color="#1d4ed8", fontcolor="#1d4ed8"];
+  summary -> workers [label="orchestrates", color="#1d4ed8", fontcolor="#1d4ed8"];
+  workers -> summary [label="agent outputs", color="#1d4ed8", fontcolor="#1d4ed8"];
+  summary -> web [label="SSE stream: status + evidence + summary", color="#1d4ed8", fontcolor="#1d4ed8", penwidth=1.5];
+
+  web -> api [label="/api/chat", color="#ca8a04", fontcolor="#ca8a04", constraint=false];
+  api -> chat [label="chat endpoint", color="#ca8a04", fontcolor="#ca8a04", penwidth=1.5];
+  chat -> web [label="streamed reply", color="#ca8a04", fontcolor="#ca8a04", penwidth=1.5];
+  chat -> chat_scope [style=dashed, arrowhead=none, color="#ca8a04", constraint=false];
+
+  workers -> vector [label="RAG recall/store", fontsize=12, color="#1d4ed8", fontcolor="#1d4ed8"];
+  chat -> vector [label="history recall", fontsize=12, color="#ca8a04", fontcolor="#ca8a04"];
+
+  api -> redis [label="persist SSE events", fontsize=12];
+  redis -> api [label="resume on reconnect", fontsize=12, style=dashed];
+
+  workers -> llm [label="reasoning + generation", color="#1d4ed8", fontcolor="#1d4ed8"];
+  workers -> brave [label="tool-based research", color="#1d4ed8", fontcolor="#1d4ed8"];
+  workers -> resend [label="email dispatch", color="#1d4ed8", fontcolor="#1d4ed8"];
+  chat -> llm [label="chat generation", color="#ca8a04", fontcolor="#ca8a04"];
+}

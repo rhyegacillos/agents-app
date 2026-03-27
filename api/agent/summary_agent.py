@@ -6,7 +6,6 @@ import hashlib
 import time
 import uuid
 from collections import OrderedDict
-from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, Callable, Awaitable, Optional
 from fastapi import Request
 
@@ -38,7 +37,6 @@ logger = get_logger(__name__)
 
 SUMMARY_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 SUMMARY_CACHE_MAX = 10
-MEMORY_DB_PATH = Path("data/memory_db.json")
 
 SUMMARY_JOBS_MAX = 10
 EVIDENCE_MAX_CHUNKS = int(os.getenv("EVIDENCE_MAX_CHUNKS", "25"))  # shrink evidence payload
@@ -326,13 +324,6 @@ def _has_condition_candidates(text: str) -> bool:
     if not text:
         return False
     return bool(CONDITION_HINT_RE.search(text))
-
-
-def _memory_db_mtime() -> float:
-    try:
-        return MEMORY_DB_PATH.stat().st_mtime
-    except FileNotFoundError:
-        return 0.0
 
 
 def _summary_cache_key(visit: Visit) -> str:

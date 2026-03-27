@@ -11,3 +11,4 @@ numpy
 httpx
 clerk-backend-api
 upstash-redis
+boto3
