@@ -10,6 +10,30 @@ fail() {
   exit 1
 }
 
+wait_for_service_running() {
+  local service_arn="$1"
+  local attempt
+  local status
+
+  for attempt in $(seq 1 60); do
+    status="$(aws apprunner describe-service --service-arn "${service_arn}" --query 'Service.Status' --output text)"
+    log "Service status (${attempt}/60): ${status}"
+    case "${status}" in
+      RUNNING)
+        return 0
+        ;;
+      OPERATION_IN_PROGRESS|CREATE_IN_PROGRESS)
+        sleep 10
+        ;;
+      *)
+        fail "App Runner service is not ready for update: ${status}"
+        ;;
+    esac
+  done
+
+  fail "Timed out waiting for App Runner service to become RUNNING"
+}
+
 TF_DIR="terraform"
 TFVARS_FILE=""
 SERVICE_ARN="${TF_VAR_existing_app_runner_service_arn:-}"
@@ -90,7 +114,7 @@ runtime_secret_arns = json.loads(sys.argv[13])
 payload = {
     "ServiceArn": service_arn,
     "SourceConfiguration": {
-        "AutoDeploymentsEnabled": True,
+        "AutoDeploymentsEnabled": False,
         "AuthenticationConfiguration": {
             "AccessRoleArn": ecr_access_role_arn,
         },
@@ -133,11 +157,15 @@ with open(payload_path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle)
 PY
 
+log "Waiting for existing App Runner operations to finish"
+wait_for_service_running "${SERVICE_ARN}"
+
 log "Updating existing App Runner service ${SERVICE_ARN}"
 aws apprunner update-service --cli-input-json "file://${PAYLOAD_FILE}" >/dev/null
 rm -f "${PAYLOAD_FILE}"
 
 SERVICE_URL="$(aws apprunner describe-service --service-arn "${SERVICE_ARN}" --query 'Service.ServiceUrl' --output text)"
+wait_for_service_running "${SERVICE_ARN}"
 log "Waiting for App Runner health check at https://${SERVICE_URL}/health"
 for attempt in $(seq 1 60); do
   if curl -fsS "https://${SERVICE_URL}/health" >/dev/null; then

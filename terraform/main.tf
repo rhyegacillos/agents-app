@@ -310,7 +310,7 @@ resource "aws_apprunner_service" "app" {
   tags         = local.common_tags
 
   source_configuration {
-    auto_deployments_enabled = true
+    auto_deployments_enabled = false
 
     authentication_configuration {
       access_role_arn = aws_iam_role.apprunner_ecr_access.arn
