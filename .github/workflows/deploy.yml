@@ -162,10 +162,35 @@ jobs:
           terraform -chdir=terraform workspace show
           echo "::endgroup::"
 
+      - name: Detect existing App Runner service
+        id: app_runner
+        run: |
+          echo "::group::Detect App Runner service"
+          existing_service_arn="$(awk -F= '/^[[:space:]]*existing_app_runner_service_arn[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          service_exists="false"
+          if terraform -chdir=terraform state show 'aws_apprunner_service.app[0]' >/dev/null 2>&1; then
+            service_exists="true"
+          fi
+          if [[ -z "${existing_service_arn}" && "${service_exists}" == "true" ]]; then
+            existing_service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn 2>/dev/null || true)"
+          fi
+          existing_service_url=""
+          if [[ "${service_exists}" == "true" ]]; then
+            existing_service_url="$(terraform -chdir=terraform output -raw app_runner_service_url 2>/dev/null || true)"
+          fi
+          echo "service_exists=${service_exists}" >> "${GITHUB_OUTPUT}"
+          echo "service_arn=${existing_service_arn}" >> "${GITHUB_OUTPUT}"
+          echo "service_url=${existing_service_url}" >> "${GITHUB_OUTPUT}"
+          echo "Service exists in state: ${service_exists}"
+          if [[ -n "${existing_service_arn}" ]]; then
+            echo "Service ARN: ${existing_service_arn}"
+          fi
+          echo "::endgroup::"
+
       - name: Bootstrap infrastructure on first deploy only
         run: |
           echo "::group::Terraform bootstrap apply"
-          if terraform -chdir=terraform state show 'aws_apprunner_service.app[0]' >/dev/null 2>&1; then
+          if [[ "${{ steps.app_runner.outputs.service_exists }}" == "true" ]]; then
             echo "Managed App Runner already exists in Terraform state. Skipping bootstrap apply."
           else
             echo "First deploy detected. Bootstrapping prerequisite infrastructure without App Runner."
@@ -234,6 +259,41 @@ jobs:
             --db-master-secret-arn "${{ steps.tf_bootstrap.outputs.rds_master_user_secret_arn }}"
           echo "::endgroup::"
 
+      - name: Apply App Runner config before image push
+        id: app_runner_config
+        if: steps.app_runner.outputs.service_exists == 'true'
+        run: |
+          echo "::group::Apply App Runner config before image push"
+          service_arn="${{ steps.app_runner.outputs.service_arn }}"
+          if [[ -z "${service_arn}" ]]; then
+            echo "Existing service is in state, but service ARN output is empty."
+            exit 1
+          fi
+
+          for i in $(seq 1 60); do
+            current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
+            echo "Service status ${i}/60 before Terraform apply: ${current_status}"
+            if [[ "${current_status}" == "RUNNING" ]]; then
+              break
+            fi
+            if [[ "${current_status}" != "OPERATION_IN_PROGRESS" && "${current_status}" != "CREATE_IN_PROGRESS" ]]; then
+              echo "App Runner service is not ready for Terraform apply: ${current_status}"
+              exit 1
+            fi
+            sleep 10
+          done
+
+          terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_NAME}" \
+            -var="app_runner_enabled=true"
+
+          service_url="$(terraform -chdir=terraform output -raw app_runner_service_url)"
+          updated_at="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.UpdatedAt' --output text)"
+          echo "service_url=${service_url}" >> "${GITHUB_OUTPUT}"
+          echo "updated_at=${updated_at}" >> "${GITHUB_OUTPUT}"
+          echo "Service URL: ${service_url}"
+          echo "Service UpdatedAt baseline: ${updated_at}"
+          echo "::endgroup::"
+
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -253,75 +313,84 @@ jobs:
         env:
           DOCKER_BUILD_SUMMARY: "true"
 
-      - name: Deploy App Runner
+      - name: Wait for App Runner auto deploy
+        if: steps.app_runner.outputs.service_exists == 'true'
         run: |
-          echo "::group::Deploy App Runner"
-          echo "Target environment: ${DEPLOY_ENV}"
-          existing_service_arn="$(awk -F= '/^[[:space:]]*existing_app_runner_service_arn[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
-          service_exists_in_state="false"
-          if terraform -chdir=terraform state show 'aws_apprunner_service.app[0]' >/dev/null 2>&1; then
-            service_exists_in_state="true"
+          echo "::group::Wait for App Runner auto deploy"
+          service_arn="${{ steps.app_runner.outputs.service_arn }}"
+          service_url="${{ steps.app_runner_config.outputs.service_url }}"
+          baseline_updated_at="${{ steps.app_runner_config.outputs.updated_at }}"
+
+          if [[ -z "${service_arn}" || -z "${service_url}" || -z "${baseline_updated_at}" ]]; then
+            echo "Missing App Runner deployment metadata."
+            exit 1
           fi
-          if [[ -z "${existing_service_arn}" && "${service_exists_in_state}" == "true" ]]; then
-            existing_service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn 2>/dev/null || true)"
-          fi
-          if [[ -n "${existing_service_arn}" ]]; then
-            echo "Existing App Runner ARN detected. Updating existing service."
-            echo "Service ARN: ${existing_service_arn}"
-            export TF_VAR_existing_app_runner_service_arn="${existing_service_arn}"
-            chmod +x scripts/update_existing_app_runner_service.sh
-            ./scripts/update_existing_app_runner_service.sh --terraform-dir terraform --tfvars-file "${TFVARS_FILE}" --image-tag latest
-          elif [[ "${service_exists_in_state}" == "true" ]]; then
-            echo "Existing App Runner service found in Terraform state. Updating existing service."
-            chmod +x scripts/update_existing_app_runner_service.sh
-            ./scripts/update_existing_app_runner_service.sh --terraform-dir terraform --tfvars-file "${TFVARS_FILE}" --image-tag latest
-          else
-            echo "No existing App Runner ARN configured. Creating or updating managed service."
-            terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_NAME}" \
-              -var="app_runner_enabled=true"
-            service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn)"
-            service_url="$(terraform -chdir=terraform output -raw app_runner_service_url)"
-            custom_domain="$(terraform -chdir=terraform console -var-file="${TFVARS_NAME}" <<< 'trimspace(var.app_runner_custom_domain)' | sed 's/^"//; s/"$//')"
-            custom_domain_dns_target="$(terraform -chdir=terraform output -raw app_runner_custom_domain_dns_target 2>/dev/null || true)"
-            custom_domain_status="$(terraform -chdir=terraform output -raw app_runner_custom_domain_status 2>/dev/null || true)"
-            custom_domain_validation_records="$(terraform -chdir=terraform output -json app_runner_custom_domain_validation_records 2>/dev/null || echo '[]')"
-            echo "Service ARN: ${service_arn}"
-            echo "Service URL: ${service_url}"
-            if [[ -n "${custom_domain}" ]]; then
-              echo "Custom domain: https://${custom_domain}"
-              if [[ -n "${custom_domain_dns_target}" ]]; then
-                echo "Custom domain DNS target: ${custom_domain_dns_target}"
-              fi
-              if [[ "${custom_domain_validation_records}" != "[]" ]]; then
-                echo "Custom domain validation records: ${custom_domain_validation_records}"
-              fi
-              if [[ -n "${custom_domain_status}" ]]; then
-                echo "Custom domain status: ${custom_domain_status}"
-              fi
+
+          saw_rollout="false"
+          for i in $(seq 1 60); do
+            current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
+            current_updated_at="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.UpdatedAt' --output text)"
+            echo "Service status ${i}/60: ${current_status} (UpdatedAt=${current_updated_at})"
+
+            if [[ "${current_status}" == "OPERATION_IN_PROGRESS" || "${current_updated_at}" != "${baseline_updated_at}" ]]; then
+              saw_rollout="true"
             fi
-            service_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
-            echo "Current App Runner status: ${service_status}"
-            if [[ "${service_status}" == "RUNNING" ]]; then
-              echo "Triggering App Runner deployment"
-              aws apprunner start-deployment --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}"
-            else
-              echo "Terraform already triggered a rollout. Waiting for RUNNING instead of starting another deployment."
-            fi
-            set -euo pipefail
-            for i in $(seq 1 60); do
-              current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
-              echo "Service status ${i}/60: ${current_status}"
-              if [[ "${current_status}" != "RUNNING" ]]; then
-                sleep 10
-                continue
-              fi
+
+            if [[ "${saw_rollout}" == "true" && "${current_status}" == "RUNNING" ]]; then
               echo "Health check attempt ${i}/60: ${service_url}/health"
               if curl -fsS "${service_url}/health" >/dev/null; then
                 echo "Health check passed"
-                break
+                echo "::endgroup::"
+                exit 0
               fi
-              sleep 10
-            done
-            curl -fsS "${service_url}/health"
+            fi
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for App Runner auto deployment to complete."
+          exit 1
+
+      - name: Create App Runner on first deploy
+        if: steps.app_runner.outputs.service_exists != 'true'
+        run: |
+          echo "::group::Create App Runner"
+          terraform -chdir=terraform apply -auto-approve -var-file="${TFVARS_NAME}" \
+            -var="app_runner_enabled=true"
+          service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn)"
+          service_url="$(terraform -chdir=terraform output -raw app_runner_service_url)"
+          custom_domain="$(terraform -chdir=terraform console -var-file="${TFVARS_NAME}" <<< 'trimspace(var.app_runner_custom_domain)' | sed 's/^"//; s/"$//')"
+          custom_domain_dns_target="$(terraform -chdir=terraform output -raw app_runner_custom_domain_dns_target 2>/dev/null || true)"
+          custom_domain_status="$(terraform -chdir=terraform output -raw app_runner_custom_domain_status 2>/dev/null || true)"
+          custom_domain_validation_records="$(terraform -chdir=terraform output -json app_runner_custom_domain_validation_records 2>/dev/null || echo '[]')"
+          echo "Service ARN: ${service_arn}"
+          echo "Service URL: ${service_url}"
+          if [[ -n "${custom_domain}" ]]; then
+            echo "Custom domain: https://${custom_domain}"
+            if [[ -n "${custom_domain_dns_target}" ]]; then
+              echo "Custom domain DNS target: ${custom_domain_dns_target}"
+            fi
+            if [[ "${custom_domain_validation_records}" != "[]" ]]; then
+              echo "Custom domain validation records: ${custom_domain_validation_records}"
+            fi
+            if [[ -n "${custom_domain_status}" ]]; then
+              echo "Custom domain status: ${custom_domain_status}"
+            fi
           fi
+          for i in $(seq 1 60); do
+            current_status="$(aws apprunner describe-service --service-arn "${service_arn}" --region "${{ steps.tfvars_meta.outputs.aws_region }}" --query 'Service.Status' --output text)"
+            echo "Service status ${i}/60: ${current_status}"
+            if [[ "${current_status}" != "RUNNING" ]]; then
+              sleep 10
+              continue
+            fi
+            echo "Health check attempt ${i}/60: ${service_url}/health"
+            if curl -fsS "${service_url}/health" >/dev/null; then
+              echo "Health check passed"
+              echo "::endgroup::"
+              exit 0
+            fi
+            sleep 10
+          done
+          curl -fsS "${service_url}/health"
           echo "::endgroup::"
