@@ -103,6 +103,12 @@ variable "db_skip_final_snapshot" {
   default     = true
 }
 
+variable "db_deletion_protection" {
+  description = "Override RDS deletion protection. When null, prod defaults to enabled."
+  type        = bool
+  default     = null
+}
+
 variable "ecr_image_tag" {
   description = "Docker image tag used by App Runner."
   type        = string
@@ -167,6 +173,12 @@ variable "app_runner_enable_www_subdomain" {
   description = "Whether to enable the www subdomain for the App Runner custom domain."
   type        = bool
   default     = false
+}
+
+variable "route53_hosted_zone_name" {
+  description = "Public Route53 hosted zone name used for the App Runner custom domain."
+  type        = string
+  default     = ""
 }
 
 variable "allowed_hosts" {

@@ -4,6 +4,12 @@ data "aws_availability_zones" "available" {
 
 data "aws_caller_identity" "current" {}
 
+data "aws_route53_zone" "app_runner_custom_domain" {
+  count        = trimspace(var.route53_hosted_zone_name) != "" ? 1 : 0
+  name         = "${trimspace(var.route53_hosted_zone_name)}."
+  private_zone = false
+}
+
 locals {
   name_prefix             = "${var.project_name}-${var.environment}"
   app_runner_service_name = trimspace(var.app_runner_service_name) != "" ? trimspace(var.app_runner_service_name) : "${local.name_prefix}-service"
@@ -172,7 +178,7 @@ resource "aws_db_instance" "postgres" {
   storage_encrypted            = true
   backup_retention_period      = var.db_backup_retention_period
   skip_final_snapshot          = var.db_skip_final_snapshot
-  deletion_protection          = var.environment == "prod"
+  deletion_protection          = var.db_deletion_protection != null ? var.db_deletion_protection : var.environment == "prod"
   multi_az                     = var.db_multi_az
   apply_immediately            = true
   auto_minor_version_upgrade   = true
@@ -182,6 +188,7 @@ resource "aws_db_instance" "postgres" {
 
 resource "aws_ecr_repository" "app" {
   name                 = "${local.name_prefix}-app"
+  force_delete         = true
   image_tag_mutability = "MUTABLE"
   tags                 = local.common_tags
 
@@ -310,7 +317,7 @@ resource "aws_apprunner_service" "app" {
   tags         = local.common_tags
 
   source_configuration {
-    auto_deployments_enabled = false
+    auto_deployments_enabled = true
 
     authentication_configuration {
       access_role_arn = aws_iam_role.apprunner_ecr_access.arn
@@ -389,4 +396,15 @@ resource "aws_apprunner_custom_domain_association" "app" {
   domain_name          = trimspace(var.app_runner_custom_domain)
   enable_www_subdomain = var.app_runner_enable_www_subdomain
   service_arn          = aws_apprunner_service.app[0].arn
+}
+
+resource "aws_route53_record" "app_runner_custom_domain" {
+  count = var.app_runner_enabled && trimspace(var.app_runner_custom_domain) != "" && trimspace(var.route53_hosted_zone_name) != "" ? 1 : 0
+
+  zone_id         = data.aws_route53_zone.app_runner_custom_domain[0].zone_id
+  name            = trimspace(var.app_runner_custom_domain)
+  type            = "CNAME"
+  ttl             = 60
+  allow_overwrite = true
+  records         = [aws_apprunner_custom_domain_association.app[0].dns_target]
 }
