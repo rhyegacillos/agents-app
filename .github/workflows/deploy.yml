@@ -258,8 +258,21 @@ jobs:
           echo "::group::Deploy App Runner"
           echo "Target environment: ${DEPLOY_ENV}"
           existing_service_arn="$(awk -F= '/^[[:space:]]*existing_app_runner_service_arn[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+          service_exists_in_state="false"
+          if terraform -chdir=terraform state show 'aws_apprunner_service.app[0]' >/dev/null 2>&1; then
+            service_exists_in_state="true"
+          fi
+          if [[ -z "${existing_service_arn}" && "${service_exists_in_state}" == "true" ]]; then
+            existing_service_arn="$(terraform -chdir=terraform output -raw app_runner_service_arn 2>/dev/null || true)"
+          fi
           if [[ -n "${existing_service_arn}" ]]; then
-            echo "Existing App Runner ARN detected in ${TFVARS_FILE}. Updating existing service."
+            echo "Existing App Runner ARN detected. Updating existing service."
+            echo "Service ARN: ${existing_service_arn}"
+            export TF_VAR_existing_app_runner_service_arn="${existing_service_arn}"
+            chmod +x scripts/update_existing_app_runner_service.sh
+            ./scripts/update_existing_app_runner_service.sh --terraform-dir terraform --tfvars-file "${TFVARS_FILE}" --image-tag latest
+          elif [[ "${service_exists_in_state}" == "true" ]]; then
+            echo "Existing App Runner service found in Terraform state. Updating existing service."
             chmod +x scripts/update_existing_app_runner_service.sh
             ./scripts/update_existing_app_runner_service.sh --terraform-dir terraform --tfvars-file "${TFVARS_FILE}" --image-tag latest
           else
