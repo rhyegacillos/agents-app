@@ -26,7 +26,7 @@ jobs:
   destroy:
     if: ${{ github.event.inputs.confirm == 'DESTROY' }}
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
+    environment: ${{ github.event.inputs.environment == 'prod' && 'ideagen-prod' || github.event.inputs.environment }}
 
     env:
       DEPLOY_ENV: ${{ github.event.inputs.environment }}
