@@ -13,6 +13,13 @@ fi
 ENVIRONMENT=$1
 PROJECT_NAME=${2:-${APP_NAME:-digital-assistant}}
 
+if [ -z "${TF_VAR_bedrock_model_id:-}" ]; then
+    unset TF_VAR_bedrock_model_id
+fi
+if [ -z "${TF_VAR_async_chat_enabled:-}" ]; then
+    unset TF_VAR_async_chat_enabled
+fi
+
 echo "🗑️ Preparing to destroy ${PROJECT_NAME}-${ENVIRONMENT} infrastructure..."
 
 # Navigate to terraform directory

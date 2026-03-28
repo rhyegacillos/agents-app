@@ -4,6 +4,13 @@ set -e
 ENVIRONMENT=${1:-dev}          # dev | test | prod
 PROJECT_NAME=${2:-${APP_NAME:-digital-assistant}}
 
+if [ -z "${TF_VAR_bedrock_model_id:-}" ]; then
+  unset TF_VAR_bedrock_model_id
+fi
+if [ -z "${TF_VAR_async_chat_enabled:-}" ]; then
+  unset TF_VAR_async_chat_enabled
+fi
+
 echo "🚀 Deploying ${PROJECT_NAME} to ${ENVIRONMENT}..."
 
 # 1. Build + push Lambda container image

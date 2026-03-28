@@ -13,10 +13,23 @@ fi
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TFVARS_LOCAL="${ROOT_DIR}/terraform/terraform.tfvars.local"
 SECRET_NAME="${PROJECT_NAME}/${ENVIRONMENT}/runtime"
+EXPLICIT_SECRET_ID="${RUNTIME_SECRETS_ARN:-}"
+
+secret_id() {
+  if [ -n "$EXPLICIT_SECRET_ID" ]; then
+    printf '%s\n' "$EXPLICIT_SECRET_ID"
+  else
+    printf '%s\n' "$SECRET_NAME"
+  fi
+}
+
+secret_exists() {
+  aws secretsmanager describe-secret --secret-id "$(secret_id)" >/dev/null 2>&1
+}
 
 resolve_secret_arn() {
   aws secretsmanager describe-secret \
-    --secret-id "$SECRET_NAME" \
+    --secret-id "$(secret_id)" \
     --query 'ARN' \
     --output text 2>/dev/null || true
 }
@@ -74,10 +87,13 @@ case "$ACTION" in
   sync)
     payload_file=$(build_secret_payload)
     trap 'rm -f "$payload_file"' EXIT
-    if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+    if secret_exists; then
       aws secretsmanager put-secret-value \
-        --secret-id "$SECRET_NAME" \
+        --secret-id "$(secret_id)" \
         --secret-string "file://$payload_file" >/dev/null
+    elif [ -n "$EXPLICIT_SECRET_ID" ]; then
+      echo "Runtime secret does not exist for explicit RUNTIME_SECRETS_ARN: $EXPLICIT_SECRET_ID" >&2
+      exit 1
     else
       aws secretsmanager create-secret \
         --name "$SECRET_NAME" \
@@ -90,7 +106,10 @@ case "$ACTION" in
     resolve_secret_arn
     ;;
   delete)
-    if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+    if [ -n "$EXPLICIT_SECRET_ID" ]; then
+      exit 0
+    fi
+    if secret_exists; then
       aws secretsmanager delete-secret \
         --secret-id "$SECRET_NAME" \
         --force-delete-without-recovery >/dev/null
