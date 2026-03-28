@@ -62,6 +62,21 @@ if [ -f terraform.tfvars.local ]; then
     EXTRA_VARS+=(-var-file=terraform.tfvars.local)
 fi
 
+managed_resource_count() {
+    local count
+    count=$(terraform state list 2>/dev/null | grep -v '^data\.' | wc -l | tr -d ' ' || true)
+    if [ -z "$count" ]; then
+        count=0
+    fi
+    printf '%s\n' "$count"
+}
+
+echo "🔎 Checking for remaining managed resources..."
+if [ "$(managed_resource_count)" -eq 0 ]; then
+    echo "✅ No managed resources left in state. Skipping destroy."
+    exit 0
+fi
+
 echo "🔄 Refreshing state (syncing with already-deleted resources)..."
 VAR_FILE="terraform.tfvars"
 if [ -f "${ENVIRONMENT}.tfvars" ]; then
@@ -73,7 +88,7 @@ fi
 terraform apply -refresh-only -var-file="$VAR_FILE" "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
 
 echo "🔎 Checking for remaining managed resources..."
-if [ "$(terraform state list | grep -v '^data\.' | wc -l | tr -d ' ')" -eq 0 ]; then
+if [ "$(managed_resource_count)" -eq 0 ]; then
     echo "✅ No managed resources left in state. Skipping destroy."
     exit 0
 fi
