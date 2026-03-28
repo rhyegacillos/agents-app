@@ -20,7 +20,7 @@ The most important architectural concept in the entire repo is that high-risk ou
 
 ## 2. Topology and deployed shape
 
-In production the application is split into a static frontend and a serverless backend. The frontend is a Next.js app built as a static export and hosted from S3 behind CloudFront. The backend is a FastAPI application packaged as a Lambda container image. In async mode there is also a second Lambda function, using the same image, that runs as a worker. Upstash Redis is used for ephemeral job state and truth-gate state. S3 is used for durable conversation and memory storage, and also for uploads and generated PDFs when S3-backed storage is enabled.
+In production the application is split into a static frontend and a serverless backend. The frontend is a Next.js app built as a static export and hosted from S3 behind CloudFront. The backend is a FastAPI application packaged as a Lambda container image. In async mode there is also a second Lambda function, using the same image, that runs as a worker. Upstash Redis is used for ephemeral job state and truth-gate state. S3 is used for durable conversation and memory storage, and also for uploads and generated PDFs when S3-backed storage is enabled. Runtime-only secrets are stored in AWS Secrets Manager and injected into Lambda indirectly through a single secret ARN rather than through Terraform-managed plaintext environment variables.
 
 At a high level, the deployed path looks like this:
 
@@ -59,6 +59,8 @@ The frontend is static because the UI does not require server-side rendering or 
 The backend is split between an API Lambda and a worker Lambda because tool-heavy requests can exceed what is comfortable for a synchronous API Gateway request cycle. The API Lambda handles short inline requests and job enqueueing. The worker Lambda handles long-running chat flows, especially those that involve MCP subprocess startup, search, PDF rendering, and email delivery. The important detail is that the worker is not a second independent service. It calls back into the same orchestration path as the API runtime. The difference is transport and timeout behavior, not business logic.
 
 S3 is used because the system mostly needs blob-like persistence: conversation transcripts, memory JSON documents, uploads, and generated PDF artifacts. Upstash is used because the application needs a fast, transient coordination layer for async job status, cancellation, progress updates, and truth-gate context snapshots. The system is intentionally not using a relational database because the current product does not need relational querying strongly enough to justify the additional complexity.
+
+Deployment is now driven by one main CI workflow in `.github/workflows/ci.yml` plus a separate manual destroy workflow in `.github/workflows/destroy.yml`. The normal branch-push path targets the `prod` GitHub Environment by default, while still allowing manual deployment of `dev`, `test`, or `prod`. That deployment path is no longer just "Terraform plus some GitHub wrapper"; it explicitly includes an environment-specific runtime-secret resolution step before Terraform is invoked.
 
 ## 3. Repository structure and why it looks this way
 
@@ -371,13 +373,17 @@ The conversation memory bucket is private. The frontend bucket is configured for
 
 The Lambda functions both use the same ECR image. The API Lambda uses the default image command, which resolves to the FastAPI/Mangum entrypoint. The worker Lambda overrides the command to `worker_handler.handler`. This is a very practical pattern for a codebase like this because it keeps the runtime artifacts unified while still letting Terraform expose two separate operational roles.
 
+Terraform no longer treats the Grok, Brave, and Resend runtime keys as active deployment inputs in the way the older stack did. Those variables still exist in `terraform/variables.tf` for compatibility, but they are now optional and default to empty strings. The infrastructure-relevant secret input is `runtime_secrets_arn`. Terraform passes that ARN into Lambda as `APP_RUNTIME_SECRETS_ARN` and grants the Lambda role `secretsmanager:GetSecretValue` on that specific secret. The backend then loads concrete secret values at runtime through `backend/secret_env.py`.
+
 API Gateway is configured with root and proxy resources, both in Lambda proxy mode. Mock `OPTIONS` resources exist for CORS handling. API Gateway throttling settings are also applied at the stage level.
 
 CloudFront is configured with the S3 website endpoint as origin, redirects HTTP to HTTPS, and rewrites 404s to `index.html` so that deep links in the SPA still land on the frontend shell. When a custom domain is enabled, Terraform adds ACM resources and aliases, and may create a CloudFront Function to enforce the canonical host.
 
 The deployment script in `scripts/deploy.sh` ties everything together operationally. It initializes Terraform, selects the correct workspace, ensures ECR exists, builds the backend container image, pushes it, applies Terraform, resolves the final image digest, forces both Lambda functions to refresh to that digest, builds the frontend static export with the deployed API URL, syncs the frontend to S3, and invalidates CloudFront. The explicit post-apply Lambda image update by digest exists because mutable tags are not by themselves a reliable guarantee that Lambda will pick up the new image bytes.
 
-The GitHub Actions integration in Terraform is intentionally partial. `terraform/github_actions.tf` can attach ECR power-user permissions to an existing GitHub Actions role, but it does not fully stand up the trust relationship and all CI/CD concerns by itself. That reflects the repo’s current operational boundary rather than an oversight in this document.
+The modern GitHub Actions path wraps that script with one more important layer. Before `deploy.sh` runs, `.github/workflows/ci.yml` resolves an environment-scoped runtime secret ARN from repository variables such as `DEV_RUNTIME_SECRETS_ARN` and `PROD_RUNTIME_SECRETS_ARN`, falls back to `RUNTIME_SECRETS_ARN` only if needed, and then calls `scripts/runtime_secret.sh sync` to update the AWS Secrets Manager payload for that environment. Only after that sync does CI export `TF_VAR_runtime_secrets_arn` and invoke `deploy.sh`. In other words, the deployed secret model is now "precreated per-environment secret plus per-deploy content refresh", not "Terraform receives raw runtime API keys directly from GitHub".
+
+The GitHub Actions integration in Terraform is still intentionally partial. `terraform/github_actions.tf` can attach some role permissions, but it does not fully stand up the OIDC trust relationship, repository variables, GitHub Environments, or the runtime secret management contract by itself. Those concerns live at the operational boundary between GitHub configuration, IAM, Secrets Manager, and the workflow YAML. That is why the deployment system now has to be understood as "Terraform plus scripts plus GitHub Actions environment wiring", not as Terraform alone.
 
 ## 21. Constraints, tradeoffs, and current gaps
 
