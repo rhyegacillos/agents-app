@@ -7,11 +7,13 @@ import boto3
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from secret_env import get_secret_env
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-GROK_API_KEY = os.getenv("GROK_API_KEY", "").strip()
+GROK_API_KEY = get_secret_env("GROK_API_KEY", "")
 GROK_API_URL = os.getenv("GROK_API_URL", "https://api.x.ai/v1").strip()
 GROK_MODEL_ID = os.getenv("GROK_MODEL_ID", "grok-4-1-fast").strip()
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0").strip()

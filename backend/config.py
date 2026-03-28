@@ -7,9 +7,21 @@ import boto3
 from dotenv import load_dotenv
 
 from resources import facts
+from secret_env import get_secret_env, hydrate_secret_env
 
 
 load_dotenv()
+hydrate_secret_env(
+    (
+        "GROK_API_KEY",
+        "BRAVE_API_KEY",
+        "RESEND_API_KEY",
+        "UPSTASH_REDIS_REST_URL",
+        "UPSTASH_REDIS_REST_TOKEN",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    )
+)
 
 APP_TIMEZONE = (os.getenv("APP_TIMEZONE") or "Asia/Manila").strip() or "Asia/Manila"
 os.environ["APP_TIMEZONE"] = APP_TIMEZONE
@@ -56,9 +68,9 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "bedrock").strip().lower()
 # Grok model configuration
 GROK_MODEL_ID = os.getenv("GROK_MODEL_ID", "grok-4-1-fast")
 GROK_API_URL = os.getenv("GROK_API_URL", "https://api.x.ai/v1")
-GROK_API_KEY = os.getenv("GROK_API_KEY", "").strip()
+GROK_API_KEY = get_secret_env("GROK_API_KEY", "")
 
-# Bedrock client (fallback)
+# Bedrock client (default runtime for Bedrock-first deployments)
 DEFAULT_AWS_REGION = os.getenv("DEFAULT_AWS_REGION", "us-east-1")
 bedrock_client = boto3.client("bedrock-runtime", region_name=DEFAULT_AWS_REGION)
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
@@ -69,7 +81,8 @@ ENABLE_MCP_SEARCH = os.getenv("ENABLE_MCP_SEARCH", "true").lower() == "true"
 # Async chat (queue/worker) configuration
 ASYNC_CHAT_ENABLED = os.getenv("ASYNC_CHAT_ENABLED", "false").lower() == "true"
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
-UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+UPSTASH_REDIS_REST_URL = get_secret_env("UPSTASH_REDIS_REST_URL", UPSTASH_REDIS_REST_URL)
+UPSTASH_REDIS_REST_TOKEN = get_secret_env("UPSTASH_REDIS_REST_TOKEN", "")
 ASYNC_JOB_TTL_SECONDS = int(os.getenv("ASYNC_JOB_TTL_SECONDS", "3600"))
 ASYNC_WORKER_FUNCTION_NAME = os.getenv("ASYNC_WORKER_FUNCTION_NAME", "").strip()
 LLM_TIMEOUT_SECONDS = os.getenv("LLM_TIMEOUT_SECONDS", "").strip()

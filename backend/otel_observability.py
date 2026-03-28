@@ -1,11 +1,15 @@
 import logging
 import os
+import re
 from typing import Any, Dict, Optional
 
+from secret_env import get_secret_env
+from opentelemetry.context import Context, get_current
 from opentelemetry import _logs, trace
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.propagate import extract, inject
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
@@ -16,6 +20,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 _INITIALIZED = False
 _LOGS_INITIALIZED = False
+_TRACE_HEADER_KEYS = ("traceparent", "tracestate", "baggage")
+_DEFAULT_FASTAPI_EXCLUDED_URLS = r"^/quota$,^/jobs(?:/.*)?$,^/memory(?:/.*)?$"
 
 
 def _truthy(raw: str) -> bool:
@@ -71,7 +77,7 @@ def _init_otel_logs(resource: Resource, default_headers: Dict[str, str], trace_e
         logging.warning("[otel] logs disabled (OTEL_EXPORTER_OTLP_LOGS_ENDPOINT missing)")
         return False
 
-    logs_headers = _parse_headers(os.getenv("OTEL_EXPORTER_OTLP_LOGS_HEADERS", "")) or default_headers
+    logs_headers = _parse_headers(get_secret_env("OTEL_EXPORTER_OTLP_LOGS_HEADERS", "")) or default_headers
 
     provider = LoggerProvider(resource=resource)
     exporter = OTLPLogExporter(endpoint=logs_endpoint, headers=logs_headers)
@@ -136,7 +142,7 @@ def init_otel() -> bool:
         resource=resource,
         sampler=ParentBased(TraceIdRatioBased(sample_rate)),
     )
-    headers = _parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS", ""))
+    headers = _parse_headers(get_secret_env("OTEL_EXPORTER_OTLP_HEADERS", ""))
     exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
     processor = BatchSpanProcessor(
         exporter,
@@ -179,9 +185,28 @@ def instrument_fastapi_app(app: Any) -> None:
     if not _INITIALIZED:
         return
     try:
-        FastAPIInstrumentor.instrument_app(app)
+        excluded_urls = get_fastapi_excluded_urls()
+        FastAPIInstrumentor.instrument_app(app, excluded_urls=excluded_urls)
     except Exception:
         logging.exception("[otel] failed to instrument FastAPI app")
+
+
+def get_fastapi_excluded_urls() -> str:
+    return os.getenv("OTEL_FASTAPI_EXCLUDED_URLS", "").strip() or _DEFAULT_FASTAPI_EXCLUDED_URLS
+
+
+def should_trace_http_path(path: Optional[str]) -> bool:
+    normalized = str(path or "").strip()
+    if not normalized:
+        return True
+    patterns = [part.strip() for part in get_fastapi_excluded_urls().split(",") if part.strip()]
+    for pattern in patterns:
+        try:
+            if re.search(pattern, normalized):
+                return False
+        except re.error:
+            logging.exception("[otel] invalid OTEL_FASTAPI_EXCLUDED_URLS pattern=%s", pattern)
+    return True
 
 
 def get_tracer(name: str):
@@ -207,3 +232,35 @@ def record_current_span_exception(exc: Exception) -> None:
     if span is None:
         return
     span.record_exception(exc)
+
+
+def inject_current_trace_headers() -> Dict[str, str]:
+    carrier: Dict[str, str] = {}
+    try:
+        inject(carrier)
+    except Exception:
+        logging.exception("[otel] failed to inject trace headers")
+        return {}
+    return {
+        str(key).lower(): str(value)
+        for key, value in carrier.items()
+        if key and value and str(key).lower() in _TRACE_HEADER_KEYS
+    }
+
+
+def extract_trace_context(carrier: Optional[Dict[str, Any]]) -> Context:
+    normalized: Dict[str, str] = {}
+    for key, value in (carrier or {}).items():
+        key_str = str(key or "").strip().lower()
+        if key_str not in _TRACE_HEADER_KEYS:
+            continue
+        value_str = str(value or "").strip()
+        if value_str:
+            normalized[key_str] = value_str
+    if not normalized:
+        return get_current()
+    try:
+        return extract(normalized)
+    except Exception:
+        logging.exception("[otel] failed to extract trace context")
+        return get_current()

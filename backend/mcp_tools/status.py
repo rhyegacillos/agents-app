@@ -6,9 +6,11 @@ from urllib.parse import quote
 
 import requests
 
+from secret_env import get_secret_env
+
 
 def _upstash_enabled() -> bool:
-    return bool(os.getenv("UPSTASH_REDIS_REST_URL", "").strip() and os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip())
+    return bool(get_secret_env("UPSTASH_REDIS_REST_URL", "") and get_secret_env("UPSTASH_REDIS_REST_TOKEN", ""))
 
 
 def _job_key(job_id: str) -> str:
@@ -16,8 +18,8 @@ def _job_key(job_id: str) -> str:
 
 
 def _upstash_request(path: str, *, method: str = "GET", data: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    base = os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
-    token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+    base = get_secret_env("UPSTASH_REDIS_REST_URL", "")
+    token = get_secret_env("UPSTASH_REDIS_REST_TOKEN", "")
     if not base or not token:
         return None
     url = f"{base.rstrip('/')}/{path.lstrip('/')}"

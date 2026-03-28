@@ -52,6 +52,12 @@ variable "resend_api_key" {
   sensitive   = true
 }
 
+variable "runtime_secrets_arn" {
+  description = "Secrets Manager ARN that holds runtime-only secret values"
+  type        = string
+  default     = ""
+}
+
 variable "ai_provider" {
   description = "AI Provider"
   type        = string

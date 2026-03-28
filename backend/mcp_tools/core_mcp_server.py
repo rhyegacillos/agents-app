@@ -8,6 +8,7 @@ import urllib.request
 import html
 import base64
 import mimetypes
+from functools import wraps
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from urllib.parse import urlparse
@@ -20,7 +21,11 @@ from docx import Document
 import resend
 import markdown as md
 from mcp_tools.bootstrap import bootstrap_mcp_process
+from mcp_tools.idempotency import idempotency_key, read_result, write_result
 from mcp_tools.status import update_job_status
+from mcp_tools.tracing import annotate_tool_result, start_mcp_tool_span
+from otel_observability import get_tracer as get_otel_tracer, set_current_span_attributes
+from secret_env import get_secret_env
 from tool_instructions import tool_instructions_for
 
 mcp = FastMCP("Core-Tools-Service")
@@ -57,7 +62,7 @@ def _truncate_log(text: str, limit: int = 400) -> str:
     return f"{head}…[truncated {len(text)-2*limit} chars]…{tail}"
 
 # ---- Resend email ----
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_API_KEY = get_secret_env("RESEND_API_KEY", "")
 RESEND_FROM = os.getenv("RESEND_FROM", "no-reply@agentairg.site").strip()
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
@@ -76,10 +81,16 @@ _EMAIL_TAG_RE = re.compile(r"<[^>]+>")
 
 def _tool(name: str):
     def decorator(func):
+        @wraps(func)
+        async def wrapped(*args, **kwargs):
+            with start_mcp_tool_span(name) as span:
+                result = await func(*args, **kwargs)
+                annotate_tool_result(span, result)
+                return result
         doc = tool_instructions_for(name)
         if doc:
-            func.__doc__ = doc
-        return mcp.tool()(func)
+            wrapped.__doc__ = doc
+        return mcp.tool()(wrapped)
     return decorator
 
 
@@ -833,140 +844,150 @@ async def generate_pdf_from_text(
     """
     Generate a PDF from markdown or HTML content.
     """
-    update_job_status("Tool: Generate PDF", 55)
-    logging.info("[core/pdf] generate start chars=%d", len(content or ""))
-    if PDF_DEBUG_LOG:
-        logging.info(
-            "[core/pdf] generate input title=%s filename=%s chars=%d preview=%r",
-            title,
-            filename,
-            len(content or ""),
-            _truncate_log(content or ""),
+    tracer = get_otel_tracer("digital_assistant.mcp.core")
+    with tracer.start_as_current_span("core.pdf.generate"):
+        update_job_status("Tool: Generate PDF", 55)
+        set_current_span_attributes(
+            {
+                "pdf.title": title or "",
+                "pdf.filename": filename or "",
+                "pdf.input_chars": len(content or ""),
+            }
         )
-    if not content or not content.strip():
-        return {"status": "error", "error": "content required"}
-    if len(content) > _MAX_PDF_CHARS:
-        return {"status": "error", "error": "content too large"}
-    safe_name = _sanitize_filename(filename or (title or "download"))
-    fd, tmp_path = tempfile.mkstemp(prefix="pdf-", suffix=".pdf")
-    os.close(fd)
-    try:
-        raw_text = str(content or "")
-        raw_html = None
-        if _looks_like_json(raw_text):
-            try:
-                parsed = json.loads(_extract_json_candidate(raw_text))
-            except Exception as exc:
-                return _pdf_error_response(
-                    [
-                        _pdf_err(
-                            "content",
-                            "INVALID_JSON",
-                            expected="valid JSON object or array",
-                            received=str(exc),
-                            suggested_fix="Send valid JSON content (or fenced ```json) with a blocks array.",
-                        )
-                    ],
-                    code="PDF_INPUT_INVALID",
-                    message="Invalid JSON input for PDF generation",
-                    fixable=True,
-                )
-
-            blocks = None
-            if isinstance(parsed, dict):
-                if isinstance(parsed.get("blocks"), list):
-                    blocks = parsed.get("blocks") or []
-                if not title:
-                    parsed_title = parsed.get("title")
-                    if isinstance(parsed_title, str) and parsed_title.strip():
-                        title = parsed_title
-            elif isinstance(parsed, list):
-                blocks = parsed
-            else:
-                return _pdf_error_response(
-                    [
-                        _pdf_err(
-                            "content",
-                            "INVALID_TYPE",
-                            expected="JSON object with blocks array or JSON array of blocks",
-                            received=type(parsed).__name__,
-                            suggested_fix="Provide `{ \"title\": \"...\", \"blocks\": [...] }` or an array of blocks.",
-                        )
-                    ],
-                    code="PDF_INPUT_INVALID",
-                    message="Invalid JSON payload type for PDF generation",
-                    fixable=True,
-                )
-
-            if not isinstance(blocks, list) or not blocks:
-                return _pdf_error_response(
-                    [
-                        _pdf_err(
-                            "content.blocks",
-                            "MISSING",
-                            expected="non-empty blocks array",
-                            received=list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__,
-                            suggested_fix="Provide a non-empty blocks array.",
-                        )
-                    ],
-                    code="PDF_INPUT_INVALID",
-                    message="Missing blocks array in JSON input",
-                    fixable=True,
-                )
-            if len(blocks) > PDF_MAX_BLOCKS:
-                return _pdf_error_response(
-                    [
-                        _pdf_err(
-                            "content.blocks",
-                            "TOO_MANY_ITEMS",
-                            expected=f"<= {PDF_MAX_BLOCKS}",
-                            received=len(blocks),
-                            suggested_fix="Split the report into smaller sections or fewer blocks.",
-                        )
-                    ],
-                    code="PDF_INPUT_INVALID",
-                    message="Too many blocks in JSON input",
-                    fixable=True,
-                )
-
-            raw_html = _render_blocks_html_minimal(blocks)
-            if not (raw_html or "").strip():
-                return _pdf_error_response(
-                    [
-                        _pdf_err(
-                            "content.blocks",
-                            "UNRENDERABLE",
-                            expected="renderable markdown/text/image/table/section blocks",
-                            received="no renderable blocks",
-                            suggested_fix="Use supported block types with valid fields.",
-                        )
-                    ],
-                    code="PDF_INPUT_INVALID",
-                    message="Blocks could not be rendered",
-                    fixable=True,
-                )
-        else:
-            raw_html = _markdown_to_html(raw_text)
+        logging.info("[core/pdf] generate start chars=%d", len(content or ""))
         if PDF_DEBUG_LOG:
-            logging.info("[core/pdf] simple render title=%r chars=%d preview=%r", title, len(raw_text), _truncate_log(raw_text))
-        doc = {"title": title or "Document", "raw": raw_text, "raw_html": raw_html}
-        html_doc = _build_pdf_html(doc)
-        _write_pdf_from_html(html_doc, tmp_path, title=title)
-        size_bytes = os.path.getsize(tmp_path)
-        if size_bytes > _MAX_PDF_BYTES:
-            return {"status": "error", "error": "PDF exceeds size limit"}
-        result = _store_pdf(tmp_path, safe_name, size_bytes)
-        logging.info("[core/pdf] generate success filename=%s", safe_name)
-        return result
-    except Exception as exc:
-        logging.error("[core/pdf] generate error: %s", exc)
-        return {"status": "error", "error": str(exc)}
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+            logging.info(
+                "[core/pdf] generate input title=%s filename=%s chars=%d preview=%r",
+                title,
+                filename,
+                len(content or ""),
+                _truncate_log(content or ""),
+            )
+        if not content or not content.strip():
+            return {"status": "error", "error": "content required"}
+        if len(content) > _MAX_PDF_CHARS:
+            return {"status": "error", "error": "content too large"}
+        safe_name = _sanitize_filename(filename or (title or "download"))
+        fd, tmp_path = tempfile.mkstemp(prefix="pdf-", suffix=".pdf")
+        os.close(fd)
+        try:
+            raw_text = str(content or "")
+            raw_html = None
+            if _looks_like_json(raw_text):
+                try:
+                    parsed = json.loads(_extract_json_candidate(raw_text))
+                except Exception as exc:
+                    return _pdf_error_response(
+                        [
+                            _pdf_err(
+                                "content",
+                                "INVALID_JSON",
+                                expected="valid JSON object or array",
+                                received=str(exc),
+                                suggested_fix="Send valid JSON content (or fenced ```json) with a blocks array.",
+                            )
+                        ],
+                        code="PDF_INPUT_INVALID",
+                        message="Invalid JSON input for PDF generation",
+                        fixable=True,
+                    )
+
+                blocks = None
+                if isinstance(parsed, dict):
+                    if isinstance(parsed.get("blocks"), list):
+                        blocks = parsed.get("blocks") or []
+                    if not title:
+                        parsed_title = parsed.get("title")
+                        if isinstance(parsed_title, str) and parsed_title.strip():
+                            title = parsed_title
+                elif isinstance(parsed, list):
+                    blocks = parsed
+                else:
+                    return _pdf_error_response(
+                        [
+                            _pdf_err(
+                                "content",
+                                "INVALID_TYPE",
+                                expected="JSON object with blocks array or JSON array of blocks",
+                                received=type(parsed).__name__,
+                                suggested_fix="Provide `{ \"title\": \"...\", \"blocks\": [...] }` or an array of blocks.",
+                            )
+                        ],
+                        code="PDF_INPUT_INVALID",
+                        message="Invalid JSON payload type for PDF generation",
+                        fixable=True,
+                    )
+
+                if not isinstance(blocks, list) or not blocks:
+                    return _pdf_error_response(
+                        [
+                            _pdf_err(
+                                "content.blocks",
+                                "MISSING",
+                                expected="non-empty blocks array",
+                                received=list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__,
+                                suggested_fix="Provide a non-empty blocks array.",
+                            )
+                        ],
+                        code="PDF_INPUT_INVALID",
+                        message="Missing blocks array in JSON input",
+                        fixable=True,
+                    )
+                if len(blocks) > PDF_MAX_BLOCKS:
+                    return _pdf_error_response(
+                        [
+                            _pdf_err(
+                                "content.blocks",
+                                "TOO_MANY_ITEMS",
+                                expected=f"<= {PDF_MAX_BLOCKS}",
+                                received=len(blocks),
+                                suggested_fix="Split the report into smaller sections or fewer blocks.",
+                            )
+                        ],
+                        code="PDF_INPUT_INVALID",
+                        message="Too many blocks in JSON input",
+                        fixable=True,
+                    )
+
+                raw_html = _render_blocks_html_minimal(blocks)
+                if not (raw_html or "").strip():
+                    return _pdf_error_response(
+                        [
+                            _pdf_err(
+                                "content.blocks",
+                                "UNRENDERABLE",
+                                expected="renderable markdown/text/image/table/section blocks",
+                                received="no renderable blocks",
+                                suggested_fix="Use supported block types with valid fields.",
+                            )
+                        ],
+                        code="PDF_INPUT_INVALID",
+                        message="Blocks could not be rendered",
+                        fixable=True,
+                    )
+            else:
+                raw_html = _markdown_to_html(raw_text)
+            if PDF_DEBUG_LOG:
+                logging.info("[core/pdf] simple render title=%r chars=%d preview=%r", title, len(raw_text), _truncate_log(raw_text))
+            doc = {"title": title or "Document", "raw": raw_text, "raw_html": raw_html}
+            html_doc = _build_pdf_html(doc)
+            _write_pdf_from_html(html_doc, tmp_path, title=title)
+            size_bytes = os.path.getsize(tmp_path)
+            set_current_span_attributes({"pdf.output_filename": safe_name, "pdf.size_bytes": size_bytes})
+            if size_bytes > _MAX_PDF_BYTES:
+                return {"status": "error", "error": "PDF exceeds size limit"}
+            result = _store_pdf(tmp_path, safe_name, size_bytes)
+            logging.info("[core/pdf] generate success filename=%s", safe_name)
+            return result
+        except Exception as exc:
+            logging.error("[core/pdf] generate error: %s", exc)
+            return {"status": "error", "error": str(exc)}
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
 
 # ---- File reader ----
@@ -1211,50 +1232,98 @@ def _render_email_html(body: str) -> Tuple[Optional[str], Optional[str]]:
 
 # ---- Resend email ----
 @_tool("send_resend_email")
-async def send_resend_email(to: str, subject: str, body: str) -> str:
+async def send_resend_email(to: str, subject: str, body: str) -> Dict[str, Any]:
     """
     Sends an email using Resend.
     """
-    update_job_status("Tool: Send Email", 70)
-    logging.info(
-        "[core/resend] invoked to=%s subject=%s body_chars=%d",
-        to,
-        subject,
-        len(body or ""),
-    )
-    if not RESEND_API_KEY:
-        logging.error("[core/resend] RESEND_API_KEY not configured")
-        return "Email failed: RESEND_API_KEY not configured"
-    try:
-        rendered_body, render_error = _render_email_html(body or "")
-        if render_error:
-            logging.error("[core/resend] body validation failed: %s", render_error)
-            return f"Email failed: {render_error}"
+    tracer = get_otel_tracer("digital_assistant.mcp.core")
+    with tracer.start_as_current_span("core.email.send"):
+        recipient_domain = (to.rsplit("@", 1)[-1] if "@" in (to or "") else "").strip().lower()
+        dedupe_key = idempotency_key(
+            action="send_resend_email",
+            payload={
+                "to": (to or "").strip().lower(),
+                "subject": str(subject or "").strip(),
+            },
+        )
+        prior = read_result(dedupe_key)
+        set_current_span_attributes(
+            {
+                "email.recipient_domain": recipient_domain,
+                "email.subject_chars": len(subject or ""),
+                "email.body_chars": len(body or ""),
+                "email.idempotency_key": dedupe_key,
+            }
+        )
+        if isinstance(prior, dict):
+            set_current_span_attributes({"email.deduped": True})
+            logging.warning("[core/resend] duplicate send suppressed key=%s", dedupe_key)
+            prior.setdefault("deduped", True)
+            return prior
+        update_job_status("Tool: Send Email", 70)
+        logging.info(
+            "[core/resend] invoked to=%s subject=%s body_chars=%d",
+            to,
+            subject,
+            len(body or ""),
+        )
+        if not RESEND_API_KEY:
+            logging.error("[core/resend] RESEND_API_KEY not configured")
+            return write_result(dedupe_key, {
+                "status": "error",
+                "error_type": "config_error",
+                "message": "Email failed: RESEND_API_KEY not configured",
+            })
+        try:
+            rendered_body, render_error = _render_email_html(body or "")
+            if render_error:
+                logging.error("[core/resend] body validation failed: %s", render_error)
+                return write_result(dedupe_key, {
+                    "status": "error",
+                    "error_type": "validation_error",
+                    "message": f"Email failed: {render_error}",
+                })
 
-        logging.info("[core/resend] sending email to=%s subject=%s", to, subject)
-        params = {
-            "from": f"Digital Assistant <{RESEND_FROM}>",
-            "to": [to],
-            "subject": subject,
-            "html": rendered_body,
-        }
-        email = resend.Emails.send(params)
-    except Exception as exc:
-        # Resend errors can be transport, auth, domain verification, etc.
-        logging.exception("[core/resend] send failed to=%s subject=%s", to, subject)
-        return f"Email failed: {type(exc).__name__}: {exc}"
+            logging.info("[core/resend] sending email to=%s subject=%s", to, subject)
+            params = {
+                "from": f"Digital Assistant <{RESEND_FROM}>",
+                "to": [to],
+                "subject": subject,
+                "html": rendered_body,
+            }
+            email = resend.Emails.send(params)
+        except Exception as exc:
+            logging.exception("[core/resend] send failed to=%s subject=%s", to, subject)
+            return write_result(dedupe_key, {
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "message": f"Email failed: {type(exc).__name__}: {exc}",
+            })
 
-    if not isinstance(email, dict):
-        logging.error("[core/resend] unexpected response type: %s value=%r", type(email), email)
-        return "Email failed: unexpected response from Resend"
+        if not isinstance(email, dict):
+            logging.error("[core/resend] unexpected response type: %s value=%r", type(email), email)
+            return write_result(dedupe_key, {
+                "status": "error",
+                "error_type": "unexpected_response_type",
+                "message": "Email failed: unexpected response from Resend",
+            })
 
-    email_id = email.get("id")
-    if not email_id:
-        logging.error("[core/resend] missing id in response: %r", email)
-        return f"Email failed: unexpected response from Resend: {email}"
+        email_id = email.get("id")
+        if not email_id:
+            logging.error("[core/resend] missing id in response: %r", email)
+            return write_result(dedupe_key, {
+                "status": "error",
+                "error_type": "missing_email_id",
+                "message": f"Email failed: unexpected response from Resend: {email}",
+            })
 
-    logging.info("[core/resend] sent email id=%s", email_id)
-    return f"Email sent successfully. ID: {email_id}"
+        set_current_span_attributes({"email.id": str(email_id)})
+        logging.info("[core/resend] sent email id=%s", email_id)
+        return write_result(dedupe_key, {
+            "status": "ok",
+            "email_id": str(email_id),
+            "message": f"Email sent successfully. ID: {email_id}",
+        })
 
 
 if __name__ == "__main__":

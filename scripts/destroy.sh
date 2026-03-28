@@ -44,6 +44,12 @@ fi
 # Select the workspace
 terraform workspace select "$ENVIRONMENT"
 
+if [ -z "${TF_VAR_runtime_secrets_arn:-}" ]; then
+    chmod +x ../scripts/runtime_secret.sh
+    TF_VAR_runtime_secrets_arn=$(../scripts/runtime_secret.sh resolve "$ENVIRONMENT" "$PROJECT_NAME")
+    export TF_VAR_runtime_secrets_arn
+fi
+
 EXTRA_VARS=()
 if [ -f terraform.tfvars.local ]; then
     EXTRA_VARS+=(-var-file=terraform.tfvars.local)
@@ -154,6 +160,10 @@ fi
 
 # Run terraform destroy with auto-approve
 terraform destroy -var-file="$VAR_FILE" "${EXTRA_VARS[@]}" -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve
+
+if [ -n "${TF_VAR_runtime_secrets_arn:-}" ]; then
+    ../scripts/runtime_secret.sh delete "$ENVIRONMENT" "$PROJECT_NAME"
+fi
 
 echo "✅ Infrastructure for ${ENVIRONMENT} has been destroyed!"
 echo ""

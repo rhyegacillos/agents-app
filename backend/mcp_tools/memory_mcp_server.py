@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any, Dict, List
 
 import boto3
@@ -10,12 +11,15 @@ from openai import AsyncOpenAI
 
 from mcp_tools.bootstrap import bootstrap_mcp_process
 from mcp_tools.status import update_job_status
+from mcp_tools.tracing import annotate_tool_result, start_mcp_tool_span
+from otel_observability import get_tracer as get_otel_tracer, set_current_span_attributes
+from secret_env import get_secret_env
 from tool_instructions import tool_instructions_for
 
 mcp = FastMCP("Memory-Extractor-Service")
 
 AI_PROVIDER = os.getenv("AI_PROVIDER", "bedrock").strip().lower()
-GROK_API_KEY = os.getenv("GROK_API_KEY", "").strip()
+GROK_API_KEY = get_secret_env("GROK_API_KEY", "")
 GROK_API_URL = os.getenv("GROK_API_URL", "https://api.x.ai/v1").strip()
 GROK_MODEL_ID = os.getenv("GROK_MODEL_ID", "grok-4-1-fast").strip()
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0").strip()
@@ -31,10 +35,16 @@ bedrock_client = boto3.client(
 
 def _tool(name: str):
     def decorator(func):
+        @wraps(func)
+        async def wrapped(*args, **kwargs):
+            with start_mcp_tool_span(name) as span:
+                result = await func(*args, **kwargs)
+                annotate_tool_result(span, result)
+                return result
         doc = tool_instructions_for(name)
         if doc:
-            func.__doc__ = doc
-        return mcp.tool()(func)
+            wrapped.__doc__ = doc
+        return mcp.tool()(wrapped)
     return decorator
 
 
@@ -84,113 +94,117 @@ async def extract_memory_candidates(
     Extract memory candidates from a conversation snippet.
     Returns: {"candidates": [ {text, category, ttl_days, excerpt} ]}
     """
-    update_job_status("Tool: Memory Extractor", 60)
-    ttl_map = {layer.get("name"): layer.get("ttl_days") for layer in memory_layers}
-    categories = ", ".join([layer.get("name", "") for layer in memory_layers if layer.get("name")])
-    existing_memory = existing_memory or []
-
-    logging.info(
-        "[memory_mcp] extract start chars=%d categories=%s",
-        len(conversation),
-        categories or "none",
-    )
-
-    system = (
-        "You are a memory extraction engine for an LLM assistant.\n"
-        "Goal: propose new, durable memory items about the user (preferences, stable constraints) or their project specs "
-        "that will measurably improve future responses.\n\n"
-
-        "OUTPUT (strict): Return JSON only with this exact shape:\n"
-        "{\"candidates\": [{\"text\": \"...\", \"category\": \"...\", \"ttl_days\": 0, \"excerpt\": \"...\"}]}\n\n"
-
-        "HARD RULES:\n"
-        "1) Allowed categories only. category MUST be one of: " + categories + "\n"
-        "2) Privacy/safety: NEVER store secrets or sensitive/private data (credentials, tokens, personal identifiers, "
-        "precise location, medical/financial details, legal issues, account numbers, private contact info, etc.).\n"
-        "3) Exclude defaults: Do NOT store markdown formatting preferences (assume markdown is already default). "
-        "Other format preferences (e.g., strict JSON, plaintext) are allowed ONLY if explicitly requested.\n"
-        "4) No duplicates: Treat Existing memory as canonical. If a candidate overlaps in meaning with any Existing memory item, "
-        "SKIP it (do not paraphrase, restate, or slightly reword it). 'Overlap' includes synonyms or the same preference stated differently.\n"
-        "5) Durability filter: Only store items likely to remain useful for weeks+. Ignore one-off tasks, ephemeral context, "
-        "and transient states.\n"
-        "6) Preference detection: Prefer explicit preferences (e.g., 'I prefer', 'always', 'from now on'), "
-        "but you MAY infer a preference when the user repeats the same request across multiple messages "
-        "or corrects the assistant's behavior (e.g., 'stop doing X, do Y instead').\n"
-        "7) One-off exclusion: If the request is about a single task or a one-time output (e.g., 'generate a PDF for this' once), "
-        "skip it.\n"
-        "8) Do NOT store transient failures or delivery issues as memories. "
-        "You may store a durable preference that results from repeated failures only if it is phrased as a preference "
-        "(e.g., 'always include a download link in addition to email').\n"
-        "9) Format scope: Store output format preferences only if the user indicates it should apply broadly "
-        "(e.g., 'always use JSON'), not for a single response.\n"
-        "10) Specificity: Keep each 'text' short, concrete, and actionable.\n"
-        "11) De-dup within this response: If two candidates are similar, keep only the single most specific one.\n"
-        "12) Evidence: excerpt MUST be a short verbatim snippet from the conversation provided (at least 5 words).\n"
-        "13) Limit: Return at most 5 candidates. If none qualify, return {\"candidates\": []}.\n\n"
-
-        "TTL POLICY:\n"
-        "- ttl_days must match the TTL for its category from the provided category/TTL list.\n"
-        "- If the category is not in the TTL list, skip the candidate.\n"
-    )
-
-
-    user = (
-        "INPUTS:\n\n"
-        "Conversation snippet:\n"
-        f"{conversation}\n\n"
-        "Allowed memory categories (with TTL days):\n"
-        f"{memory_layers}\n\n"
-        "Existing memory (MUST NOT duplicate or paraphrase):\n"
-        f"{existing_memory}\n\n"
-        "Store guidance (positive examples / scope):\n"
-        f"{what_to_store}\n\n"
-        "Do-not-store guidance (negative examples):\n"
-        f"{what_not_to_store}\n\n"
-        "TASK:\n"
-        "- Extract up to 5 **new** memory candidates that comply with HARD RULES.\n"
-        "- Return JSON only.\n"
-    )
-
-    try:
-        if AI_PROVIDER == "bedrock":
-            raw = _call_bedrock(system, user)
-        else:
-            raw = await _call_grok(system, user)
-        logging.info("[memory_mcp] model returned chars=%d", len(raw))
-        payload = _extract_json(raw)
-        candidates = payload.get("candidates", [])
+    tracer = get_otel_tracer("digital_assistant.mcp.memory")
+    with tracer.start_as_current_span("memory.extract.model_call"):
+        update_job_status("Tool: Memory Extractor", 60)
+        ttl_map = {layer.get("name"): layer.get("ttl_days") for layer in memory_layers}
+        categories = ", ".join([layer.get("name", "") for layer in memory_layers if layer.get("name")])
+        existing_memory = existing_memory or []
+        set_current_span_attributes(
+            {
+                "memory.conversation_chars": len(conversation or ""),
+                "memory.layer_count": len(memory_layers or []),
+                "memory.existing_count": len(existing_memory),
+                "provider": AI_PROVIDER,
+            }
+        )
 
         logging.info(
-            "[memory_mcp] raw candidates=%s",
-            candidates,
+            "[memory_mcp] extract start chars=%d categories=%s",
+            len(conversation),
+            categories or "none",
         )
-        cleaned: List[Dict[str, Any]] = []
-        for cand in candidates:
-            text = str(cand.get("text", "")).strip()
-            category = str(cand.get("category", "")).strip()
-            excerpt = str(cand.get("excerpt", "")).strip()
-            ttl = cand.get("ttl_days")
-            if not text or category not in ttl_map:
-                continue
-            if ttl is None:
-                ttl = ttl_map.get(category)
-            cleaned.append(
-                {
-                    "text": text,
-                    "category": category,
-                    "ttl_days": int(ttl) if ttl else ttl_map.get(category),
-                    "excerpt": excerpt,
-                    "extracted_at": datetime.now(timezone.utc).isoformat(),
-                }
+        system = (
+            "You are a memory extraction engine for an LLM assistant.\n"
+            "Goal: propose new, durable memory items about the user (preferences, stable constraints) or their project specs "
+            "that will measurably improve future responses.\n\n"
+            "OUTPUT (strict): Return JSON only with this exact shape:\n"
+            "{\"candidates\": [{\"text\": \"...\", \"category\": \"...\", \"ttl_days\": 0, \"excerpt\": \"...\"}]}\n\n"
+            "HARD RULES:\n"
+            "1) Allowed categories only. category MUST be one of: " + categories + "\n"
+            "2) Privacy/safety: NEVER store secrets or sensitive/private data (credentials, tokens, personal identifiers, "
+            "precise location, medical/financial details, legal issues, account numbers, private contact info, etc.).\n"
+            "3) Exclude defaults: Do NOT store markdown formatting preferences (assume markdown is already default). "
+            "Other format preferences (e.g., strict JSON, plaintext) are allowed ONLY if explicitly requested.\n"
+            "4) No duplicates: Treat Existing memory as canonical. If a candidate overlaps in meaning with any Existing memory item, "
+            "SKIP it (do not paraphrase, restate, or slightly reword it). 'Overlap' includes synonyms or the same preference stated differently.\n"
+            "5) Durability filter: Only store items likely to remain useful for weeks+. Ignore one-off tasks, ephemeral context, "
+            "and transient states.\n"
+            "6) Preference detection: Prefer explicit preferences (e.g., 'I prefer', 'always', 'from now on'), "
+            "but you MAY infer a preference when the user repeats the same request across multiple messages "
+            "or corrects the assistant's behavior (e.g., 'stop doing X, do Y instead').\n"
+            "7) One-off exclusion: If the request is about a single task or a one-time output (e.g., 'generate a PDF for this' once), "
+            "skip it.\n"
+            "8) Do NOT store transient failures or delivery issues as memories. "
+            "You may store a durable preference that results from repeated failures only if it is phrased as a preference "
+            "(e.g., 'always include a download link in addition to email').\n"
+            "9) Format scope: Store output format preferences only if the user indicates it should apply broadly "
+            "(e.g., 'always use JSON'), not for a single response.\n"
+            "10) Specificity: Keep each 'text' short, concrete, and actionable.\n"
+            "11) De-dup within this response: If two candidates are similar, keep only the single most specific one.\n"
+            "12) Evidence: excerpt MUST be a short verbatim snippet from the conversation provided (at least 5 words).\n"
+            "13) Limit: Return at most 5 candidates. If none qualify, return {\"candidates\": []}.\n\n"
+            "TTL POLICY:\n"
+            "- ttl_days must match the TTL for its category from the provided category/TTL list.\n"
+            "- If the category is not in the TTL list, skip the candidate.\n"
+        )
+        user = (
+            "INPUTS:\n\n"
+            "Conversation snippet:\n"
+            f"{conversation}\n\n"
+            "Allowed memory categories (with TTL days):\n"
+            f"{memory_layers}\n\n"
+            "Existing memory (MUST NOT duplicate or paraphrase):\n"
+            f"{existing_memory}\n\n"
+            "Store guidance (positive examples / scope):\n"
+            f"{what_to_store}\n\n"
+            "Do-not-store guidance (negative examples):\n"
+            f"{what_not_to_store}\n\n"
+            "TASK:\n"
+            "- Extract up to 5 **new** memory candidates that comply with HARD RULES.\n"
+            "- Return JSON only.\n"
+        )
+        try:
+            if AI_PROVIDER == "bedrock":
+                raw = _call_bedrock(system, user)
+            else:
+                raw = await _call_grok(system, user)
+            logging.info("[memory_mcp] model returned chars=%d", len(raw))
+            payload = _extract_json(raw)
+            candidates = payload.get("candidates", [])
+
+            logging.info(
+                "[memory_mcp] raw candidates=%s",
+                candidates,
             )
-        logging.info(
-            "[memory_mcp] cleaned candidates=%d",
-            len(cleaned),
-        )
-        return {"candidates": cleaned}
-    except Exception as exc:
-        logging.error("[memory] extraction failed: %s", exc)
-        return {"candidates": []}
+            cleaned: List[Dict[str, Any]] = []
+            for cand in candidates:
+                text = str(cand.get("text", "")).strip()
+                category = str(cand.get("category", "")).strip()
+                excerpt = str(cand.get("excerpt", "")).strip()
+                ttl = cand.get("ttl_days")
+                if not text or category not in ttl_map:
+                    continue
+                if ttl is None:
+                    ttl = ttl_map.get(category)
+                cleaned.append(
+                    {
+                        "text": text,
+                        "category": category,
+                        "ttl_days": int(ttl) if ttl else ttl_map.get(category),
+                        "excerpt": excerpt,
+                        "extracted_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            set_current_span_attributes({"memory.candidate_count": len(cleaned)})
+            logging.info(
+                "[memory_mcp] cleaned candidates=%d",
+                len(cleaned),
+            )
+            return {"candidates": cleaned}
+        except Exception as exc:
+            logging.error("[memory] extraction failed: %s", exc)
+            return {"candidates": []}
 
 
 @_tool("check_memory_conflict")
@@ -202,47 +216,56 @@ async def check_memory_conflict(
     Decide if a candidate memory conflicts with approved memory.
     Returns: {"conflict": bool, "conflicting_ids": [..], "reason": "..."}
     """
-    update_job_status("Tool: Memory Conflict Check", 75)
-    system = (
-        "You are a memory conflict checker. Decide if a new memory candidate "
-        "conflicts with existing approved memories. A conflict means the two "
-        "memories cannot both be true or would create incompatible instructions "
-        "for the assistant. Return JSON only.\n"
-        "Rules:\n"
-        "- If two memories set different output formats (e.g., 'strict JSON' vs 'markdown'), this IS a conflict.\n"
-        "- If two memories set different required sections (e.g., 'always include risks' vs 'never include risks'), this IS a conflict.\n"
-        "- If two memories set different regions or defaults for the same domain (e.g., Terraform region), this IS a conflict.\n"
-        "- If memories are compatible or additive, return conflict=false.\n"
-        "Be conservative: when in doubt, mark conflict=true and explain."
-    )
-    user = (
-        "Candidate:\n"
-        f"{json.dumps(candidate, ensure_ascii=False)}\n\n"
-        "Approved:\n"
-        f"{json.dumps(approved, ensure_ascii=False)}\n\n"
-        "Return JSON only in this schema:\n"
-        "{\n"
-        '  "conflict": true|false,\n'
-        '  "conflicting_ids": ["id1","id2"],\n'
-        '  "reason": "short explanation"\n'
-        "}\n"
-    )
+    tracer = get_otel_tracer("digital_assistant.mcp.memory")
+    with tracer.start_as_current_span("memory.conflict.model_call"):
+        update_job_status("Tool: Memory Conflict Check", 75)
+        set_current_span_attributes(
+            {
+                "memory.approved_count": len(approved or []),
+                "provider": AI_PROVIDER,
+            }
+        )
+        system = (
+            "You are a memory conflict checker. Decide if a new memory candidate "
+            "conflicts with existing approved memories. A conflict means the two "
+            "memories cannot both be true or would create incompatible instructions "
+            "for the assistant. Return JSON only.\n"
+            "Rules:\n"
+            "- If two memories set different output formats (e.g., 'strict JSON' vs 'markdown'), this IS a conflict.\n"
+            "- If two memories set different required sections (e.g., 'always include risks' vs 'never include risks'), this IS a conflict.\n"
+            "- If two memories set different regions or defaults for the same domain (e.g., Terraform region), this IS a conflict.\n"
+            "- If memories are compatible or additive, return conflict=false.\n"
+            "Be conservative: when in doubt, mark conflict=true and explain."
+        )
+        user = (
+            "Candidate:\n"
+            f"{json.dumps(candidate, ensure_ascii=False)}\n\n"
+            "Approved:\n"
+            f"{json.dumps(approved, ensure_ascii=False)}\n\n"
+            "Return JSON only in this schema:\n"
+            "{\n"
+            '  "conflict": true|false,\n'
+            '  "conflicting_ids": ["id1","id2"],\n'
+            '  "reason": "short explanation"\n'
+            "}\n"
+        )
 
-    try:
-        if AI_PROVIDER == "bedrock":
-            raw = _call_bedrock(system, user)
-        else:
-            raw = await _call_grok(system, user)
-        payload = _extract_json(raw)
-        conflict = bool(payload.get("conflict"))
-        conflicting_ids = payload.get("conflicting_ids") or []
-        if not isinstance(conflicting_ids, list):
-            conflicting_ids = []
-        reason = str(payload.get("reason", "")).strip()
-        return {"conflict": conflict, "conflicting_ids": conflicting_ids, "reason": reason}
-    except Exception as exc:
-        logging.error("[memory] conflict check failed: %s", exc)
-        return {"conflict": False, "conflicting_ids": [], "reason": ""}
+        try:
+            if AI_PROVIDER == "bedrock":
+                raw = _call_bedrock(system, user)
+            else:
+                raw = await _call_grok(system, user)
+            payload = _extract_json(raw)
+            conflict = bool(payload.get("conflict"))
+            conflicting_ids = payload.get("conflicting_ids") or []
+            if not isinstance(conflicting_ids, list):
+                conflicting_ids = []
+            reason = str(payload.get("reason", "")).strip()
+            set_current_span_attributes({"memory.conflict": conflict, "memory.conflict_count": len(conflicting_ids)})
+            return {"conflict": conflict, "conflicting_ids": conflicting_ids, "reason": reason}
+        except Exception as exc:
+            logging.error("[memory] conflict check failed: %s", exc)
+            return {"conflict": False, "conflicting_ids": [], "reason": ""}
 
 
 if __name__ == "__main__":

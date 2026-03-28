@@ -58,6 +58,21 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Sync Runtime Secrets
+        id: runtime_secret
+        run: |
+          chmod +x scripts/runtime_secret.sh
+          echo "runtime_secrets_arn=$(./scripts/runtime_secret.sh sync '${{ github.event.inputs.environment || 'dev' }}' '${{ vars.PROJECT_NAME }}')" >> "$GITHUB_OUTPUT"
+        env:
+          APP_NAME: ${{ vars.PROJECT_NAME }}
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_LOGS_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_LOGS_HEADERS }}
+
       - name: Run Deployment Script
         run: |
           # Set environment variables for the script
@@ -72,16 +87,12 @@ jobs:
           APP_NAME: ${{ vars.PROJECT_NAME }}
           TF_BACKEND_BUCKET: ${{ vars.TF_BACKEND_BUCKET }}
           TF_BACKEND_DDB_TABLE: ${{ vars.TF_BACKEND_DDB_TABLE }}
-          TF_VAR_grok_api_key: ${{ secrets.GROK_API_KEY }}
           TF_VAR_grok_api_url: ${{ secrets.GROK_API_URL }}
           TF_VAR_grok_model_id: ${{ secrets.GROK_MODEL_ID }}
-          TF_VAR_ai_provider: ${{ secrets.AI_PROVIDER }}
+          TF_VAR_ai_provider: bedrock
           TF_VAR_bedrock_model_id: ${{ vars.BEDROCK_MODEL_ID }}
           TF_VAR_default_aws_region: ${{ secrets.DEFAULT_AWS_REGION }}
-          TF_VAR_brave_api_key: ${{ secrets.BRAVE_API_KEY }}
-          TF_VAR_resend_api_key: ${{ secrets.RESEND_API_KEY }}
-          TF_VAR_upstash_redis_rest_url: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-          TF_VAR_upstash_redis_rest_token: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          TF_VAR_runtime_secrets_arn: ${{ steps.runtime_secret.outputs.runtime_secrets_arn }}
           TF_VAR_async_chat_enabled: ${{ vars.ASYNC_CHAT_ENABLED }}
 
           

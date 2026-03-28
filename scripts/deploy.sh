@@ -49,6 +49,12 @@ if ! terraform workspace list | grep -q "$ENVIRONMENT"; then
 fi
 terraform workspace select "$ENVIRONMENT"
 
+if [ -z "${TF_VAR_runtime_secrets_arn:-}" ]; then
+  chmod +x "$ROOT_DIR/scripts/runtime_secret.sh"
+  TF_VAR_runtime_secrets_arn="$("$ROOT_DIR/scripts/runtime_secret.sh" sync "$ENVIRONMENT" "$PROJECT_NAME")"
+  export TF_VAR_runtime_secrets_arn
+fi
+
 # Ensure ECR repo + policy exist
 terraform apply -target=aws_ecr_repository.lambda -target=aws_ecr_repository_policy.lambda -var-file="$VAR_FILE" "${EXTRA_VARS[@]}" \
   -var="project_name=$PROJECT_NAME" -var="environment=$ENVIRONMENT" -auto-approve

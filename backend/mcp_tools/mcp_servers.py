@@ -2,6 +2,9 @@ import os
 import sys
 from typing import Dict, List, Optional
 
+from mcp_tools.tracing import build_trace_context_env
+from secret_env import get_secret_env
+
 MCP_DIR = os.path.abspath(os.path.dirname(__file__))
 BACKEND_DIR = os.path.abspath(os.path.join(MCP_DIR, os.pardir))
 _OTEL_ENV_KEYS = (
@@ -15,6 +18,7 @@ _OTEL_ENV_KEYS = (
     "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
     "OTEL_LOGS_MIN_LEVEL",
     "APP_TIMEZONE",
+    "APP_RUNTIME_SECRETS_ARN",
 )
 
 
@@ -41,8 +45,7 @@ def _build_async_env(job_id: Optional[str]) -> Dict[str, str]:
         return {}
     return {
         "ASYNC_JOB_ID": job_id,
-        "UPSTASH_REDIS_REST_URL": os.getenv("UPSTASH_REDIS_REST_URL", ""),
-        "UPSTASH_REDIS_REST_TOKEN": os.getenv("UPSTASH_REDIS_REST_TOKEN", ""),
+        "APP_RUNTIME_SECRETS_ARN": os.getenv("APP_RUNTIME_SECRETS_ARN", ""),
         "ASYNC_JOB_TTL_SECONDS": os.getenv("ASYNC_JOB_TTL_SECONDS", "3600"),
     }
 
@@ -97,12 +100,13 @@ def _build_spec(name: str, python_cmd: str, script_name: str, env: Dict[str, str
 
 def build_mcp_server_specs(enable_search: bool = True, job_id: Optional[str] = None) -> List[Dict]:
     python_cmd = resolve_mcp_python()
-    brave_key = os.getenv("BRAVE_API_KEY", "").strip()
+    brave_key = get_secret_env("BRAVE_API_KEY", "")
     async_env = _build_async_env(job_id)
     merged_pythonpath = _build_pythonpath()
     aws_env = _build_aws_env()
     otel_env = _build_otel_env()
-    common_env = {**async_env, **aws_env, **otel_env}
+    trace_env = build_trace_context_env()
+    common_env = {**async_env, **aws_env, **otel_env, **trace_env}
     base_otel_service = os.getenv("OTEL_SERVICE_NAME", "digital-assistant-backend").strip() or "digital-assistant-backend"
     brave_env = _compose_env(
         merged_pythonpath=merged_pythonpath,
@@ -111,29 +115,27 @@ def build_mcp_server_specs(enable_search: bool = True, job_id: Optional[str] = N
         extra_env={"BRAVE_API_KEY": brave_key} if brave_key else {},
         common_env=common_env,
     )
-    resend_key = os.getenv("RESEND_API_KEY", "").strip()
     resend_from = os.getenv("RESEND_FROM", "no-reply@agentairg.site").strip()
     core_env = _compose_env(
         merged_pythonpath=merged_pythonpath,
         base_otel_service=base_otel_service,
         service_suffix="mcp-core",
         extra_env={
-        "UPLOADS_DIR": os.getenv("UPLOADS_DIR", "/tmp/uploads"),
-        "USE_S3": os.getenv("USE_S3", "false"),
-        "UPLOADS_BUCKET": os.getenv("UPLOADS_BUCKET", ""),
-        "S3_BUCKET": os.getenv("S3_BUCKET", ""),
-        "DEFAULT_AWS_REGION": os.getenv("DEFAULT_AWS_REGION", "us-east-1"),
-        "RESEND_API_KEY": resend_key,
-        "RESEND_FROM": resend_from,
-        "PUBLIC_BASE_URL": os.getenv("PUBLIC_BASE_URL", ""),
-        "API_PUBLIC_URL": os.getenv("API_PUBLIC_URL", ""),
-        "BASE_URL": os.getenv("BASE_URL", ""),
-        "DOWNLOADS_DIR": os.getenv("DOWNLOADS_DIR", "/tmp/downloads"),
-        "DOWNLOADS_BUCKET": os.getenv("DOWNLOADS_BUCKET", ""),
-        "PDF_MAX_MB": os.getenv("PDF_MAX_MB", "50"),
-        "PDF_MAX_CHARS": os.getenv("PDF_MAX_CHARS", "200000"),
-        "PDF_URL_EXPIRES_SECONDS": os.getenv("PDF_URL_EXPIRES_SECONDS", "86400"),
-        "PYTHONUNBUFFERED": "1",
+            "UPLOADS_DIR": os.getenv("UPLOADS_DIR", "/tmp/uploads"),
+            "USE_S3": os.getenv("USE_S3", "false"),
+            "UPLOADS_BUCKET": os.getenv("UPLOADS_BUCKET", ""),
+            "S3_BUCKET": os.getenv("S3_BUCKET", ""),
+            "DEFAULT_AWS_REGION": os.getenv("DEFAULT_AWS_REGION", "us-east-1"),
+            "RESEND_FROM": resend_from,
+            "PUBLIC_BASE_URL": os.getenv("PUBLIC_BASE_URL", ""),
+            "API_PUBLIC_URL": os.getenv("API_PUBLIC_URL", ""),
+            "BASE_URL": os.getenv("BASE_URL", ""),
+            "DOWNLOADS_DIR": os.getenv("DOWNLOADS_DIR", "/tmp/downloads"),
+            "DOWNLOADS_BUCKET": os.getenv("DOWNLOADS_BUCKET", ""),
+            "PDF_MAX_MB": os.getenv("PDF_MAX_MB", "50"),
+            "PDF_MAX_CHARS": os.getenv("PDF_MAX_CHARS", "200000"),
+            "PDF_URL_EXPIRES_SECONDS": os.getenv("PDF_URL_EXPIRES_SECONDS", "86400"),
+            "PYTHONUNBUFFERED": "1",
         },
         common_env=common_env,
     )
@@ -142,12 +144,11 @@ def build_mcp_server_specs(enable_search: bool = True, job_id: Optional[str] = N
         base_otel_service=base_otel_service,
         service_suffix="mcp-memory",
         extra_env={
-        "AI_PROVIDER": os.getenv("AI_PROVIDER", "bedrock"),
-        "GROK_API_KEY": os.getenv("GROK_API_KEY", ""),
-        "GROK_API_URL": os.getenv("GROK_API_URL", "https://api.x.ai/v1"),
-        "GROK_MODEL_ID": os.getenv("GROK_MODEL_ID", "grok-4-1-fast"),
-        "BEDROCK_MODEL_ID": os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0"),
-        "DEFAULT_AWS_REGION": os.getenv("DEFAULT_AWS_REGION", "us-east-1"),
+            "AI_PROVIDER": os.getenv("AI_PROVIDER", "bedrock"),
+            "GROK_API_URL": os.getenv("GROK_API_URL", "https://api.x.ai/v1"),
+            "GROK_MODEL_ID": os.getenv("GROK_MODEL_ID", "grok-4-1-fast"),
+            "BEDROCK_MODEL_ID": os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0"),
+            "DEFAULT_AWS_REGION": os.getenv("DEFAULT_AWS_REGION", "us-east-1"),
         },
         common_env=common_env,
     )

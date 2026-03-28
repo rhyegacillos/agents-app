@@ -144,6 +144,23 @@ resource "aws_iam_role_policy_attachment" "lambda_s3" {
   role       = aws_iam_role.lambda_role.name
 }
 
+resource "aws_iam_role_policy" "lambda_runtime_secrets" {
+  count = var.runtime_secrets_arn != "" ? 1 : 0
+  name  = "${local.name_prefix}-runtime-secrets"
+  role  = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.runtime_secrets_arn
+      }
+    ]
+  })
+}
+
 # ECR repository for Lambda container image
 resource "aws_ecr_repository" "lambda" {
   name                 = "${local.name_prefix}-lambda"
@@ -226,11 +243,7 @@ resource "aws_lambda_function" "api" {
       AI_PROVIDER                      = var.ai_provider
       GROK_MODEL_ID                    = var.grok_model_id
       GROK_API_URL                     = var.grok_api_url
-      GROK_API_KEY                     = var.grok_api_key
-      BRAVE_API_KEY                    = var.brave_api_key
-      RESEND_API_KEY                   = var.resend_api_key
-      UPSTASH_REDIS_REST_URL           = var.upstash_redis_rest_url
-      UPSTASH_REDIS_REST_TOKEN         = var.upstash_redis_rest_token
+      APP_RUNTIME_SECRETS_ARN          = var.runtime_secrets_arn
       ASYNC_CHAT_ENABLED               = var.async_chat_enabled ? "true" : "false"
       ASYNC_JOB_TTL_SECONDS            = tostring(var.async_job_ttl_seconds)
       DAILY_TOKEN_LIMIT                = tostring(var.daily_token_limit)
@@ -240,10 +253,8 @@ resource "aws_lambda_function" "api" {
       OTEL_ENVIRONMENT                 = var.environment
       OTEL_TRACES_SAMPLE_RATE          = tostring(var.otel_traces_sample_rate)
       OTEL_EXPORTER_OTLP_ENDPOINT      = var.otel_exporter_otlp_endpoint
-      OTEL_EXPORTER_OTLP_HEADERS       = var.otel_exporter_otlp_headers
       OTEL_LOGS_ENABLED                = var.otel_logs_enabled ? "true" : "false"
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = var.otel_exporter_otlp_logs_endpoint
-      OTEL_EXPORTER_OTLP_LOGS_HEADERS  = var.otel_exporter_otlp_logs_headers
       OTEL_LOGS_MIN_LEVEL              = var.otel_logs_min_level
       ASYNC_WORKER_FUNCTION_NAME       = aws_lambda_function.worker.function_name
       MEMORY_EXTRACT_SYNC              = "false"
@@ -283,11 +294,7 @@ resource "aws_lambda_function" "worker" {
       AI_PROVIDER                      = var.ai_provider
       GROK_MODEL_ID                    = var.grok_model_id
       GROK_API_URL                     = var.grok_api_url
-      GROK_API_KEY                     = var.grok_api_key
-      BRAVE_API_KEY                    = var.brave_api_key
-      RESEND_API_KEY                   = var.resend_api_key
-      UPSTASH_REDIS_REST_URL           = var.upstash_redis_rest_url
-      UPSTASH_REDIS_REST_TOKEN         = var.upstash_redis_rest_token
+      APP_RUNTIME_SECRETS_ARN          = var.runtime_secrets_arn
       ASYNC_CHAT_ENABLED               = "false"
       ASYNC_JOB_TTL_SECONDS            = tostring(var.async_job_ttl_seconds)
       DAILY_TOKEN_LIMIT                = tostring(var.daily_token_limit)
@@ -297,10 +304,8 @@ resource "aws_lambda_function" "worker" {
       OTEL_ENVIRONMENT                 = var.environment
       OTEL_TRACES_SAMPLE_RATE          = tostring(var.otel_traces_sample_rate)
       OTEL_EXPORTER_OTLP_ENDPOINT      = var.otel_exporter_otlp_endpoint
-      OTEL_EXPORTER_OTLP_HEADERS       = var.otel_exporter_otlp_headers
       OTEL_LOGS_ENABLED                = var.otel_logs_enabled ? "true" : "false"
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = var.otel_exporter_otlp_logs_endpoint
-      OTEL_EXPORTER_OTLP_LOGS_HEADERS  = var.otel_exporter_otlp_logs_headers
       OTEL_LOGS_MIN_LEVEL              = var.otel_logs_min_level
       WORKER_MAX_SECONDS               = tostring(var.worker_max_seconds)
       LLM_TIMEOUT_SECONDS              = tostring(var.worker_llm_timeout_seconds)
