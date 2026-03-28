@@ -8,7 +8,7 @@ on:
       environment:
         description: "Environment to deploy"
         required: true
-        default: "dev"
+        default: "prod"
         type: choice
         options:
           - dev
@@ -88,11 +88,14 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     needs: [test, docker-build]
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    environment: ${{ github.event.inputs.environment || 'prod' }}
     env:
-      DEPLOY_ENV: ${{ github.event.inputs.environment || 'dev' }}
+      DEPLOY_ENV: ${{ github.event.inputs.environment || 'prod' }}
       PROJECT_NAME: ${{ vars.PROJECT_NAME || 'digital-assistant' }}
-      RUNTIME_SECRETS_ARN: ${{ vars.RUNTIME_SECRETS_ARN || '' }}
+      DEFAULT_RUNTIME_SECRETS_ARN: ${{ vars.RUNTIME_SECRETS_ARN || '' }}
+      DEV_RUNTIME_SECRETS_ARN: ${{ vars.DEV_RUNTIME_SECRETS_ARN || '' }}
+      TEST_RUNTIME_SECRETS_ARN: ${{ vars.TEST_RUNTIME_SECRETS_ARN || '' }}
+      PROD_RUNTIME_SECRETS_ARN: ${{ vars.PROD_RUNTIME_SECRETS_ARN || '' }}
 
     steps:
       - name: Checkout code
@@ -127,6 +130,32 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Resolve Runtime Secret ARN
+        id: runtime_secret_config
+        run: |
+          case "$DEPLOY_ENV" in
+            dev)
+              runtime_secrets_arn="${DEV_RUNTIME_SECRETS_ARN:-}"
+              ;;
+            test)
+              runtime_secrets_arn="${TEST_RUNTIME_SECRETS_ARN:-}"
+              ;;
+            prod)
+              runtime_secrets_arn="${PROD_RUNTIME_SECRETS_ARN:-}"
+              ;;
+            *)
+              echo "Unsupported DEPLOY_ENV: $DEPLOY_ENV" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$runtime_secrets_arn" ]; then
+            runtime_secrets_arn="${DEFAULT_RUNTIME_SECRETS_ARN:-}"
+          fi
+
+          test -n "$runtime_secrets_arn"
+          echo "runtime_secrets_arn=$runtime_secrets_arn" >> "$GITHUB_OUTPUT"
+
       - name: Sync Runtime Secrets
         id: runtime_secret
         run: |
@@ -136,7 +165,7 @@ jobs:
           echo "runtime_secrets_arn=$runtime_secrets_arn" >> "$GITHUB_OUTPUT"
         env:
           APP_NAME: ${{ env.PROJECT_NAME }}
-          RUNTIME_SECRETS_ARN: ${{ env.RUNTIME_SECRETS_ARN }}
+          RUNTIME_SECRETS_ARN: ${{ steps.runtime_secret_config.outputs.runtime_secrets_arn }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
