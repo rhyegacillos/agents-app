@@ -1,105 +1,80 @@
 # MediNotes Architecture
 
-This is the master architecture document for `healthcare-saas-aws`.
+`healthcare-saas-aws` is not just a web UI wrapped around a few model calls. It is a clinician-facing system that accepts messy consultation inputs, turns them into structured visit artifacts, preserves useful patient history across visits, and runs as a managed AWS application rather than a local prototype.
 
-It is intended to be the single most complete reference for how the whole application works:
+This document is the deep technical explanation of how that system works. It is the source of truth for the internal behavior of the application, the runtime boundaries between its components, the way data moves through the system, and the way AWS infrastructure and GitHub Actions support the running service.
 
-- product workflow
-- backend agent orchestration
-- persistence boundaries
-- DynamoDB memory model
-- Secrets Manager runtime model
-- Terraform infrastructure ownership
-- GitHub Actions deployment model
-- local-versus-AWS behavior
-- current production resource names
-- deploy and destroy semantics
+`README.md` is the guided entry point. This file is the detailed explanation.
 
-Specialized docs still exist for focused audiences, but this document should be sufficient if someone wants to understand the complete deployed system without jumping between multiple files.
+## Documentation Update Rule
 
-## 1. System purpose
+Use this document when exact internal behavior changes. That includes:
 
-MediNotes is a clinician-facing documentation and patient-history system that transforms unstructured consultation inputs into structured visit artifacts and makes them retrievable across future visits.
+- request and response behavior
+- backend orchestration
+- memory persistence behavior
+- runtime configuration and secret delivery
+- deploy and destroy mechanics
+- GitHub Actions behavior
+- infrastructure ownership boundaries
 
-The application is designed to handle:
+Update `README.md` only when the user-facing walkthrough or operator-facing entry guidance also changes. Make that decision during PR review, before merge, because push to `healthcare-saas-aws` is the automatic `prod` deploy trigger.
 
-- free-text consultation notes
-- uploaded documents
-- audio recordings
-- prescription or handwritten images
-- longitudinal patient history
+The PR checklist in [pull_request_template.md](/home/repos/healthcare-saas-aws/.github/pull_request_template.md) exists to force that decision before code lands on the auto-deploy branch.
 
-It then produces:
+## 1. What The System Is Trying To Do
 
-- structured visit summaries
-- extracted next actions
-- evidence-linked summary support
-- patient-facing email content
-- assistant responses grounded in current and historical context
+MediNotes exists to solve a practical clinical problem: consultation input is rarely clean, complete, or uniform. A clinician may have typed notes, uploaded reports, images of prescriptions, dictated audio, and fragments of context from prior visits. The product’s job is to turn that into a usable visit record and make the useful parts retrievable later.
 
-## 2. Whole-system view
+That means the application has to do more than generate text. It has to normalize input, decide what prior history matters, synthesize a structured answer, support review, preserve evidence, and store durable memory in a form that can be queried later by both the summary workflow and the assistant workflow.
 
-### 2.1 Runtime application
+The defining architectural property of the current system is separation of responsibility:
 
-The app is one deployable web service:
+- the web application handles user interaction
+- the backend orchestrates extraction, generation, review, and persistence
+- DynamoDB holds long-term patient memory
+- Upstash Redis holds resumable job and stream state
+- Secrets Manager holds deployed runtime secrets
+- Terraform owns infrastructure shape
+- GitHub Actions owns CI/CD execution
 
-- frontend: Next.js
-- backend/API: FastAPI
-- runtime host: AWS App Runner
+That separation is the reason the app now survives redeploys, preserves patient memory across service restarts, and can be operated like a real AWS service instead of a single manually configured container.
 
-### 2.2 External runtime dependencies
+## 2. What Actually Runs In Production
 
-The deployed runtime depends on:
+Production is a single App Runner service backed by a Docker image. That image contains two layers:
 
-- DynamoDB for long-term patient memory
-- Secrets Manager for runtime secret values
-- Upstash Redis for resumable jobs and SSE state
-- ECR as the App Runner image source
-- Route53 for custom-domain DNS
-- model providers for generation, OCR, embeddings, and transcription
-- Resend for email delivery
-- Brave-backed research lookup path for clinical retrieval
+- a static frontend built from Next.js
+- a FastAPI application that serves both API routes and the exported frontend assets
 
-### 2.3 Control-plane dependencies
+The important point is that production is not “Next.js server plus separate Python server.” The runtime entrypoint is FastAPI. During the image build, the frontend is exported to static assets and copied into the container. FastAPI serves those static files and exposes the `/api/*` endpoints from the same deployed service.
 
-The deployment and infrastructure control plane depends on:
+The current production stack uses these important identifiers:
 
-- Terraform for infrastructure declaration
-- GitHub Actions for CI/CD execution
-- S3 and DynamoDB for Terraform backend state and locking
+- App Runner service: `consultation-app-service`
+- App Runner default URL: `ymwpjvxcjn.ap-southeast-1.awsapprunner.com`
+- custom domain: `medinotes.agentairg.site`
+- ECR repository: `consultation-app`
+- DynamoDB table: `medinotes-prod-memory`
+- Secrets Manager namespace: `medinotes-prod/app/*`
 
-## 3. Current production topology
+Those names are explicit because production was adopted from an already-existing manual App Runner deployment and then brought under Terraform management. The stack is therefore partly “conventional” and partly “aligned to live adopted names.”
 
-Production currently uses these important identifiers:
+## 3. System Topology
 
-- App Runner service:
-  - `consultation-app-service`
-- App Runner default URL:
-  - `ymwpjvxcjn.ap-southeast-1.awsapprunner.com`
-- custom domain:
-  - `medinotes.agentairg.site`
-- ECR repository:
-  - `consultation-app`
-- DynamoDB table:
-  - `medinotes-prod-memory`
-- secret namespace:
-  - `medinotes-prod/app/*`
-
-This production environment was adopted from an existing manual App Runner deployment and then brought under Terraform management. That is why some production names are explicit overrides rather than generated `${project}-${environment}-...` defaults.
-
-## 4. System topology
+At runtime, the doctor interacts with the frontend. The frontend submits consultation and chat requests to FastAPI. FastAPI orchestrates the application logic and reaches outward to model providers, Upstash, DynamoDB, Secrets Manager, and Resend.
 
 ```mermaid
 flowchart LR
-    User[Doctor in browser] --> UI[Next.js UI]
-    UI --> API[FastAPI API inside App Runner]
-    API --> LLM[OpenAI / Gemini / DeepSeek / xAI]
+    User[Doctor in browser] --> UI[Static Next.js frontend]
+    UI --> API[FastAPI in App Runner]
+    API --> Models[OpenAI / Gemini / DeepSeek / xAI]
     API --> Redis[Upstash Redis]
-    API --> DDB[DynamoDB memory store]
-    API --> SM[AWS Secrets Manager]
+    API --> DDB[DynamoDB]
+    API --> SM[Secrets Manager]
     API --> Resend[Resend]
-    API --> Brave[External research path]
-    GH[GitHub Actions] --> TF[Terraform apply]
+    API --> Brave[Research path]
+    GH[GitHub Actions] --> TF[Terraform]
     GH --> ECR[ECR]
     TF --> AR[App Runner]
     TF --> DDB
@@ -109,665 +84,363 @@ flowchart LR
     R53 --> Domain[medinotes.agentairg.site]
 ```
 
-## 5. Primary architectural principles
+The topology matters because each external dependency serves a distinct class of state. If those responsibilities blur, the system becomes much harder to reason about. The current design deliberately avoids that.
 
-The system is built around a few explicit design choices.
+## 4. How A Consultation Moves Through The System
 
-### 5.1 Generation is not the whole product
+The summary workflow is the center of the application. A consultation begins when the clinician provides one or more inputs such as free-text notes, uploaded documents, audio, or prescription images. The backend does not treat those inputs as final truth. It first turns them into a normalized visit context that downstream agents can reason over.
 
-The system is not treated as “send notes to an LLM and render the answer.” It instead uses:
-
-- staged extraction
-- external research when needed
-- critic review before persistence
-- evidence grounding
-- longitudinal context retrieval
-
-### 5.2 Persistence is split by responsibility
-
-The application deliberately uses different stores for different kinds of state:
-
-- DynamoDB stores long-term patient memory
-- Upstash Redis stores summary-job and streaming state
-- Secrets Manager stores runtime secret values
-- Terraform backend storage stores infrastructure state, not app data
-
-### 5.3 The deployed container is stateless
-
-The App Runner container should not be treated as durable storage. Important state must live outside the container. That is why:
-
-- patient memory is not stored on local disk
-- secrets are not expected to live only in the App Runner console
-- DNS is managed through Terraform and Route53
-
-### 5.4 Deployment identity is environment-scoped
-
-GitHub Actions deployment identity is scoped through GitHub environments and AWS OIDC trust, not just repo-level shared secrets.
-
-## 6. User-facing workflows and how they map to the system
-
-### 6.1 Consultation workflow
-
-The clinician starts by providing one or more inputs:
-
-- typed notes
-- uploaded PDFs, DOCX, TXT, or Markdown
-- audio
-- prescription or handwritten images
-
-Those inputs are normalized into a unified visit context and passed through the summary pipeline.
-
-### 6.2 Summary workflow
-
-When **Generate Summary** is triggered, the backend:
-
-1. starts or reuses a resumable job
-2. extracts visit context
-3. recalls prior patient memory
-4. generates a draft
-5. performs research if heuristics require it
-6. runs critic review
-7. regenerates if necessary
-8. maps evidence
-9. extracts actions
-10. stores memory
-11. streams the final output
-
-### 6.3 Patient-history workflow
-
-The patient-history workspace is backed by the same long-term memory store used for RAG. It provides:
-
-- patient list browsing
-- visit timeline browsing
-- filtering by date and keyword
-- soft delete and restore
-- viewing of stored visit evidence
-
-### 6.4 Assistant workflow
-
-The MediNotes Assistant is grounded in:
-
-- current message history
-- current summary state
-- recalled patient memory
-
-It can therefore answer questions about prior visits, not only the current screen state.
-
-### 6.5 Email workflow
-
-The email path handles patient communication by:
-
-- drafting email content
-- translating when necessary
-- sending via Resend
-
-## 7. Agentic runtime architecture
-
-The backend uses a hub-and-spoke agentic model.
-
-### 7.1 Agent graph
-
-```mermaid
-flowchart LR
-    U[Consultation inputs] --> E[Extraction Agent]
-    E --> S[Summary Agent]
-    S --> M[Memory recall]
-    S --> R[Research Agent]
-    S --> C[Critic Agent]
-    C --> S
-    S --> EV[Evidence Agent]
-    S --> CO[Coordinator Agent]
-    S --> MW[Memory write]
-```
-
-### 7.2 Why this structure exists
-
-This app needs a structure where:
-
-- extraction is separate from summarization
-- external research is separate from the main summarizer
-- quality review happens before persistence
-- evidence mapping happens after the final summary exists
-- memory is both read before generation and written after generation
-
-That is why the system is structured as cooperating specialized agents instead of a single “summary” function.
-
-## 8. Agent inventory
-
-### 8.1 Summary Agent
-
-File:
-
-- `api/agent/summary_agent.py`
-
-Responsibilities:
-
-- orchestrates the full consultation pipeline
-- starts or reuses summary jobs
-- injects extracted context and patient history
-- routes to tool-backed research
-- invokes critic review
-- triggers evidence mapping
-- triggers action extraction
-- triggers memory persistence
-- streams status and final output
-
-### 8.2 Extraction Agent
-
-File:
-
-- `api/agent/extraction_agent.py`
-
-Responsibilities:
-
-- parses uploaded files
-- transcribes audio
-- interprets prescription images
-- extracts doctor and patient metadata from source text
-
-### 8.3 Research Agent
-
-File:
-
-- `api/agent/research_agent.py`
-
-Responsibilities:
-
-- drug interaction lookup
-- guideline lookup
-- external reference retrieval with source URLs
-
-### 8.4 Critic Agent
-
-File:
-
-- `api/agent/critic_agent.py`
-
-Responsibilities:
-
-- score summary quality
-- detect omissions, contradictions, hallucinations, and safety issues
-- determine whether regeneration is required
-
-### 8.5 Evidence Agent
-
-File:
-
-- `api/agent/evidence_agent.py`
-
-Responsibilities:
-
-- break the final summary into meaningful statements
-- map those statements to source chunks
-- return evidence snippets and citation structures
-
-### 8.6 Memory Agent
-
-File:
-
-- `api/agent/memory_agent.py`
-
-Responsibilities:
-
-- persist visit memory through `remember_visit(...)`
-- recall patient history through `recall_patient_history(...)`
-- list patients
-- list visits
-- rename patient records
-- soft delete and restore memory entries
-
-### 8.7 Coordinator Agent
-
-File:
-
-- `api/agent/coordinator_agent.py`
-
-Responsibilities:
-
-- turn free-text next steps into structured action data
-
-### 8.8 Chat Agent
-
-File:
-
-- `api/agent/chat_agent.py`
-
-Responsibilities:
-
-- build assistant prompts
-- inject current and historical clinical context
-- stream grounded assistant answers
-
-### 8.9 Email Agent
-
-File:
-
-- `api/agent/email_agent.py`
-
-Responsibilities:
-
-- decide whether translation is needed
-- translate when required
-- send final email through Resend
-
-## 9. Request-flow architecture
-
-### 9.1 Summary generation sequence
+The request then enters the summary pipeline. The backend starts or resumes a summary job, extracts the useful visit content, recalls prior patient history, generates a draft, performs external research when needed, runs a critic pass, and only after a usable result exists does it persist the durable visit memory. That sequence is intentional: draft output that fails review should not become part of the long-term patient record.
 
 ```mermaid
 flowchart TD
-    A[POST /api/consultation] --> B[Start resumable job]
-    B --> C[Build visit context]
+    A[POST /api/consultation] --> B[Start or resume job]
+    B --> C[Normalize visit context]
     C --> D[Recall patient history]
     D --> E[Generate draft summary]
-    E --> F[Research Agent if needed]
+    E --> F[Run research when needed]
     F --> G[Critic review]
-    G --> H{Pass?}
-    H -- No --> I[Regenerate candidate summaries]
+    G --> H{Acceptable?}
+    H -- No --> I[Regenerate]
     I --> G
-    H -- Yes --> J[Evidence mapping]
-    J --> K[Action extraction]
-    K --> L[Persist memory to DynamoDB]
-    L --> M[Stream final result]
+    H -- Yes --> J[Map evidence]
+    J --> K[Extract actions]
+    K --> L[Persist visit memory]
+    L --> M[Stream result to UI]
 ```
 
-### 9.2 Assistant chat sequence
+From the user’s perspective, this appears as one “generate summary” action. Architecturally, it is a coordinated sequence that mixes volatile operational state with durable patient state. That distinction is one of the most important ideas in the current system.
+
+## 5. How The Assistant Uses The Same Memory
+
+The assistant is not a separate toy chatbot bolted onto the side of the app. It works because it reads from the same durable patient-memory store used by the consultation workflow.
+
+When the clinician opens the assistant and asks about a patient, the backend combines:
+
+- current message history
+- current summary state, when relevant
+- recalled patient history from DynamoDB
 
 ```mermaid
 flowchart TD
-    A[POST /api/chat] --> B[Load current summary and message history]
-    B --> C[Recall patient history from DynamoDB]
-    C --> D[Build assistant prompt]
-    D --> E[Generate response]
-    E --> F[Stream response to UI]
+    A[POST /api/chat] --> B[Load current UI context]
+    B --> C[Recall patient history]
+    C --> D[Build grounded prompt]
+    D --> E[Generate answer]
+    E --> F[Stream answer to UI]
 ```
 
-### 9.3 Why persistence happens late in the summary flow
+This is why the assistant can answer questions about prior visits rather than only parroting what is currently visible in the browser. If durable patient memory is missing or wrong, both the patient-history views and the assistant degrade together, because they depend on the same underlying store.
 
-The summary pipeline stores memory only after the pipeline has produced a usable final artifact. This is intentional. Drafts that fail review should not become part of the durable patient timeline.
+## 6. Why The Backend Is Agentic
 
-## 10. Persistence architecture
+The backend is intentionally split into cooperating agents rather than a single large summary function. The reason is not style. It is because the work itself has separable stages with different responsibilities and failure modes.
 
-One of the most important design changes in the repo is that persistence is now treated as multiple separate domains rather than one blob of application state.
+The current major agents are:
 
-### 10.1 DynamoDB: long-term patient memory
+- `summary_agent.py`
+- `extraction_agent.py`
+- `research_agent.py`
+- `critic_agent.py`
+- `evidence_agent.py`
+- `memory_agent.py`
+- `coordinator_agent.py`
+- `chat_agent.py`
+- `email_agent.py`
 
-DynamoDB stores visit data that must survive:
+This division exists so that extraction, synthesis, review, evidence mapping, and persistence do not collapse into one opaque prompt-and-response block. The summary agent orchestrates; the other agents handle more focused tasks. That makes the system easier to reason about, easier to evolve, and less likely to store low-quality output as durable memory.
 
-- redeploys
-- App Runner instance replacement
-- container restarts
+### 6.1 Summary Agent
+
+The Summary Agent is the conductor of the consultation pipeline. It decides when to recall memory, when to invoke research, when to trigger critic review, when to regenerate, and when the result is mature enough to persist. It is the reason the app behaves like a workflow rather than a one-shot completion.
+
+### 6.2 Extraction Agent
+
+The Extraction Agent is responsible for turning varied raw inputs into usable text and metadata. That includes uploaded files, dictated audio, and prescription-like images. Without this layer, downstream summarization would be polluted by inconsistent or partially processed source material.
+
+### 6.3 Research Agent
+
+The Research Agent handles external retrieval such as clinical references, drug interaction checks, or guideline lookup. This keeps external evidence gathering separate from the main summarization loop and makes it easier to reason about where externally sourced assertions came from.
+
+### 6.4 Critic Agent
+
+The Critic Agent exists to reject bad output before it becomes durable state. Its job is to detect omissions, contradictions, hallucinations, and quality issues. This is what stops the system from treating the first generated draft as final truth.
+
+### 6.5 Evidence Agent
+
+The Evidence Agent maps final summary content back to source material. This makes the summary easier to inspect and supports the product’s goal of producing evidence-linked outputs rather than unsupported prose.
+
+### 6.6 Memory Agent
+
+The Memory Agent is the bridge between generation and longitudinal record. It is responsible for storing visit artifacts, recalling patient history, listing patients, listing visits, and supporting soft delete and restore. If the rest of the app is the “current consultation” engine, the Memory Agent is the “future reuse” engine.
+
+### 6.7 Coordinator, Chat, And Email Agents
+
+The Coordinator Agent extracts structured next actions from free text. The Chat Agent turns recalled context into grounded assistant responses. The Email Agent handles translation and final patient-email delivery through Resend. These are downstream capability layers built on top of the same extracted and persisted clinical context.
+
+## 7. Persistence Is Split On Purpose
+
+One of the biggest architectural changes in this repository is that persistence is no longer treated as one undifferentiated blob. Different types of state now live in different systems because they have different durability and retrieval needs.
+
+### 7.1 DynamoDB: Long-Term Patient Memory
+
+DynamoDB is the durable patient-memory store. It holds visit artifacts that must survive:
+
+- container replacement
+- App Runner restarts
+- image redeploys
 - future consultations
 
-Stored document categories currently include:
+The system currently stores categories such as:
 
 - `visit_summary`
 - `visit_notes`
 - `visit_evidence`
 
-This store is used by:
+This store is used by the patient-history views, summary-time contextual recall, and assistant retrieval. If a piece of information is supposed to be part of the patient’s longitudinal record, DynamoDB is where it belongs.
 
-- patient-history views
-- assistant recall
-- summary-generation contextual recall
+### 7.2 Upstash Redis: Operational Job And Stream State
 
-### 10.2 Upstash Redis: job and stream state
-
-Upstash Redis stores short-lived execution state:
+Upstash is not the patient-memory database. It stores short-lived execution state such as:
 
 - summary job metadata
-- SSE event buffers
-- reconnect-safe stream state
-- deduplication metadata for repeated summary requests
+- event-stream buffers
+- reconnect-safe streaming state
+- deduplication metadata for repeated requests
 
-This is operational state, not clinical longitudinal memory.
+This state is operational, not clinical. It exists to make the UX resilient and resumable, not to preserve patient history.
 
-### 10.3 Secrets Manager: runtime secret values
+### 7.3 Secrets Manager: Runtime Secret Values
 
-Secrets Manager stores runtime values that must not live in Terraform state or source control.
+Secrets Manager stores the deployed runtime secrets. Terraform creates the secret shells, but not the values themselves. During deploy, the actual values are synchronized into AWS Secrets Manager, and App Runner resolves those ARNs at runtime.
 
-Current examples:
+This separation matters because it keeps real secret values out of Terraform state while still making the deployed service reproducible.
 
-- model API keys
-- Clerk backend secrets
-- Upstash token and URL
-- Resend API key
-- Brave API key
+### 7.4 Route53: Durable DNS Ownership
 
-### 10.4 Route53: infrastructure-owned DNS
+Route53 owns the custom-domain DNS. This matters because App Runner targets can change when the service is recreated. If DNS is not Terraform-owned, destroy-and-recreate cycles can leave the custom domain pointing at dead infrastructure.
 
-The custom domain is managed through Terraform so that service recreation does not leave DNS pointing at an outdated App Runner target.
+## 8. How Patient Memory Is Shaped In DynamoDB
 
-## 11. DynamoDB memory model
+The current memory implementation lives in [vector_store.py](/home/repos/healthcare-saas-aws/api/memory/vector_store.py). The system uses DynamoDB as the durable storage layer for records, embeddings, and metadata, while similarity ranking still happens in application code.
 
-The current implementation lives in:
+The table design uses:
 
-- [vector_store.py](/home/repos/healthcare-saas-aws/api/memory/vector_store.py)
+- partition key: `pk`
+- sort key: `sk`
+- GSI: `doc_id-index`
 
-### 11.1 Physical schema
-
-Current table design:
-
-- prod table:
-  - `medinotes-prod-memory`
-- dev table:
-  - `medinotes-dev-memory`
-- partition key:
-  - `pk`
-- sort key:
-  - `sk`
-- GSI:
-  - `doc_id-index`
-
-### 11.2 Logical document structure
-
-Each memory document currently includes:
-
-- `pk`
-- `sk`
-- `item_type`
-- `doc_id`
-- `dedupe_key`
-- `timestamp`
-- `text`
-- `embedding`
-- `metadata`
-- `payload`
-
-### 11.3 Metadata fields used by the app
-
-Common metadata fields include:
-
-- `patient_name`
-- `date`
-- `type`
-- `doc_id`
-- `encounter_id`
-- `template_id`
-- `time`
-- `saved_at`
-- `deleted`
-
-### 11.4 Key format
-
-Patient documents are currently stored under patient partitions, for example:
+Patient records are grouped under a patient partition. A typical key shape looks like:
 
 - `pk = PATIENT#juan dela cruz`
 - `sk = DOC#<doc_id>`
 
-### 11.5 Dedupe behavior
+Each logical memory document carries fields such as:
 
-The store deduplicates on the logical encounter tuple:
+- item type
+- doc id
+- dedupe key
+- timestamp
+- text
+- embedding
+- metadata
+- optional payload
 
-- patient name
-- visit date
-- document type
-- template id
-- encounter id
+The dedupe key is derived from the encounter identity: patient name, visit date, document type, template id, and encounter id. That is what prevents repeated writes of the same visit from exploding into uncontrolled duplicates.
 
-This means repeated writes for the same encounter update the existing logical record instead of generating uncontrolled duplicates.
+Retrieval works in two stages. First, the application loads candidate memory documents from DynamoDB. Then it scores them in application code with cosine similarity over embeddings, filtered by metadata where appropriate. This is a deliberate tradeoff: it keeps infrastructure simpler, but it means the system does not currently use a dedicated managed vector-search service.
 
-### 11.6 Retrieval behavior
+## 9. Artifact Lifecycle
 
-Current search behavior is:
+The system handles several classes of artifacts, and each class has a different lifecycle.
 
-1. embed the query
-2. load candidate documents from DynamoDB
-3. filter by metadata where relevant
-4. score candidates in application code using cosine similarity
-5. return the best matches
+Consultation inputs such as typed notes, uploaded files, audio, and prescription images begin as request-time artifacts. They are transient until transformed into structured visit context.
 
-This means DynamoDB is the durable vector/document store, while ranking remains application-side.
+Summary jobs create operational artifacts such as job IDs, status events, temporary generation state, and stream buffers. Those artifacts are useful for resumability and user experience, but they are not the long-term clinical record.
 
-## 12. Runtime configuration model
+The summary pipeline produces generated artifacts such as summary text, evidence mappings, extracted actions, and email content. Only the clinically relevant parts of that output become durable visit-memory artifacts.
 
-The deployed service uses two classes of runtime values.
+Once persisted in DynamoDB, those artifacts become longitudinal memory used by future summary generation, patient-history views, and assistant recall.
 
-### 12.1 Non-secret runtime variables
+Deletion is currently soft delete, not immediate hard purge. That means records can be hidden from normal retrieval without immediately being destroyed. That behavior is important to understand because “deleted” in the UI does not currently mean “physically removed from all persistence.”
 
-These are set directly on the App Runner service:
+## 10. Runtime Configuration And Secrets
+
+The deployed service needs both non-secret runtime variables and secret runtime values.
+
+Non-secret values are attached directly to App Runner. These include things like:
 
 - `NODE_ENV`
 - `AWS_REGION`
 - `DYNAMODB_TABLE_NAME`
-- `GEMINI_API_URL`
-- `DEEPSEEK_API_URL`
-- `GROK_API_URL`
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
-- `NEXT_PUBLIC_CLERK_JWT_TEMPLATE`
+- provider base URLs
+- public Clerk frontend values
 - `RESEND_FROM`
 
-### 12.2 Secret runtime variables
+Secret values are resolved from Secrets Manager ARNs. These include:
 
-These are resolved from Secrets Manager ARNs:
+- model API keys
+- Clerk backend secrets
+- Upstash URL and token
+- Brave API key
+- Resend API key
 
-- `OPENAI_API_KEY`
-- `GEMINI_API_KEY`
-- `DEEPSEEK_API_KEY`
-- `GROK_API_KEY`
-- `RESEND_API_KEY`
-- `CLERK_SECRET_KEY`
-- `CLERK_JWKS_URL`
-- `BRAVE_API_KEY`
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
+The important architectural point is that the app reads them all through environment variables at runtime, but the source of truth is not the same. Some values are plain runtime configuration. Others are resolved through Secrets Manager.
 
-### 12.3 Local-only memory configuration
+### 10.1 Volatile Runtime Facts
 
-For local DynamoDB Local testing:
+The explanation above should stay manual. The exact runtime inventory lives in [section 20.2](#202-runtime-configuration-inventory), where it can be maintained as a drift-prone factual appendix instead of breaking the narrative flow.
 
-- `DYNAMODB_ENDPOINT_URL=http://localhost:8001`
+## 11. Infrastructure Ownership
 
-In AWS runtime:
-
-- `DYNAMODB_ENDPOINT_URL` must be unset
-
-## 13. Infrastructure architecture
-
-### 13.1 What Terraform owns
+Terraform is the infrastructure source of truth for the AWS resources the application needs to run.
 
 Terraform currently owns:
 
 - DynamoDB table
-- ECR repository
+- ECR repository and lifecycle policy
 - App Runner service
 - App Runner autoscaling configuration
-- App Runner runtime and ECR access roles
+- App Runner runtime role
+- App Runner ECR access role
 - Secrets Manager secret shells
-- Route53 custom-domain record
+- Route53 record for the custom domain
 - App Runner custom-domain association
 
-### 13.2 What Terraform does not own
-
-Terraform does not store:
+Terraform intentionally does not own:
 
 - the actual secret values
 - Upstash infrastructure
-- provider accounts such as OpenAI, Clerk, or Resend
+- provider accounts such as OpenAI, Clerk, Resend, or Brave
 
-### 13.3 Why this stack is simpler than `ideagen`
+This healthcare stack is simpler than the `ideagen` stack because it does not need RDS, private networking, or an App Runner VPC connector. The app’s durable backend is DynamoDB plus Secrets Manager, not a private relational database.
 
-This healthcare stack intentionally does not include:
+## 12. How Deploys Actually Work
 
-- RDS
-- VPC
-- private subnets
-- NAT gateway
-- App Runner VPC connector
+The deploy path is built around GitHub Actions, Terraform, `scripts/deploy.sh`, ECR, and App Runner auto-deploy behavior.
 
-That is because the app’s current durable backend depends on DynamoDB and Secrets Manager, not a private relational database.
+For production, push to `healthcare-saas-aws` runs CI and then `Deploy / prod`. The deploy path does not just build an image and hope for the best. It first reconciles infrastructure and service configuration, then synchronizes runtime secrets into Secrets Manager, then pushes the new image to ECR, then waits for App Runner to finish the rollout and verifies health.
 
-## 14. Deploy architecture
+That order exists to guarantee that the service configuration is already correct before App Runner starts the new image. If the image is rolled out before the configuration and secret state are aligned, the service can come up against stale runtime assumptions.
 
-The deploy path is built around these components:
+The current automatic behavior is intentionally narrow:
 
-- GitHub Actions for CI/CD execution
-- Terraform for infrastructure reconciliation
-- `scripts/deploy.sh` for ordered deployment behavior
-- ECR for image storage
-- App Runner auto-deploy for image rollout after push
+- push to `healthcare-saas-aws` -> deploy `prod`
+- `dev` is still supported, but manual-only
+- destroy flows are manual-only
 
-### 14.1 Current automatic deploy behavior
+### 12.1 Volatile CI/CD Facts
 
-Current production push behavior:
+The explanation of deploy behavior should stay manual. The exact branch and workflow mapping lives in [section 20.3](#203-cicd-branch-mapping), where it can be maintained as factual reference material.
 
-- push to `healthcare-saas-aws`
-  - runs `Test`
-  - runs `Docker Build`
-  - runs `Deploy / prod`
+## 13. GitHub Actions And Deployment Identity
 
-`dev` remains supported but manual-only.
-
-### 14.2 Deploy order
-
-The current deploy model is:
-
-1. initialize backend and workspace
-2. reconcile infrastructure and service configuration
-3. sync runtime secrets to Secrets Manager
-4. build and push image to ECR
-5. let App Runner auto-deploy the new image
-6. wait for `RUNNING`
-7. verify `/health`
-
-### 14.3 Why this order exists
-
-This order ensures the service has the correct configuration and secret state before the new image rolls out.
-
-## 15. Destroy architecture
-
-Destroy is handled through:
-
-- local wrapper:
-  - `scripts/destroy.sh`
-- GitHub Actions manual workflow:
-  - `.github/workflows/destroy.yml`
-
-### 15.1 Destroy order
-
-Current destroy logic:
-
-1. initialize backend and workspace
-2. empty the ECR repository
-3. run `terraform destroy`
-
-### 15.2 Hardening choices
-
-The destroy path has been hardened to address the real AWS failure modes encountered during rollout:
-
-- ECR is emptied before deletion
-- Secrets Manager uses `recovery_window_in_days = 0`
-- Route53 is Terraform-owned rather than manually patched
-
-## 16. GitHub Actions and deployment identity
-
-The repo uses GitHub environments to scope deployment identity and secrets:
+The repository uses GitHub environments to scope deployment identity and secrets:
 
 - `healthcare-dev`
 - `healthcare-prod`
 
-### 16.1 Current healthcare deploy role
-
-Current dedicated role:
+The current dedicated AWS role is:
 
 - `github-actions-healthcare-deploy`
 - `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
 
-This same ARN is currently used by both healthcare GitHub environments.
-
-### 16.2 Why the same ARN is still isolated
-
-Isolation is enforced through OIDC trust conditions that restrict assumption by GitHub environment identity, not by requiring different dev/prod role names.
-
-### 16.3 Current trust model
-
-Allowed subjects:
+Both healthcare GitHub environments currently use that same ARN. Isolation is still enforced because the OIDC trust policy restricts assumption by GitHub environment identity:
 
 - `repo:rhyegacillos/agents-app:environment:healthcare-dev`
 - `repo:rhyegacillos/agents-app:environment:healthcare-prod`
 
-### 16.4 Current managed policies on the role
+The role currently carries the permissions needed to manage the healthcare stack, including ECR, App Runner, Secrets Manager, DynamoDB, Route53, Terraform backend access, and Terraform-managed App Runner IAM role operations.
 
-- `AmazonEC2ContainerRegistryPowerUser`
-- `AWSAppRunnerFullAccess`
-- `SecretsManagerReadWrite`
-- `AmazonDynamoDBFullAccess`
-- `AmazonRoute53FullAccess`
-- `AmazonS3FullAccess`
-- `IAMReadOnlyAccess`
+This arrangement is a tradeoff. It keeps role management simpler, but it provides less physical separation than distinct dev and prod roles. The current trust model makes it acceptable, but it is still a real design choice rather than a neutral default.
 
-### 16.5 Inline IAM mutation policy
+### 13.1 Volatile Workflow Facts
 
-The role also carries an inline policy for Terraform-managed App Runner IAM role operations, including actions like:
+The architecture explanation should stay manual. The exact workflow file and job inventory lives in [section 20.4](#204-workflow-file-inventory), where it can be kept as factual reference material.
 
-- `iam:CreateRole`
-- `iam:DeleteRole`
-- `iam:AttachRolePolicy`
-- `iam:DetachRolePolicy`
-- `iam:PutRolePolicy`
-- `iam:DeleteRolePolicy`
-- `iam:GetRole`
-- `iam:UpdateAssumeRolePolicy`
-- `iam:PassRole`
+## 14. How Secrets Move Through The Deployment Path
 
-## 17. Secrets flow across the deployment path
+The deployed secret path is:
 
-The current deployed secret path is:
+1. the value exists in the GitHub environment
+2. the deploy workflow injects it into the deploy step
+3. `scripts/deploy.sh` writes it to AWS Secrets Manager
+4. App Runner resolves the secret ARN at runtime
+5. the app reads it as a normal environment variable
 
-1. value exists in GitHub environment secret
-2. deploy workflow injects it into the deploy step
-3. `scripts/deploy.sh` writes it into AWS Secrets Manager
-4. App Runner resolves the ARN-backed secret at runtime
-5. the app reads the variable normally
+This means changing a GitHub secret by itself does not update the live service. A deploy must occur for the new value to be written into Secrets Manager and become part of the running service configuration.
 
-This is why changing a GitHub secret alone does not update production until a deploy runs.
+## 15. Destroy Semantics
 
-## 18. Local-versus-AWS behavior
+Destroy is handled through either:
 
-### 18.1 Local mode
+- local wrapper: `scripts/destroy.sh`
+- GitHub Actions manual workflow: `.github/workflows/destroy.yml`
 
-Local development may use:
+The destroy path initializes backend and workspace, empties the ECR repository, and then runs `terraform destroy`. That ordering exists because AWS will refuse to delete a non-empty ECR repository.
 
-- `.env`
-- `.env.local`
-- DynamoDB Local
+The current hardening choices reflect real failure modes encountered during rollout:
 
-### 18.2 AWS mode
+- ECR is emptied before deletion
+- Secrets Manager uses `recovery_window_in_days = 0`
+- Route53 is Terraform-owned
 
-AWS deployment uses:
+Those choices make full recreate scenarios much more predictable than they were in the original manual setup.
 
-- real DynamoDB
-- App Runner runtime IAM permissions
-- Secrets Manager-backed secret resolution
-- App Runner + ECR image rollout
+## 16. Local Versus AWS Behavior
 
-The deployed app should not depend on local disk persistence for patient memory.
+Local development is not process-identical to production.
 
-## 19. Operational verification
+In production, FastAPI is the application entrypoint and serves the exported frontend static assets itself. In local development, the repo currently supports two separate loops:
 
-### 19.1 Health check
+- `npm run dev`
+  - starts the Next.js development server
+- `uvicorn api.index:app --reload --port 8000`
+  - starts the FastAPI backend
+
+The repository does not currently define a local same-origin proxy or rewrite layer that makes those two processes behave exactly like the deployed App Runner container. That is why the docs distinguish frontend iteration, backend/API iteration, and the production-like containerized path.
+
+Local memory testing uses DynamoDB Local. AWS runtime uses real DynamoDB and Secrets Manager through IAM-backed access. The deployed application should never depend on local disk for durable patient memory.
+
+## 17. Constraints, Tradeoffs, And Gaps
+
+The current architecture is materially better than the earlier manual stack, but it still has tradeoffs.
+
+The biggest one is retrieval shape. DynamoDB is durable and operationally simple, but semantic ranking is still performed in Python after loading candidate records. That gives the team control and keeps infrastructure smaller, but it is less efficient than a dedicated vector-search backend at higher scale.
+
+Another tradeoff is deployment identity. Using the same healthcare deploy role ARN for `healthcare-dev` and `healthcare-prod` simplifies role management, but it is still less separated than having dedicated environment-specific roles.
+
+`dev` is also less exercised than `prod` because the normal automatic deploy path targets production only. That is intentional, but it means `dev` is not the most battle-tested path in normal day-to-day workflow.
+
+Finally, not all dependencies are inside Terraform. Upstash remains external. That keeps the stack simpler, but it means not every persistence component is provisioned from the same infrastructure system.
+
+## 18. Operational Verification
+
+The architecture is only useful if operators can verify that reality still matches it.
+
+Health check:
 
 ```bash
 curl -fsS https://medinotes.agentairg.site/health
 ```
 
-### 19.2 DynamoDB memory existence
+Check DynamoDB memory existence:
 
 ```bash
 aws dynamodb describe-table --region ap-southeast-1 --table-name medinotes-prod-memory
 aws dynamodb scan --region ap-southeast-1 --table-name medinotes-prod-memory --max-items 10
 ```
 
-Use `scan` to confirm actual records. `describe-table` item counts can lag.
+`describe-table` item counts can lag. `scan` is the better sanity check for actual records.
 
-### 19.3 DNS verification
+Check DNS:
 
 ```bash
 dig medinotes.agentairg.site +short
 curl -I https://medinotes.agentairg.site
 ```
 
-### 19.4 Terraform state sanity
+Check Terraform ownership:
 
 ```bash
 terraform -chdir=terraform workspace show
@@ -775,15 +448,113 @@ terraform -chdir=terraform state list
 terraform -chdir=terraform plan -var-file=prod.tfvars
 ```
 
-## 20. Most important architectural conclusion
+## 19. Where Other Docs Fit
 
-This app is no longer “a web UI with some agent prompts.” It is now a deployed system with explicit ownership boundaries:
+This file is the master architecture reference. The other documents are narrower lenses:
 
-- application logic and agents
-- durable patient memory
-- operational stream state
-- runtime secret delivery
-- infrastructure as code
-- CI/CD identity and rollout control
+- [README.md](/home/repos/healthcare-saas-aws/README.md)
+  - guided map for users and operators
+- [backend.md](/home/repos/healthcare-saas-aws/backend.md)
+  - API and backend-agent behavior
+- [deployment_runbook.md](/home/repos/healthcare-saas-aws/deployment_runbook.md)
+  - operational deploy and destroy procedure
+- [github_actions_runbook.md](/home/repos/healthcare-saas-aws/github_actions_runbook.md)
+  - GitHub environments, workflow behavior, and IAM wiring
+- [terraform/README.md](/home/repos/healthcare-saas-aws/terraform/README.md)
+  - Terraform ownership and infrastructure mechanics
 
-That separation is the defining characteristic of the current architecture and the reason the system can now preserve patient history, survive redeploys, and be operated in AWS as a real application rather than a prototype.
+## 20. Volatile Technical Facts
+
+The architecture explanation above should remain manual. The following fact surfaces are more drift-prone and are good candidates for generation or consistency checks:
+
+### 20.1 API Route Inventory
+
+<!-- BEGIN GENERATED: api-route-inventory -->
+| Method | Path | Handler | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/consultation` | `consultation_summary` | start a resumable summary pipeline and stream events |
+| `GET` | `/api/consultation` | `consultation_stream` | resume an existing summary job stream by `job_id` |
+| `POST` | `/api/chat` | `chat_endpoint` | stream assistant responses grounded in patient context |
+| `POST` | `/api/send-email` | `send_email_endpoint` | send translated or generated patient email |
+| `GET` | `/api/patients` | `get_patients` | paginated patient list for history UI |
+| `GET` | `/api/patient-history` | `get_patient_history` | retrieve visit history for one patient |
+| `POST` | `/api/patient/rename` | `rename_patient` | rename all stored records for a patient |
+| `POST` | `/api/patient/delete-entry` | `delete_patient_entry` | soft delete a stored visit artifact |
+| `POST` | `/api/patient/restore-entry` | `restore_patient_entry` | restore a soft-deleted visit artifact |
+| `GET` | `/api/subscription` | `subscription` | retrieve current billing/subscription plan via Clerk |
+| `GET` | `/health` | `health_check` | runtime health endpoint for App Runner and operators |
+| `GET` | `/` | `serve_root` | serve exported frontend index when static assets exist |
+<!-- END GENERATED: api-route-inventory -->
+
+### 20.2 Runtime Configuration Inventory
+
+<!-- BEGIN GENERATED: runtime-config-inventory -->
+Current non-secret App Runner runtime variables:
+
+| Variable | Source | Purpose |
+| --- | --- | --- |
+| `NODE_ENV` | Terraform | runtime mode, fixed to `production` in App Runner |
+| `AWS_REGION` | Terraform | region used by runtime AWS clients |
+| `DYNAMODB_TABLE_NAME` | Terraform | target table for long-term patient memory |
+| `GEMINI_API_URL` | Terraform input / GitHub environment | Gemini-compatible base URL |
+| `DEEPSEEK_API_URL` | Terraform input / GitHub environment | DeepSeek base URL |
+| `GROK_API_URL` | Terraform input / GitHub environment | xAI / Grok base URL |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Terraform input / GitHub environment | public Clerk frontend key |
+| `NEXT_PUBLIC_CLERK_JWT_TEMPLATE` | Terraform input / GitHub environment | Clerk JWT template used by the frontend |
+| `RESEND_FROM` | Terraform input / GitHub environment | default sender address |
+
+Current Secrets Manager-backed runtime variables:
+
+| Variable | Secret name pattern | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `${project}-${environment}/app/OPENAI_API_KEY` | OpenAI generation and embeddings |
+| `GEMINI_API_KEY` | `${project}-${environment}/app/GEMINI_API_KEY` | Gemini access |
+| `DEEPSEEK_API_KEY` | `${project}-${environment}/app/DEEPSEEK_API_KEY` | DeepSeek access |
+| `GROK_API_KEY` | `${project}-${environment}/app/GROK_API_KEY` | xAI / Grok access |
+| `RESEND_API_KEY` | `${project}-${environment}/app/RESEND_API_KEY` | email delivery |
+| `CLERK_SECRET_KEY` | `${project}-${environment}/app/CLERK_SECRET_KEY` | Clerk backend API access |
+| `CLERK_JWKS_URL` | `${project}-${environment}/app/CLERK_JWKS_URL` | JWT verification keyset URL |
+| `BRAVE_API_KEY` | `${project}-${environment}/app/BRAVE_API_KEY` | external research path |
+| `UPSTASH_REDIS_REST_URL` | `${project}-${environment}/app/UPSTASH_REDIS_REST_URL` | resumable job / stream store |
+| `UPSTASH_REDIS_REST_TOKEN` | `${project}-${environment}/app/UPSTASH_REDIS_REST_TOKEN` | resumable job / stream auth |
+
+Current local-only memory variables:
+
+| Variable | Local meaning |
+| --- | --- |
+| `DYNAMODB_TABLE_NAME` | local table name for memory testing |
+| `DYNAMODB_ENDPOINT_URL` | local DynamoDB endpoint, currently `http://localhost:8001` |
+| `AWS_REGION` | region for local boto3 session setup |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | dummy credentials accepted by DynamoDB Local |
+<!-- END GENERATED: runtime-config-inventory -->
+
+### 20.3 CI/CD Branch Mapping
+
+<!-- BEGIN GENERATED: ci-cd-branch-mapping -->
+| Event | Branch / input | Workflow path | Terraform target | GitHub environment | Effect |
+| --- | --- | --- | --- | --- | --- |
+| Pull request | any PR branch | `.github/workflows/ci.yml` | none | none | run validation only |
+| Push | `healthcare-saas-aws` | `.github/workflows/ci.yml` -> reusable `.github/workflows/deploy.yml` | `prod` | `healthcare-prod` | auto deploy production |
+| Manual dispatch | `deploy.yml` with `environment=dev` | `.github/workflows/deploy.yml` | `dev` | `healthcare-dev` unless overridden | manual deploy |
+| Manual dispatch | `deploy.yml` with `environment=prod` | `.github/workflows/deploy.yml` | `prod` | `healthcare-prod` unless overridden | manual deploy |
+| Manual dispatch | `destroy.yml` with `environment=dev` | `.github/workflows/destroy.yml` | `dev` | `healthcare-dev` | manual destroy |
+| Manual dispatch | `destroy.yml` with `environment=prod` | `.github/workflows/destroy.yml` | `prod` | `healthcare-prod` | manual destroy |
+<!-- END GENERATED: ci-cd-branch-mapping -->
+
+### 20.4 Workflow File Inventory
+
+<!-- BEGIN GENERATED: workflow-file-inventory -->
+| Workflow file | Trigger | Major jobs | Notes |
+| --- | --- | --- | --- |
+| `.github/workflows/ci.yml` | `pull_request`, push to `healthcare-saas-aws` | `test`, `docker_build`, `deploy_prod` | `deploy_prod` reuses `deploy.yml` only on push to prod branch |
+| `.github/workflows/deploy.yml` | `workflow_call`, `workflow_dispatch` | `deploy` | reusable deploy workflow for `dev` or `prod` |
+| `.github/workflows/destroy.yml` | `workflow_dispatch` | `destroy`, `confirm_failed` | manual destroy, guarded by exact `DESTROY` confirmation |
+<!-- END GENERATED: workflow-file-inventory -->
+
+## 21. Architectural Conclusion
+
+The most important thing to understand about the current MediNotes architecture is that it is now a layered application with explicit boundaries between generation, persistence, deployment, and operations.
+
+Patient memory is durable and externalized. Operational stream state is separate from long-term clinical memory. Secrets are delivered through a managed runtime path. Infrastructure is declared, not manually remembered. Deployment identity is enforced through GitHub environments and AWS OIDC trust.
+
+That separation of concerns is what makes the system reliable enough to preserve patient continuity across visits and operable enough to survive redeploys without losing its own state.

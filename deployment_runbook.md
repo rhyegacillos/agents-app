@@ -144,6 +144,16 @@ The service should use real AWS DynamoDB through its runtime IAM role.
 
 ## 5. Local development runbook
 
+Local development is not identical to production process topology.
+
+In production:
+
+- FastAPI is the application entrypoint
+- the exported Next.js frontend is copied into `static/`
+- FastAPI serves both API routes and static frontend assets in one container
+
+Locally, the repository currently supports separate loops for frontend and backend work.
+
 ### Step 1: start DynamoDB Local
 
 ```bash
@@ -166,11 +176,31 @@ export AWS_SECRET_ACCESS_KEY=dummy
 bash tools/create_memory_table.sh medinotes-memory
 ```
 
-### Step 4: run the app locally
+### Step 4: run the frontend locally
 
 ```bash
 npm run dev
 ```
+
+This starts the Next.js development server only.
+
+### Step 5: run the backend locally
+
+```bash
+uvicorn api.index:app --reload --host 0.0.0.0 --port 8000
+```
+
+This starts the FastAPI backend only.
+
+### Important local limitation
+
+The frontend currently calls relative `/api/...` routes, and the repo does not define a local reverse proxy or rewrite layer that makes `next dev` and FastAPI behave like the single production container.
+
+That means:
+
+- `npm run dev` is useful for frontend iteration
+- `uvicorn api.index:app ...` is useful for backend/API iteration
+- true production-like same-origin behavior happens in the built container path, not in a one-command local dev mode today
 
 ## 6. Local infrastructure deploy runbook
 
@@ -394,4 +424,3 @@ For this app today:
 - App Runner is the application runtime
 
 That is the intended operating model going forward.
-

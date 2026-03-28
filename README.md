@@ -1,320 +1,108 @@
 # Agentic Healthcare SaaS (AWS)
 
-`healthcare-saas-aws` is a clinician-facing summarization and patient-history product built as a single Next.js + FastAPI application and deployed on AWS App Runner. The current production stack is no longer a purely manual App Runner deployment. It now has a Terraform-managed AWS foundation, GitHub Actions deployment workflow, DynamoDB-backed patient memory, Secrets Manager-backed runtime secrets, and Route53-managed custom-domain routing.
+`healthcare-saas-aws` is a clinician-facing summarization and patient-history application built as a single Next.js + FastAPI service and deployed on AWS App Runner.
 
-This document is the product and platform overview. It explains what the app does, how data persists, and how the deployed system is structured today.
+The app is no longer a manually configured App Runner project. It now runs on a Terraform-managed AWS stack with:
 
-For deeper operational detail, also see:
+- App Runner for runtime
+- ECR for container images
+- DynamoDB for long-term patient memory
+- Secrets Manager for runtime secrets
+- Route53 for the custom domain
+- GitHub Actions for deploy and destroy workflows
 
-- [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE.md)
-- [Backend API and agent details](/home/repos/healthcare-saas-aws/backend.md)
+This README is the guided map to the system. It is intentionally not the deepest technical reference.
+
+The split is deliberate:
+
+- `README.md`
+  - start here if you want the coherent walkthrough
+  - use it to understand what the app is, how it behaves end to end, how to run it locally, and how deploys work at a practical level
+- `ARCHITECTURE.md`
+  - use it as the full source-of-truth technical reference
+  - it carries the deep explanation of request flows, artifact lifecycle, persistence internals, backend orchestration, Terraform, AWS, GitHub Actions, tradeoffs, and known gaps
+
+When behavior changes:
+
+- update `ARCHITECTURE.md` if the exact technical behavior changed
+- update `README.md` only if the guided walkthrough, local-run path, deploy shape, or operator entry guidance changed
+- use the PR template checklist during review, because merging to `healthcare-saas-aws` leads to the automatic `prod` deploy path
+
+If you want the full technical source of truth, start here:
+
+- [ARCHITECTURE.md](/home/repos/healthcare-saas-aws/ARCHITECTURE.md)
+
+For focused operational docs:
+
 - [Deployment + ops runbook](/home/repos/healthcare-saas-aws/deployment_runbook.md)
 - [GitHub Actions runbook](/home/repos/healthcare-saas-aws/github_actions_runbook.md)
 - [Terraform infrastructure guide](/home/repos/healthcare-saas-aws/terraform/README.md)
 - [GitHub environment runbook](/home/repos/healthcare-saas-aws/healthcare_github_environment_setup.md)
-- [Infrastructure design and status](/home/repos/healthcare-saas-aws/TERRAFORM_AWS_SPEC.md)
 
-## 1. What the application does
+## 1. What the app is
 
-The app is designed for doctors who want to capture consultation inputs, generate structured clinical summaries, recall longitudinal patient context, and send patient-friendly follow-up communication without manually stitching together documents, notes, and past visits.
+MediNotes is designed for clinicians who need to turn messy consultation inputs into structured outputs while preserving patient continuity across visits.
 
-At a high level, the product provides:
+The application supports:
 
-- multi-source consultation capture
-- agentic summary generation with research and quality review
-- patient-memory retrieval across prior visits
-- evidence-linked summaries
-- patient-history browsing and visit restore/delete workflows
-- assistant chat grounded in current context plus historical patient memory
-- patient email drafting and dispatch
+- typed consultation notes
+- uploaded clinical documents
+- audio recordings
+- handwritten or prescription images
+- patient-history retrieval across prior visits
+- assistant chat grounded in current and historical context
+- patient-facing email drafting and send
 
-## 2. Main user workflows
+At a practical level, the product gives the user:
 
-### 2.1 Consultation capture
+- structured summary generation
+- evidence-linked outputs
+- next-action extraction
+- patient-history browsing
+- soft delete and restore of stored visit artifacts
+- longitudinal memory that survives redeploys
 
-Clinicians can provide one or more of the following:
+## 2. How it runs end to end
 
-- typed notes
-- uploaded PDFs, DOCX, TXT, or Markdown files
-- audio recordings for transcription
-- images of prescriptions or handwritten notes
+The main operational path is:
 
-The backend normalizes those inputs into a single visit context that downstream agents can reason over.
+1. the user enters notes or uploads consultation material
+2. the backend extracts and normalizes the visit context
+3. the system recalls prior patient history from DynamoDB
+4. the summary pipeline generates a draft
+5. research is added when needed
+6. a critic review checks the draft
+7. evidence is mapped to the final result
+8. the final visit memory is stored for future retrieval
+9. the UI receives streamed progress and final output
 
-### 2.2 Summary generation
+The assistant flow uses the same persisted patient memory, which is why it can answer questions about prior visits instead of only the current screen state.
 
-When the user clicks **Generate Summary**, the backend starts a resumable summary job. The pipeline:
+If you want the detailed breakdown of what each stage does, where the artifacts live, and how the agents coordinate that work, use [ARCHITECTURE.md](/home/repos/healthcare-saas-aws/ARCHITECTURE.md). This README is intentionally stopping at the operational walkthrough level.
 
-1. extracts text from all available inputs
-2. recalls prior patient memory
-3. optionally performs research and medication/guideline checks
-4. drafts the summary
-5. runs a critic review
-6. regenerates if the critic rejects the draft
-7. maps evidence to the final summary
-8. stores visit memory for future retrieval
+## 3. How to run it locally
 
-The response streams back to the UI as Server-Sent Events so the user sees progress and intermediate status in real time.
+Local development uses the same application code but not the exact same process topology as production.
 
-### 2.3 Patient history workspace
+In production, App Runner serves one container where:
 
-The app includes a patient-history workspace rather than treating memory as an invisible backend-only feature.
+- FastAPI is the runtime entrypoint
+- the exported Next.js frontend is served as static files by FastAPI
 
-Current supported behavior:
+Locally, the repo currently supports two separate development loops:
 
-- paginated patient list
-- patient timeline browsing
-- date filtering and keyword filtering
-- soft delete and restore
-- reuse-versus-regenerate behavior for repeated encounters
+- frontend iteration with `npm run dev`
+- backend/API iteration with `uvicorn api.index:app --reload --port 8000`
 
-The important operational change is that this history is no longer ephemeral. It now persists in DynamoDB and survives redeploys and App Runner instance replacement.
+That distinction matters because the frontend code calls relative `/api/...` routes, while `npm run dev` only starts the Next.js dev server.
 
-### 2.4 MediNotes Assistant
-
-The assistant is not a generic chatbot. It has access to:
-
-- the current in-progress consultation state
-- the persisted patient history from DynamoDB-backed memory
-- the current summary draft when one exists
-
-This lets it answer questions like:
-
-- “What happened at the patient’s last visit?”
-- “Summarize what I just uploaded.”
-- “What medications were previously prescribed?”
-
-### 2.5 Patient email dispatch
-
-After a summary is reviewed, the app can draft and send a patient-facing email. The email path uses Resend and can translate content before dispatch when the requested language is not English.
-
-## 3. Agentic backend model
-
-The backend is intentionally split into cooperating agents rather than one large summary function.
-
-The core agents are:
-
-- `extraction_agent.py`: parses uploads, audio, and prescription images
-- `summary_agent.py`: orchestrates the full clinical synthesis flow
-- `research_agent.py`: performs external clinical retrieval
-- `critic_agent.py`: reviews output quality and correctness
-- `evidence_agent.py`: grounds summary statements in source evidence
-- `memory_agent.py`: persists and retrieves patient visit memory
-- `coordinator_agent.py`: extracts next actions
-- `email_agent.py`: handles translation and final send
-- `chat_agent.py`: powers the MediNotes Assistant
-
-This architecture matters operationally because persistence now crosses multiple layers:
-
-- Upstash Redis persists resumable summary job state and event streams
-- DynamoDB persists long-term patient memory
-- Secrets Manager supplies runtime secrets to the deployed application
-
-## 4. Current persistence model
-
-This section is the most important change from earlier versions of the app.
-
-### 4.1 Long-term patient memory now uses DynamoDB
-
-The old local file-backed memory model is gone. There is no JSON fallback path in production code anymore. The application now requires a DynamoDB table for patient memory.
-
-The store implementation lives in:
-
-- [vector_store.py](/home/repos/healthcare-saas-aws/api/memory/vector_store.py)
-- [memory_agent.py](/home/repos/healthcare-saas-aws/api/agent/memory_agent.py)
-
-The app writes documents such as:
-
-- `visit_summary`
-- `visit_notes`
-- `visit_evidence`
-
-Each stored document includes:
-
-- patient key
-- document id
-- visit date
-- document type
-- embedding
-- source text
-- metadata
-- optional payload
-
-The current DynamoDB table schema is:
-
-- partition key: `pk`
-- sort key: `sk`
-- GSI: `doc_id-index`
-
-The application stores patient documents under a patient partition, for example:
-
-- `pk = PATIENT#juan dela cruz`
-- `sk = DOC#<doc_id>`
-
-The store also keeps a dedupe key derived from:
-
-- patient name
-- visit date
-- document type
-- template id
-- encounter id
-
-That dedupe behavior is why repeated saves of the same encounter update the existing logical visit memory rather than growing unbounded duplicate rows.
-
-### 4.2 Upstash Redis is still used, but for jobs and streaming
-
-Upstash Redis did not disappear. It simply serves a different persistence boundary.
-
-It is used for:
-
-- resumable summary jobs
-- SSE event persistence
-- reconnect-safe streaming
-- job deduplication
-
-It is not the patient-history database.
-
-### 4.3 Secrets Manager is now part of the runtime design
-
-The deployed app no longer depends on manually typed secret values living directly inside the App Runner configuration as the desired long-term model.
-
-Terraform creates secret containers in AWS Secrets Manager and the deploy process writes their values at deploy time. App Runner then reads those secrets by ARN at runtime.
-
-Current managed runtime secrets include:
-
-- `OPENAI_API_KEY`
-- `GEMINI_API_KEY`
-- `DEEPSEEK_API_KEY`
-- `GROK_API_KEY`
-- `RESEND_API_KEY`
-- `CLERK_SECRET_KEY`
-- `CLERK_JWKS_URL`
-- `BRAVE_API_KEY`
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
-
-This design keeps secret values out of Terraform state while still making the deployed service fully reproducible.
-
-## 5. Current AWS deployment topology
-
-The deployed production stack is intentionally simpler than the `ideagen` stack because this application does not need private RDS networking.
-
-Current AWS components:
-
-- App Runner for the web application
-- ECR for the container image
-- DynamoDB for long-term patient memory
-- Secrets Manager for runtime secret values
-- Route53 for the custom domain
-- S3 + DynamoDB for Terraform remote state and locking
-
-Not part of the current healthcare stack:
-
-- VPC
-- private subnets
-- NAT gateway
-- RDS
-- security groups for database connectivity
-
-### 5.1 Production names currently in use
-
-The production environment was adopted from an existing manual deployment, so its names are intentionally aligned to live resources rather than freshly generated defaults.
-
-Current production values:
-
-- App Runner service: `consultation-app-service`
-- App Runner service URL: `ymwpjvxcjn.ap-southeast-1.awsapprunner.com`
-- custom domain: `medinotes.agentairg.site`
-- ECR repository: `consultation-app`
-- DynamoDB table: `medinotes-prod-memory`
-- secret prefix: `medinotes-prod/app/*`
-
-This is important because the repo now supports:
-
-- redeploying the adopted existing service
-- destroying the Terraform-managed stack
-- recreating the stack from scratch later
-
-### 5.2 DNS ownership
-
-The custom domain is now Terraform-managed. That means a destroy/recreate cycle no longer leaves Route53 pointing at an old App Runner target.
-
-Production DNS currently resolves through:
-
-- hosted zone: `agentairg.site`
-- record: `medinotes.agentairg.site`
-
-## 6. GitHub Actions and deployment model
-
-The repo now has a real CI/CD workflow rather than manual AWS console updates only.
-
-Current workflows:
-
-- [ci.yml](/home/repos/healthcare-saas-aws/.github/workflows/ci.yml)
-- [deploy.yml](/home/repos/healthcare-saas-aws/.github/workflows/deploy.yml)
-- [destroy.yml](/home/repos/healthcare-saas-aws/.github/workflows/destroy.yml)
-
-### 6.1 Current branch behavior
-
-Current behavior is intentionally **prod-only on push**:
-
-- push to `healthcare-saas-aws` runs test, docker build, and `Deploy / prod`
-
-`dev` still exists as a Terraform environment and a GitHub environment, but it is no longer auto-deployed on push. It is for manual workflow execution when needed.
-
-### 6.2 GitHub environment model
-
-The repo uses:
-
-- `healthcare-dev`
-- `healthcare-prod`
-
-These are not the same as Terraform `dev` and `prod`. GitHub environments exist to scope deployment secrets and the AWS OIDC role.
-
-Both healthcare GitHub environments intentionally use the same dedicated AWS role today:
-
-- `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-
-That role is restricted by GitHub environment in its trust policy, which is what gives you branch/environment isolation even though the ARN is the same in both healthcare environments.
-
-### 6.3 Deploy order
-
-The deploy flow is designed to avoid the App Runner race conditions that came up in other repos:
-
-1. initialize remote Terraform backend
-2. select the Terraform workspace
-3. apply Terraform prerequisites and configuration
-4. sync runtime secrets into Secrets Manager
-5. build and push the Docker image to ECR
-6. let App Runner auto-deploy the new image
-7. wait for the service to return to `RUNNING`
-8. verify the health endpoint
-
-This order matters because it ensures the service already has the correct runtime configuration and secret references before the new image is rolled out.
-
-## 7. Local development model
-
-Local development is intentionally different from AWS production where it should be different.
-
-### 7.1 Local app runtime
-
-The application can still run locally with:
-
-- `npm run dev`
-
-and the Python backend in the same repository.
-
-### 7.2 Local DynamoDB
-
-Local testing of patient-memory behavior now uses DynamoDB Local rather than a JSON file.
-
-Start DynamoDB Local:
+### 3.1 Start DynamoDB Local
 
 ```bash
 docker compose -f docker-compose.local.yml up -d
 ```
 
-Required local environment variables:
+### 3.2 Set local memory environment variables
 
 ```bash
 export DYNAMODB_TABLE_NAME=medinotes-memory
@@ -324,54 +112,84 @@ export AWS_ACCESS_KEY_ID=dummy
 export AWS_SECRET_ACCESS_KEY=dummy
 ```
 
-Create the local table:
+### 3.3 Create the local table
 
 ```bash
 bash tools/create_memory_table.sh medinotes-memory
 ```
 
-### 7.3 Deployed AWS runtime
+### 3.4 Run the app
 
-When deployed to AWS:
+For frontend-only work:
 
-- `DYNAMODB_ENDPOINT_URL` must be unset
-- App Runner uses the runtime role to reach DynamoDB and Secrets Manager directly
-- the deployed service reads its non-secret config from environment variables and its secret config from Secrets Manager
+```bash
+npm run dev
+```
 
-## 8. Operational expectations
+For backend/API work:
 
-### 8.1 What survives redeploys
+```bash
+uvicorn api.index:app --reload --host 0.0.0.0 --port 8000
+```
 
-These survive a normal image redeploy:
+Local notes:
 
-- DynamoDB patient memory
-- Secrets Manager secret values
-- Route53 custom-domain records
-- ECR repository and image history
+- `.env` and `.env.local` are used for local runtime configuration
+- local DynamoDB is only for local development
+- AWS deploys must not set `DYNAMODB_ENDPOINT_URL`
+- `npm run dev` does not start the FastAPI backend
+- `uvicorn api.index:app ...` does not provide the Next.js dev server
+- the repo does not currently define a local dev proxy that makes `next dev` and FastAPI behave as one seamless same-origin local stack
+- the production-like combined behavior is the containerized path, where FastAPI serves the exported frontend from `static/`
 
-### 8.2 What does not survive a destroy
+For the deeper local-versus-AWS explanation, including why patient memory is durable in AWS but App Runner itself is still stateless, use [ARCHITECTURE.md](/home/repos/healthcare-saas-aws/ARCHITECTURE.md).
 
-If the Terraform stack is destroyed, infrastructure resources are removed. However, the destroy path has been hardened so that:
+## 4. How it deploys
 
-- ECR images are emptied before repository deletion
-- Secrets Manager secret names are immediately reusable
-- Route53 records are removed with the stack
+The current production branch is:
 
-### 8.3 What the application now guarantees better than before
+- `healthcare-saas-aws`
 
-Compared with the earlier manual deployment model, the current app now has:
+Pushes to that branch run:
 
-- persistent patient memory outside the container filesystem
-- deploy-time secret synchronization into AWS Secrets Manager
-- reproducible AWS infrastructure
-- Route53 ownership under Terraform
-- GitHub Actions deployment using environment-scoped credentials
+- `Test`
+- `Docker Build`
+- `Deploy / prod`
 
-## 9. Where to look next
+Current production deployment shape:
 
-If you are trying to understand a specific layer:
+- GitHub Actions assumes the dedicated healthcare deploy role
+- Terraform reconciles infrastructure and service configuration
+- deploy tooling syncs runtime secrets into AWS Secrets Manager
+- Docker image is built and pushed to ECR
+- App Runner auto-deploys the new image
+- health is verified after rollout
 
-- app behavior and system topology: [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE.md)
-- API, agents, and request lifecycle: [backend.md](/home/repos/healthcare-saas-aws/backend.md)
-- infrastructure resources and deploy/destroy semantics: [terraform/README.md](/home/repos/healthcare-saas-aws/terraform/README.md)
-- GitHub environments, IAM role, and branch policies: [healthcare_github_environment_setup.md](/home/repos/healthcare-saas-aws/healthcare_github_environment_setup.md)
+Production currently uses these important names:
+
+- App Runner service: `consultation-app-service`
+- ECR repository: `consultation-app`
+- DynamoDB table: `medinotes-prod-memory`
+- custom domain: `medinotes.agentairg.site`
+
+`dev` still exists as an environment, but it is manual-only right now.
+
+This is the practical deploy description only. The deeper explanation of why the deploy order is structured this way, how GitHub environments map to AWS OIDC trust, how secrets move from GitHub to Secrets Manager to App Runner, and how destroy semantics work lives in [ARCHITECTURE.md](/home/repos/healthcare-saas-aws/ARCHITECTURE.md), [deployment_runbook.md](/home/repos/healthcare-saas-aws/deployment_runbook.md), and [github_actions_runbook.md](/home/repos/healthcare-saas-aws/github_actions_runbook.md).
+
+## 5. Where to go next
+
+Use [ARCHITECTURE.md](/home/repos/healthcare-saas-aws/ARCHITECTURE.md) if you want the full explanation of:
+
+- all backend layers
+- request flows
+- artifact lifecycle
+- persistence internals
+- Terraform/AWS/GitHub Actions details
+- constraints, tradeoffs, and current gaps
+
+Use these focused docs when needed:
+
+- runtime and deploy operations: [deployment_runbook.md](/home/repos/healthcare-saas-aws/deployment_runbook.md)
+- GitHub environments, workflows, and IAM role wiring: [github_actions_runbook.md](/home/repos/healthcare-saas-aws/github_actions_runbook.md)
+- Terraform resource ownership and deploy/destroy mechanics: [terraform/README.md](/home/repos/healthcare-saas-aws/terraform/README.md)
+- backend API and agent-focused behavior: [backend.md](/home/repos/healthcare-saas-aws/backend.md)
