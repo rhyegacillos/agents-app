@@ -28,6 +28,10 @@ secret_exists() {
 }
 
 resolve_secret_arn() {
+  if [ -n "$EXPLICIT_SECRET_ID" ]; then
+    printf '%s\n' "$EXPLICIT_SECRET_ID"
+    return
+  fi
   aws secretsmanager describe-secret \
     --secret-id "$(secret_id)" \
     --query 'ARN' \
@@ -87,7 +91,11 @@ case "$ACTION" in
   sync)
     payload_file=$(build_secret_payload)
     trap 'rm -f "$payload_file"' EXIT
-    if secret_exists; then
+    if [ -n "$EXPLICIT_SECRET_ID" ]; then
+      aws secretsmanager put-secret-value \
+        --secret-id "$EXPLICIT_SECRET_ID" \
+        --secret-string "file://$payload_file" >/dev/null
+    elif secret_exists; then
       aws secretsmanager put-secret-value \
         --secret-id "$(secret_id)" \
         --secret-string "file://$payload_file" >/dev/null
