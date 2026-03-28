@@ -131,7 +131,9 @@ jobs:
         id: runtime_secret
         run: |
           chmod +x scripts/runtime_secret.sh
-          echo "runtime_secrets_arn=$(./scripts/runtime_secret.sh sync \"$DEPLOY_ENV\" \"$PROJECT_NAME\")" >> "$GITHUB_OUTPUT"
+          runtime_secrets_arn="$(./scripts/runtime_secret.sh sync "$DEPLOY_ENV" "$PROJECT_NAME")"
+          test -n "$runtime_secrets_arn"
+          echo "runtime_secrets_arn=$runtime_secrets_arn" >> "$GITHUB_OUTPUT"
         env:
           APP_NAME: ${{ env.PROJECT_NAME }}
           RUNTIME_SECRETS_ARN: ${{ env.RUNTIME_SECRETS_ARN }}
@@ -152,6 +154,7 @@ jobs:
         env:
           AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
           APP_NAME: ${{ env.PROJECT_NAME }}
+          RUNTIME_SECRETS_ARN: ${{ steps.runtime_secret.outputs.runtime_secrets_arn }}
           TF_BACKEND_BUCKET: ${{ vars.TF_BACKEND_BUCKET }}
           TF_BACKEND_DDB_TABLE: ${{ vars.TF_BACKEND_DDB_TABLE }}
           TF_VAR_grok_api_url: ${{ secrets.GROK_API_URL }}

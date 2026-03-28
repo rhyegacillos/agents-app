@@ -10,6 +10,9 @@ fi
 if [ -z "${TF_VAR_async_chat_enabled:-}" ]; then
   unset TF_VAR_async_chat_enabled
 fi
+if [ -z "${TF_VAR_runtime_secrets_arn:-}" ] && [ -n "${RUNTIME_SECRETS_ARN:-}" ]; then
+  export TF_VAR_runtime_secrets_arn="${RUNTIME_SECRETS_ARN}"
+fi
 
 echo "🚀 Deploying ${PROJECT_NAME} to ${ENVIRONMENT}..."
 
