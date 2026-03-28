@@ -6,7 +6,7 @@ This document is the product and platform overview. It explains what the app doe
 
 For deeper operational detail, also see:
 
-- [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE_medinotes.md)
+- [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE.md)
 - [Backend API and agent details](/home/repos/healthcare-saas-aws/backend.md)
 - [Deployment + ops runbook](/home/repos/healthcare-saas-aws/deployment_runbook.md)
 - [GitHub Actions runbook](/home/repos/healthcare-saas-aws/github_actions_runbook.md)
@@ -371,7 +371,7 @@ Compared with the earlier manual deployment model, the current app now has:
 
 If you are trying to understand a specific layer:
 
-- app behavior and system topology: [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE_medinotes.md)
+- app behavior and system topology: [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE.md)
 - API, agents, and request lifecycle: [backend.md](/home/repos/healthcare-saas-aws/backend.md)
 - infrastructure resources and deploy/destroy semantics: [terraform/README.md](/home/repos/healthcare-saas-aws/terraform/README.md)
 - GitHub environments, IAM role, and branch policies: [healthcare_github_environment_setup.md](/home/repos/healthcare-saas-aws/healthcare_github_environment_setup.md)

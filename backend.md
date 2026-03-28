@@ -5,7 +5,7 @@ This document describes the current backend implementation of `healthcare-saas-a
 It should be read together with:
 
 - [README.md](/home/repos/healthcare-saas-aws/README.md) for the product and deployment overview
-- [ARCHITECTURE_medinotes.md](/home/repos/healthcare-saas-aws/ARCHITECTURE_medinotes.md) for the system topology
+- [ARCHITECTURE.md](/home/repos/healthcare-saas-aws/ARCHITECTURE.md) for the full system architecture
 - [terraform/README.md](/home/repos/healthcare-saas-aws/terraform/README.md) for infrastructure ownership
 
 ## 1. Backend composition
@@ -481,4 +481,3 @@ The first variables to compare are:
 - model provider URLs
 - Upstash credentials
 - Clerk secrets and JWKS URL
-
