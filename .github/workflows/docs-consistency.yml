@@ -1,0 +1,24 @@
+name: Docs Consistency
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  docs-consistency:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify generated architecture facts
+        run: python scripts/render_architecture_facts.py --check
+
+      - name: Run docs consistency test
+        run: python -m unittest backend.tests.test_docs_consistency
