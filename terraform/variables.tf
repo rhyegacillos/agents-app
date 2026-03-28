@@ -37,18 +37,21 @@ variable "grok_api_url" {
 variable "grok_api_key" {
   description = "Grok API Key"
   type        = string
+  default     = ""
   sensitive   = true
 }
 
 variable "brave_api_key" {
   description = "Brave Search API Key"
   type        = string
+  default     = ""
   sensitive   = true
 }
 
 variable "resend_api_key" {
   description = "Resend API Key"
   type        = string
+  default     = ""
   sensitive   = true
 }
 
