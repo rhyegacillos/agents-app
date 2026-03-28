@@ -9,6 +9,7 @@ from opentelemetry.trace import SpanKind
 from config import ASYNC_JOB_TTL_SECONDS
 from observability import log_event, now_local_iso, reset_trace_id, set_trace_id
 from otel_observability import (
+    extract_trace_context,
     flush_otel,
     get_tracer as get_otel_tracer,
     record_current_span_exception,
@@ -21,6 +22,7 @@ from server import _reset_current_job_id, _run_chat_flow, _set_current_job_id
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     job_id = (event or {}).get("job_id")
     trace_id = (event or {}).get("trace_id")
+    trace_headers = (event or {}).get("trace_headers") or {}
     user_id = (event or {}).get("user_id")
     session_id = (event or {}).get("session_id")
     message = (event or {}).get("message", "")
@@ -32,7 +34,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     _, trace_token = set_trace_id(trace_id)
     try:
         tracer = get_otel_tracer("digital_assistant.worker")
-        with tracer.start_as_current_span("worker.job", kind=SpanKind.CONSUMER) as span:
+        parent_context = extract_trace_context(trace_headers)
+        with tracer.start_as_current_span(
+            "worker.process_job",
+            context=parent_context,
+            kind=SpanKind.CONSUMER,
+        ) as span:
             if span is not None:
                 span.set_attribute("trace_id", trace_id or "-")
                 span.set_attribute("job.id", job_id)

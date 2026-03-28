@@ -47,8 +47,9 @@ from config import (
     MEMORY_TTL_MAP,
 )
 from services.memory import extract_and_store_memory
+from services.output_truth_gate import extract_tool_events
 from services.prose_guard import apply_low_risk_prose_guard
-from services.risk_router import classify_risk
+from services.risk_router import classify_risk, required_tool_sequence
 from services.quota import (
     consume_daily_quota,
     count_quota_actions_from_truth_context,
@@ -74,12 +75,15 @@ from services.storage import (
     validate_user_id,
 )
 from services.chat_runtime import (
+    HighRiskChatResult,
     finalize_high_risk_response,
     run_bedrock_chat,
+    run_bedrock_prose,
     run_grok_once,
     run_grok_with_mcp_once,
     usage_total_tokens,
 )
+from validator_agent import validate_memory_compliance_bedrock, validate_memory_compliance_grok
 from observability import (
     TRACE_ID,
     log_event,
@@ -92,6 +96,7 @@ from observability import (
 )
 from otel_observability import (
     get_tracer as get_otel_tracer,
+    inject_current_trace_headers,
     instrument_fastapi_app,
     record_current_span_exception,
     set_current_span_attributes,
@@ -238,23 +243,43 @@ async def _generate_response_for_risk(
     session_id: str,
     tier: str,
     require_sources: bool,
+    required_tool_names: Optional[List[str]] = None,
 ) -> tuple[str, int]:
-    if tier == "high":
-        return await call_grok_with_mcp(
-            user_id,
-            conversation,
-            agent_message,
-            session_id=session_id,
-            require_sources=require_sources,
+    tracer = get_otel_tracer("digital_assistant.server")
+    with tracer.start_as_current_span(f"chat.route.{AI_PROVIDER}.{tier}"):
+        set_current_span_attributes(
+            {
+                "provider": AI_PROVIDER,
+                "risk.tier": tier,
+                "require_sources": require_sources,
+            }
         )
-    if AI_PROVIDER == "grok":
-        return await call_grok_prose_guarded(user_id, conversation, agent_message)
-    if AI_PROVIDER == "bedrock":
-        return await call_bedrock(user_id, conversation, agent_message)
-    raise HTTPException(
-        status_code=500,
-        detail=f"Unsupported AI_PROVIDER '{AI_PROVIDER}'. Use 'bedrock' or 'grok'.",
-    )
+        if AI_PROVIDER == "grok":
+            if tier == "high":
+                return await call_grok_with_mcp(
+                    user_id,
+                    conversation,
+                    agent_message,
+                    session_id=session_id,
+                    require_sources=require_sources,
+                    required_tool_names=required_tool_names,
+                )
+            return await call_grok_prose_guarded(user_id, conversation, agent_message)
+        if AI_PROVIDER == "bedrock":
+            if tier == "high":
+                return await call_bedrock(
+                    user_id,
+                    conversation,
+                    agent_message,
+                    session_id=session_id,
+                    require_sources=require_sources,
+                    required_tool_names=required_tool_names,
+                )
+            return await call_bedrock_prose_guarded(user_id, conversation, agent_message)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unsupported AI_PROVIDER '{AI_PROVIDER}'. Use 'bedrock' or 'grok'.",
+        )
 
 
 def _build_quota_increments(user_id: str, tier: str, llm_tokens: int) -> Dict[str, int]:
@@ -361,25 +386,41 @@ async def rerun_with_fix_instructions(
     user_message: str,
     fix_instructions: str,
 ) -> str:
-    result = await rerun_with_fix_instructions_result(
+    result = await rerun_grok_with_fix_instructions_result(
         user_id=user_id,
         conversation=conversation,
         user_message=user_message,
         fix_instructions=fix_instructions,
     )
-    return str(getattr(result, "final_output", "") or "")
+    return str(result.output or "")
 
 
-async def rerun_with_fix_instructions_result(
+def _build_high_risk_result_from_grok(raw_result: Any) -> HighRiskChatResult:
+    return HighRiskChatResult(
+        output=str(getattr(raw_result, "final_output", "") or ""),
+        tool_events=extract_tool_events(raw_result),
+        llm_tokens=usage_total_tokens(raw_result),
+    )
+
+
+async def rerun_grok_with_fix_instructions_result(
     user_id: str,
     conversation: List[Dict],
     user_message: str,
     fix_instructions: str,
-) -> Any:
+    required_tool_names: Optional[List[str]] = None,
+) -> HighRiskChatResult:
+    required_tool_names = [name for name in (required_tool_names or []) if isinstance(name, str) and name]
     instructions = (
         build_full_instructions(user_id)
         + "\n\nYou must revise your response to comply with Approved Memory."
     )
+    if required_tool_names:
+        instructions += (
+            "\nExecution contract:\n"
+            + "\n".join(f"- You must execute `{tool_name}`." for tool_name in required_tool_names)
+            + "\n- Complete the required tool actions before writing the final answer."
+        )
     if fix_instructions:
         instructions += f"\nFix instructions: {fix_instructions}"
     user_input = (
@@ -407,7 +448,7 @@ async def rerun_with_fix_instructions_result(
         user_input=user_input,
         mcp_specs=mcp_specs,
     )
-    return result
+    return _build_high_risk_result_from_grok(result)
 
 
 async def call_grok_with_mcp(
@@ -417,52 +458,78 @@ async def call_grok_with_mcp(
     *,
     session_id: Optional[str] = None,
     require_sources: bool = False,
+    required_tool_names: Optional[List[str]] = None,
 ) -> tuple[str, int]:
     if not GROK_API_KEY:
         raise HTTPException(status_code=500, detail="GROK_API_KEY is not configured")
 
-    agent_instructions = build_full_instructions(user_id)
-    user_input = build_conversation_input(conversation, user_message)
-
-    mcp_specs = build_mcp_server_specs(
-        enable_search=ENABLE_MCP_SEARCH,
-        job_id=_CURRENT_JOB_ID.get(),
-    )
-    log_event("execute.run_start", provider="grok", mcp_servers=len(mcp_specs))
-    result, mcp_server_count = await run_grok_with_mcp_once(
-        api_key=GROK_API_KEY,
-        base_url=GROK_API_URL,
-        model_id=GROK_MODEL_ID,
-        llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
-        runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
-        mcp_startup_timeout_seconds=MCP_STARTUP_TIMEOUT_SECONDS,
-        instructions=agent_instructions,
-        user_input=user_input,
-        mcp_specs=mcp_specs,
-    )
-    total_llm_tokens = usage_total_tokens(result)
-    log_event("execute.run_done", provider="grok", mcp_servers=mcp_server_count)
-    output = str(result.final_output or "")
-    _update_job_status_message("Finalizing response...", 95)
-
-    async def _rerun_with_fix(fix_instructions: str) -> Any:
-        return await rerun_with_fix_instructions_result(
-            user_id=user_id,
-            conversation=conversation,
-            user_message=user_message,
-            fix_instructions=fix_instructions,
+    tracer = get_otel_tracer("digital_assistant.server")
+    with tracer.start_as_current_span("provider.grok.tools"):
+        agent_instructions = build_full_instructions(user_id)
+        required_tool_names = [name for name in (required_tool_names or []) if isinstance(name, str) and name]
+        if required_tool_names:
+            agent_instructions += (
+                "\n\nExecution contract:\n"
+                + "\n".join(f"- You must execute `{tool_name}`." for tool_name in required_tool_names)
+                + "\n- Complete the required tool actions before writing the final answer."
+            )
+        user_input = build_conversation_input(conversation, user_message)
+        set_current_span_attributes(
+            {
+                "provider": "grok",
+                "risk.tier": "high",
+                "require_sources": require_sources,
+                "required_tool_names": ",".join(required_tool_names),
+            }
         )
 
-    return await finalize_high_risk_response(
-        user_id=user_id,
-        user_message=user_message,
-        session_id=session_id,
-        require_sources=require_sources,
-        initial_result=result,
-        initial_output=output,
-        total_llm_tokens=total_llm_tokens,
-        rerun_with_fix=_rerun_with_fix,
-    )
+        mcp_specs = build_mcp_server_specs(
+            enable_search=ENABLE_MCP_SEARCH,
+            job_id=_CURRENT_JOB_ID.get(),
+        )
+        set_current_span_attributes({"mcp.server_count": len(mcp_specs)})
+        log_event("execute.run_start", provider="grok", mcp_servers=len(mcp_specs))
+        raw_result, mcp_server_count = await run_grok_with_mcp_once(
+            api_key=GROK_API_KEY,
+            base_url=GROK_API_URL,
+            model_id=GROK_MODEL_ID,
+            llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
+            runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
+            mcp_startup_timeout_seconds=MCP_STARTUP_TIMEOUT_SECONDS,
+            instructions=agent_instructions,
+            user_input=user_input,
+            mcp_specs=mcp_specs,
+        )
+        result = _build_high_risk_result_from_grok(raw_result)
+        set_current_span_attributes(
+            {
+                "mcp.server_count": mcp_server_count,
+                "llm.tokens.total": result.llm_tokens,
+                "tool.event_count": len(result.tool_events or []),
+            }
+        )
+        log_event("execute.run_done", provider="grok", mcp_servers=mcp_server_count)
+        _update_job_status_message("Finalizing response...", 95)
+
+        async def _rerun_with_fix(fix_instructions: str) -> HighRiskChatResult:
+            return await rerun_grok_with_fix_instructions_result(
+                user_id=user_id,
+                conversation=conversation,
+                user_message=user_message,
+                fix_instructions=fix_instructions,
+                required_tool_names=required_tool_names,
+            )
+
+        return await finalize_high_risk_response(
+            user_id=user_id,
+            user_message=user_message,
+            session_id=session_id,
+            require_sources=require_sources,
+            initial_result=result,
+            rerun_with_fix=_rerun_with_fix,
+            memory_validator=validate_memory_compliance_grok,
+            required_tool_names=required_tool_names,
+        )
 
 
 async def call_grok_prose_guarded(
@@ -471,55 +538,149 @@ async def call_grok_prose_guarded(
     if not GROK_API_KEY:
         raise HTTPException(status_code=500, detail="GROK_API_KEY is not configured")
 
-    instructions = (
-        build_full_instructions(user_id)
-        + "\n\nLow-risk conversational mode:\n"
-        + "- Do not call tools.\n"
-        + "- Do not claim actions were executed.\n"
-        + "- Do not provide download links or email-delivery confirmations.\n"
-    )
-    user_input = build_conversation_input(conversation, user_message)
+    tracer = get_otel_tracer("digital_assistant.server")
+    with tracer.start_as_current_span("provider.grok.prose"):
+        instructions = (
+            build_full_instructions(user_id)
+            + "\n\nLow-risk conversational mode:\n"
+            + "- Do not call tools.\n"
+            + "- Do not claim actions were executed.\n"
+            + "- Do not provide download links or email-delivery confirmations.\n"
+        )
+        user_input = build_conversation_input(conversation, user_message)
+        set_current_span_attributes({"provider": "grok", "risk.tier": "low"})
 
-    _update_job_status_message("Generating response...", 85)
-    result = await run_grok_once(
-        api_key=GROK_API_KEY,
-        base_url=GROK_API_URL,
-        model_id=GROK_MODEL_ID,
-        llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
-        runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
-        instructions=instructions,
-        user_input=user_input,
-    )
-    llm_tokens = usage_total_tokens(result)
+        _update_job_status_message("Generating response...", 85)
+        result = await run_grok_once(
+            api_key=GROK_API_KEY,
+            base_url=GROK_API_URL,
+            model_id=GROK_MODEL_ID,
+            llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
+            runner_timeout_seconds=RUNNER_TIMEOUT_SECONDS,
+            instructions=instructions,
+            user_input=user_input,
+        )
+        llm_tokens = usage_total_tokens(result)
+        set_current_span_attributes({"llm.tokens.total": llm_tokens})
 
-    output = str(result.final_output or "")
-    guarded_output, issues = apply_low_risk_prose_guard(output)
-    if issues:
-        logging.info("[prose_guard] issues=%s", ",".join(issues))
-    _update_job_status_message("Finalizing response...", 95)
-    return guarded_output, llm_tokens
+        output = str(result.final_output or "")
+        guarded_output, issues = apply_low_risk_prose_guard(output)
+        if issues:
+            logging.info("[prose_guard] issues=%s", ",".join(issues))
+        set_current_span_attributes({"guard.issue_count": len(issues)})
+        _update_job_status_message("Finalizing response...", 95)
+        return guarded_output, llm_tokens
 
 
-async def call_bedrock(user_id: str, conversation: List[Dict], user_message: str) -> tuple[str, int]:
-    history_text = build_conversation_input(conversation, user_message)
-    system_text = build_full_instructions(user_id)
-    approved = load_approved_memory(user_id)
-    logging.info("[memory_validator] approved_count=%d use_s3=%s", len(approved), USE_S3)
-    _update_job_status_message("Starting tools...", 20)
-    mcp_specs = build_mcp_server_specs(
-        enable_search=ENABLE_MCP_SEARCH,
-        job_id=_CURRENT_JOB_ID.get(),
-    )
-    return await run_bedrock_chat(
-        bedrock_client=bedrock_client,
-        bedrock_model_id=BEDROCK_MODEL_ID,
-        default_aws_region=DEFAULT_AWS_REGION,
-        system_text=system_text,
-        history_text=history_text,
-        user_message=user_message,
-        mcp_specs=mcp_specs,
-        approved_memory=approved,
-    )
+async def call_bedrock_prose_guarded(
+    user_id: str, conversation: List[Dict], user_message: str
+) -> tuple[str, int]:
+    tracer = get_otel_tracer("digital_assistant.server")
+    with tracer.start_as_current_span("provider.bedrock.prose"):
+        instructions = (
+            build_full_instructions(user_id)
+            + "\n\nLow-risk conversational mode:\n"
+            + "- Do not call tools.\n"
+            + "- Do not claim actions were executed.\n"
+            + "- Do not provide download links or email-delivery confirmations.\n"
+        )
+        user_input = build_conversation_input(conversation, user_message)
+        set_current_span_attributes({"provider": "bedrock", "risk.tier": "low"})
+        _update_job_status_message("Generating response...", 85)
+        output, llm_tokens = await run_bedrock_prose(
+            bedrock_client=bedrock_client,
+            bedrock_model_id=BEDROCK_MODEL_ID,
+            default_aws_region=DEFAULT_AWS_REGION,
+            system_text=instructions,
+            user_text=user_input,
+        )
+        guarded_output, issues = apply_low_risk_prose_guard(output)
+        if issues:
+            logging.info("[prose_guard] issues=%s", ",".join(issues))
+        set_current_span_attributes(
+            {
+                "llm.tokens.total": llm_tokens,
+                "guard.issue_count": len(issues),
+            }
+        )
+        _update_job_status_message("Finalizing response...", 95)
+        return guarded_output, llm_tokens
+
+
+async def call_bedrock(
+    user_id: str,
+    conversation: List[Dict],
+    user_message: str,
+    *,
+    session_id: Optional[str] = None,
+    require_sources: bool = False,
+    required_tool_names: Optional[List[str]] = None,
+) -> tuple[str, int]:
+    tracer = get_otel_tracer("digital_assistant.server")
+    with tracer.start_as_current_span("provider.bedrock.tools"):
+        required_tool_names = [name for name in (required_tool_names or []) if isinstance(name, str) and name]
+        user_input = build_conversation_input(conversation, user_message)
+        system_text = build_full_instructions(user_id)
+        set_current_span_attributes(
+            {
+                "provider": "bedrock",
+                "risk.tier": "high",
+                "require_sources": require_sources,
+                "required_tool_names": ",".join(required_tool_names),
+            }
+        )
+        _update_job_status_message("Starting tools...", 20)
+        mcp_specs = build_mcp_server_specs(
+            enable_search=ENABLE_MCP_SEARCH,
+            job_id=_CURRENT_JOB_ID.get(),
+        )
+        set_current_span_attributes({"mcp.server_count": len(mcp_specs)})
+        result = await run_bedrock_chat(
+            bedrock_client=bedrock_client,
+            bedrock_model_id=BEDROCK_MODEL_ID,
+            default_aws_region=DEFAULT_AWS_REGION,
+            system_text=system_text,
+            user_text=user_input,
+            mcp_specs=mcp_specs,
+            required_tool_names=required_tool_names,
+        )
+        set_current_span_attributes(
+            {
+                "llm.tokens.total": result.llm_tokens,
+                "tool.event_count": len(result.tool_events or []),
+            }
+        )
+        _update_job_status_message("Finalizing response...", 95)
+
+        async def _rerun_with_fix(fix_instructions: str) -> HighRiskChatResult:
+            rerun_system = system_text + "\n\nYou must revise your response to comply with Approved Memory."
+            if fix_instructions:
+                rerun_system += f"\nFix instructions: {fix_instructions}"
+            rerun_user_input = user_input + "\n\nRevise your response to comply with Approved Memory."
+            if fix_instructions:
+                rerun_user_input += f"\nFix instructions: {fix_instructions}"
+            _update_job_status_message("Revising response...", 30)
+            _update_job_status_message("Generating response...", 85)
+            return await run_bedrock_chat(
+                bedrock_client=bedrock_client,
+                bedrock_model_id=BEDROCK_MODEL_ID,
+                default_aws_region=DEFAULT_AWS_REGION,
+                system_text=rerun_system,
+                user_text=rerun_user_input,
+                mcp_specs=mcp_specs,
+                required_tool_names=required_tool_names,
+            )
+
+        return await finalize_high_risk_response(
+            user_id=user_id,
+            user_message=user_message,
+            session_id=session_id,
+            require_sources=require_sources,
+            initial_result=result,
+            rerun_with_fix=_rerun_with_fix,
+            memory_validator=validate_memory_compliance_bedrock,
+            required_tool_names=required_tool_names,
+        )
 
 
 async def root():
@@ -558,7 +719,7 @@ async def _run_chat_flow(
     file_id: Optional[str],
 ) -> str:
     tracer = get_otel_tracer("digital_assistant.server")
-    with tracer.start_as_current_span("chat.flow"):
+    with tracer.start_as_current_span("chat.handle_request"):
         set_current_span_attributes(
             {
                 "user.id": user_id,
@@ -567,7 +728,9 @@ async def _run_chat_flow(
                 "job.id": _CURRENT_JOB_ID.get() or "-",
             }
         )
-        conversation = load_conversation(user_id, session_id)
+        with tracer.start_as_current_span("chat.load_context"):
+            conversation = load_conversation(user_id, session_id)
+            set_current_span_attributes({"conversation.turn_count": len(conversation)})
         agent_message = build_agent_message(message, file_id)
         job_id = _CURRENT_JOB_ID.get()
         if _is_job_canceled(job_id):
@@ -588,28 +751,46 @@ async def _run_chat_flow(
             )
             return assistant_response
 
-        risk = classify_risk(message, file_id=file_id)
+        with tracer.start_as_current_span("chat.classify"):
+            risk = classify_risk(message, file_id=file_id, conversation=conversation)
         tier = risk.get("tier", "high")
         reason = risk.get("reason", "unknown")
         require_sources = bool(_SEARCH_CITATION_INTENT_RE.search(message or ""))
+        required_tool_names = required_tool_sequence(message, conversation)
         set_current_span_attributes(
-            {"risk.tier": tier, "risk.reason": reason, "require_sources": require_sources}
+            {
+                "risk.tier": tier,
+                "risk.reason": reason,
+                "require_sources": require_sources,
+                "required_tool_names": ",".join(required_tool_names),
+            }
         )
         log_event("classify", risk_tier=tier, reason=reason, provider=AI_PROVIDER)
 
-        assistant_response, llm_tokens = await _generate_response_for_risk(
-            user_id=user_id,
-            conversation=conversation,
-            agent_message=agent_message,
-            session_id=session_id,
-            tier=tier,
-            require_sources=require_sources,
-        )
+        with tracer.start_as_current_span("chat.execute"):
+            assistant_response, llm_tokens = await _generate_response_for_risk(
+                user_id=user_id,
+                conversation=conversation,
+                agent_message=agent_message,
+                session_id=session_id,
+                tier=tier,
+                require_sources=require_sources,
+                required_tool_names=required_tool_names,
+            )
+            set_current_span_attributes({"llm.tokens.total": llm_tokens})
 
         quota_increments = _build_quota_increments(user_id, tier, llm_tokens)
 
         try:
-            quota_result = consume_daily_quota(user_id, quota_increments)
+            with tracer.start_as_current_span("chat.quota.consume"):
+                set_current_span_attributes(
+                    {
+                        "quota.tokens.increment": quota_increments["tokens"],
+                        "quota.pdf.increment": quota_increments["pdf"],
+                        "quota.email.increment": quota_increments["email"],
+                    }
+                )
+                quota_result = consume_daily_quota(user_id, quota_increments)
         except Exception as exc:
             log_event("quota.consume_failed", level=logging.WARNING, user_id=user_id, error=str(exc))
             record_current_span_exception(exc)
@@ -624,14 +805,15 @@ async def _run_chat_flow(
         if _is_job_canceled(job_id):
             raise HTTPException(status_code=499, detail="canceled")
 
-        await _persist_chat_turn(
-            user_id=user_id,
-            session_id=session_id,
-            conversation=conversation,
-            user_message=message,
-            assistant_response=assistant_response,
-            sync_memory=should_sync_memory,
-        )
+        with tracer.start_as_current_span("chat.persist"):
+            await _persist_chat_turn(
+                user_id=user_id,
+                session_id=session_id,
+                conversation=conversation,
+                user_message=message,
+                assistant_response=assistant_response,
+                sync_memory=should_sync_memory,
+            )
         return assistant_response
 
 
@@ -681,6 +863,7 @@ async def chat(request: ChatRequest):
                 "message": request.message,
                 "file_id": request.file_id,
                 "trace_id": trace_id,
+                "trace_headers": inject_current_trace_headers(),
             }
             try:
                 lambda_client = boto3.client("lambda", region_name=DEFAULT_AWS_REGION)

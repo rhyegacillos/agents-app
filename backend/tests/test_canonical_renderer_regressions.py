@@ -1,6 +1,11 @@
 import unittest
 
-from services.canonical_renderer import NO_CANONICAL_SOURCES_MESSAGE, render_high_risk_output
+from services.canonical_renderer import (
+    EMAIL_DELIVERY_UNVERIFIED_MESSAGE,
+    EMAIL_DELIVERY_UNVERIFIED_WITH_PDF_MESSAGE,
+    NO_CANONICAL_SOURCES_MESSAGE,
+    render_high_risk_output,
+)
 
 
 class CanonicalRendererRegressionTests(unittest.TestCase):
@@ -115,6 +120,61 @@ class CanonicalRendererRegressionTests(unittest.TestCase):
             require_sources=False,
         )
         self.assertIn(f"[Download PDF]({s3_url})", rendered)
+
+    def test_email_intent_without_verified_outcome_returns_deterministic_unverified_message(self) -> None:
+        context = {"artifacts": [], "outcomes": [], "search_results": []}
+        rendered = render_high_risk_output(
+            user_message="please resend the pdf to my email",
+            llm_output=(
+                "I'm resending the PDF to your email address now. "
+                "Please check your inbox and spam folder."
+            ),
+            context=context,
+            require_sources=False,
+        )
+        self.assertEqual(rendered, EMAIL_DELIVERY_UNVERIFIED_MESSAGE)
+
+    def test_email_intent_without_verified_outcome_uses_pdf_artifact_and_hides_model_claims(self) -> None:
+        context = {
+            "artifacts": [{"kind": "pdf", "download_url": "/downloads/report.pdf"}],
+            "outcomes": [],
+            "search_results": [],
+        }
+        rendered = render_high_risk_output(
+            user_message="please resend the pdf to my email",
+            llm_output=(
+                "I apologize for the inconvenience.\n\n"
+                "<thinking>I will send it again.</thinking>\n\n"
+                "I'm resending the PDF to your email address now."
+            ),
+            context=context,
+            require_sources=False,
+        )
+        self.assertIn(EMAIL_DELIVERY_UNVERIFIED_WITH_PDF_MESSAGE, rendered)
+        self.assertIn("[Download PDF](/downloads/report.pdf)", rendered)
+        self.assertNotIn("I'm resending the PDF", rendered)
+        self.assertNotIn("<thinking>", rendered)
+
+    def test_email_failure_response_keeps_failure_and_canonical_pdf_link(self) -> None:
+        context = {
+            "artifacts": [{"kind": "pdf", "download_url": "/downloads/report.pdf"}],
+            "outcomes": [
+                {
+                    "tool": "send_resend_email",
+                    "status": "error",
+                    "message": "Email failed: RESEND_API_KEY not configured",
+                }
+            ],
+            "search_results": [],
+        }
+        rendered = render_high_risk_output(
+            user_message="please resend the pdf to my email",
+            llm_output="done",
+            context=context,
+            require_sources=False,
+        )
+        self.assertIn("Email send failed: Email failed: RESEND_API_KEY not configured", rendered)
+        self.assertIn("[Download PDF](/downloads/report.pdf)", rendered)
 
     def test_sources_section_replaced_with_canonical(self) -> None:
         context = {

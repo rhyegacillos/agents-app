@@ -219,6 +219,54 @@ def extract_tool_events(run_result: Any) -> List[Dict[str, Any]]:
     return events
 
 
+def extract_tool_failures(tool_events: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    failures: List[Dict[str, str]] = []
+    seen = set()
+
+    for event in tool_events or []:
+        tool_name = str(event.get("tool_name") or "unknown")
+        payload = _unwrap_payload(event.get("output"))
+        text = _extract_text_payload(payload)
+        status = ""
+        detail = text
+
+        if isinstance(payload, dict):
+            status = str(payload.get("status") or "").strip().lower()
+            if not detail:
+                detail = (
+                    str(payload.get("message") or "").strip()
+                    or str(payload.get("error") or "").strip()
+                    or str(payload.get("reason") or "").strip()
+                )
+
+        is_failure = False
+        if "send_resend_email" in tool_name:
+            if status and status not in {"ok", "success", "sent"}:
+                is_failure = True
+            if re.search(r"\bemail failed\b|\bfailed:\b", detail or "", re.IGNORECASE):
+                is_failure = True
+        elif status and status not in {"ok", "success", "sent"}:
+            is_failure = True
+
+        if not is_failure:
+            continue
+
+        message = (detail or str(payload or "")).strip()
+        key = (tool_name, message)
+        if key in seen:
+            continue
+        seen.add(key)
+        failures.append(
+            {
+                "tool_name": tool_name,
+                "status": status or "error",
+                "message": message,
+            }
+        )
+
+    return failures
+
+
 def _find_search_rows(payload: Any, depth: int = 0) -> List[Dict[str, Any]]:
     if payload is None or depth > 6:
         return []

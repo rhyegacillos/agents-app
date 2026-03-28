@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from contextlib import AsyncExitStack
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
+
+from otel_observability import get_tracer as get_otel_tracer
 
 
 ToolSpec = Dict[str, Any]
@@ -83,7 +86,7 @@ def _extract_text(content_blocks: List[Dict[str, Any]]) -> str:
     return "".join(parts).strip()
 
 
-def _tool_result_block(tool_use_id: str, result: Any) -> Dict[str, Any]:
+def _tool_result_payload(result: Any) -> Any:
     payload = None
     if isinstance(result, dict):
         payload = result
@@ -93,6 +96,11 @@ def _tool_result_block(tool_use_id: str, result: Any) -> Dict[str, Any]:
         payload = result.structured_content
     if payload is None:
         payload = {"result": str(result)}
+    return payload
+
+
+def _tool_result_block(tool_use_id: str, result: Any) -> Dict[str, Any]:
+    payload = _tool_result_payload(result)
 
     return {
         "toolResult": {
@@ -109,18 +117,30 @@ async def run_bedrock_with_tools(
     system_text: str,
     user_text: str,
     mcp_specs: List[Dict[str, Any]],
+    required_tool_names: Optional[List[str]] = None,
     max_tool_rounds: int = 6,
     inference_config: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, int]:
+) -> Tuple[str, int, List[Dict[str, Any]]]:
     inference_config = inference_config or {"maxTokens": 2000, "temperature": 0.7, "topP": 0.9}
+    tracer = get_otel_tracer("digital_assistant.bedrock_tools")
     async with AsyncExitStack() as stack:
         tool_specs, tool_sessions = await _open_mcp_sessions(mcp_specs, stack)
-        tool_config = {"tools": tool_specs} if tool_specs else None
+        base_tool_config = {"tools": tool_specs} if tool_specs else None
+        pending_required_tools = [
+            name
+            for name in (required_tool_names or [])
+            if isinstance(name, str) and name and name in tool_sessions
+        ]
         total_tokens_used = 0
+        tool_events: List[Dict[str, Any]] = []
 
         messages = [{"role": "user", "content": [{"text": user_text}]}]
 
         for _ in range(max_tool_rounds):
+            tool_config = dict(base_tool_config) if base_tool_config else None
+            next_required_tool = pending_required_tools[0] if pending_required_tools else None
+            if tool_config and next_required_tool:
+                tool_config["toolChoice"] = {"tool": {"name": next_required_tool}}
             response = bedrock_client.converse(
                 modelId=model_id,
                 system=[{"text": system_text}],
@@ -145,20 +165,49 @@ async def run_bedrock_with_tools(
             messages.append({"role": "assistant", "content": content_blocks})
 
             if not tool_uses:
-                return _extract_text(content_blocks), total_tokens_used
+                return _extract_text(content_blocks), total_tokens_used, tool_events
 
             tool_result_blocks: List[Dict[str, Any]] = []
+            called_tool_names: List[str] = []
             for tool_use in tool_uses:
                 tool_name = tool_use.get("name")
                 tool_use_id = tool_use.get("toolUseId")
                 tool_input = tool_use.get("input") or {}
                 if not tool_name or not tool_use_id:
                     continue
-                session = tool_sessions.get(tool_name)
-                if not session:
-                    tool_result = {"error": f"Tool not available: {tool_name}"}
-                else:
-                    tool_result = await session.call_tool(tool_name, arguments=tool_input)
+                with tracer.start_as_current_span(f"tool.{tool_name}"):
+                    span = None
+                    try:
+                        from opentelemetry import trace as otel_trace
+
+                        span = otel_trace.get_current_span()
+                    except Exception:
+                        span = None
+                    if span is not None:
+                        span.set_attribute("tool.name", str(tool_name))
+                        span.set_attribute("tool.use_id", str(tool_use_id))
+                    session = tool_sessions.get(tool_name)
+                    if span is not None:
+                        span.set_attribute("tool.available", bool(session))
+                    if not session:
+                        tool_result = {"error": f"Tool not available: {tool_name}"}
+                        if span is not None:
+                            span.set_attribute("tool.status", "error")
+                    else:
+                        tool_result = await session.call_tool(tool_name, arguments=tool_input)
+                        payload = _tool_result_payload(tool_result)
+                        status = "ok"
+                        if isinstance(payload, dict):
+                            status = str(payload.get("status") or ("error" if payload.get("error") else "ok"))
+                        if span is not None:
+                            span.set_attribute("tool.status", status)
+                tool_events.append(
+                    {
+                        "tool_name": str(tool_name),
+                        "output": _tool_result_payload(tool_result),
+                    }
+                )
+                called_tool_names.append(str(tool_name))
                 tool_result_blocks.append(_tool_result_block(tool_use_id, tool_result))
 
             if tool_result_blocks:
@@ -168,5 +217,14 @@ async def run_bedrock_with_tools(
                         "content": tool_result_blocks,
                     }
                 )
+            while pending_required_tools and pending_required_tools[0] in called_tool_names:
+                pending_required_tools.pop(0)
 
-    raise RuntimeError("Bedrock tool loop exceeded maximum rounds")
+    tool_counter = Counter(str(evt.get("tool_name") or "unknown") for evt in tool_events if isinstance(evt, dict))
+    summary = ", ".join(f"{name}x{count}" for name, count in tool_counter.items()) or "none"
+    raise RuntimeError(
+        "Bedrock tool loop exceeded maximum rounds "
+        f"(required_tools={','.join(required_tool_names or []) or '-'}, "
+        f"next_required_tool={pending_required_tools[0] if pending_required_tools else '-'}, "
+        f"tool_summary={summary})"
+    )

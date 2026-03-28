@@ -33,3 +33,4 @@ otel_logs_enabled                  = true
 otel_exporter_otlp_logs_endpoint   = "https://o4510895849472000.ingest.us.sentry.io/api/4510896623845376/integration/otlp/v1/logs"
 otel_exporter_otlp_logs_headers    = "x-sentry-auth=sentry sentry_key=ee8a81b082a6c0a7d11084072379db13"
 otel_logs_min_level                = "INFO"
+

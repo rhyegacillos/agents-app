@@ -41,15 +41,25 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
 - Async mode avoids API Gateway REST integration timeout constraints.
 - Worker memory is sized to reliably start MCP subprocesses.
 - MCP startup has a timeout to prevent indefinite hangs.
-- Model routing: tool-heavy intents route to Grok; Bedrock is used for plain Q&A by default.
+- Model routing follows `AI_PROVIDER` for both tool-heavy and low-risk intents. Bedrock is the default deployed provider.
+- Bedrock-first deployments do not require `GROK_API_KEY`.
 - High-risk outputs run through canonical renderer + truth gate before return.
 - Daily quotas are enforced server-side using provider-reported LLM token usage.
+- High-risk action requests use an execution contract, not best-effort prose:
+  - the backend derives required tools from the user request
+  - Bedrock enforces the required sequence during the tool loop
+  - the shared finalizer rejects responses when required tools are missing or out of order
+- Email delivery is protected by request-scoped idempotency in the tool layer so repeated planner/tool-loop calls do not send duplicate emails in the same request.
 
 ## 5) Observability
 
 - Every request/job gets a `trace_id`.
 - Worker and API logs include `trace_id` and `job_id` (when async).
 - High-risk pipeline logs: `classify`, `execute`, `render`, `validate`, `fix_loop`.
+- Tool execution is observable at three layers:
+  - worker spans (`tool.<tool_name>`)
+  - MCP spans (`mcp.tool.<tool_name>`)
+  - inner tool spans (`core.pdf.generate`, `core.email.send`, `brave.search.http`, memory model-call spans)
 - Quota logs:
   - `[quota] ...` summary per turn (backend, increments, before/after, remaining, exceeded)
   - `[quota_s3_cas] ...` conflict/success/error telemetry for S3 optimistic-concurrency writes
@@ -59,10 +69,47 @@ These are the default metrics to track in CloudWatch Logs Insights, Upstash job 
 - Standard event-key logs (for deterministic filtering in Sentry Logs):
   - `event=classify`
   - `event=execute.run_start`, `event=execute.run_done`, `event=execute.tool_summary`
+  - `event=execute.required_tools_missing`, `event=execute.required_tools_out_of_order`
+  - `event=execute.tool_failure`
   - `event=truth_gate.search_context`, `event=render.canonical`, `event=validate.pass`, `event=validate.blocked`
   - `event=fix_loop.attempt`
   - `event=quota.increments`, `event=quota.consume_failed`
   - `event=worker.start`, `event=worker.completed`, `event=worker.timeout`, `event=worker.canceled`
+
+### 5.1 Trace hygiene and expected visibility
+
+The backend intentionally excludes noisy polling endpoints from tracing by default:
+- `/quota`
+- `/jobs/*`
+- `/memory*`
+
+Why:
+- those endpoints are high-volume and low-value
+- if traced, they dominate global span lists and bury the worker/MCP spans that matter during tool debugging
+
+What to expect:
+- API trace views should focus on `/chat` and orchestration spans
+- worker trace views should show async execution and high-risk phases
+- MCP service traces should show actual tool spans
+
+If you still see `/quota` root traces:
+- the deployed API image is likely stale
+- or the runtime override `OTEL_FASTAPI_EXCLUDED_URLS` differs from the documented default
+
+### 5.2 Tool debugging expectations
+
+When debugging a tool-heavy request:
+- use the request `trace_id` from worker logs
+- open the worker trace or filter by worker/MCP service names
+- do not rely on the global API span sample list alone
+
+Expected outcomes by symptom:
+- tool span exists + tool failure log exists:
+  - tool ran and failed
+- worker trace exists but required-tool-missing log appears:
+  - model/runtime did not execute the requested tool contract
+- no worker trace and only API trace exists:
+  - request likely never entered the async/high-risk execution path
 
 ## 5.1 Refactor Changelog
 
@@ -116,6 +163,23 @@ Implementation notes:
 
 - FastAPI is auto-instrumented.
 - Worker path uses manual spans around async job execution.
+- Lambda API entrypoint suppresses tracing for excluded polling paths before creating `api.lambda_request`.
 - Span attributes include `trace_id`, `job_id`, `session_id`, and risk/quota context.
 - Python stdlib logs are exported through OTel log pipeline when enabled.
 - OTel export is backend-agnostic; switch provider by changing OTLP endpoint/headers only.
+- MCP subprocesses receive propagated trace context from the worker.
+- Tool spans are created in both the worker orchestration layer and inside MCP processes.
+
+Recommended operational filters:
+- API orchestration:
+  - `service:digital-assistant-dev-api`
+  - `span.name:chat.handle_request`
+- Worker execution:
+  - `service:digital-assistant-dev-worker`
+  - `span.name:worker.process_job`
+- Core tool execution:
+  - `service:digital-assistant-dev-worker-mcp-core`
+  - `span.name:mcp.tool.send_resend_email`
+  - `span.name:core.email.send`
+  - `span.name:mcp.tool.generate_pdf_from_text`
+  - `span.name:core.pdf.generate`

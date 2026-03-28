@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from services.canonical_renderer import NO_CANONICAL_SOURCES_MESSAGE
-from services.output_truth_gate import apply_truth_gate, normalize_truth_context
+from services.output_truth_gate import apply_truth_gate, extract_tool_failures, normalize_truth_context
 
 
 class TruthGateRegressionTests(unittest.TestCase):
@@ -348,6 +348,53 @@ class TruthGateRegressionTests(unittest.TestCase):
         self.assertEqual(outcomes[0].get("tool"), "send_resend_email")
         self.assertEqual(outcomes[0].get("status"), "ok")
         self.assertEqual(outcomes[0].get("email_id"), "abc123")
+
+    def test_normalize_truth_context_extracts_email_success_from_structured_payload(self) -> None:
+        tool_events = [
+            {
+                "tool_name": "send_resend_email",
+                "output": {
+                    "status": "ok",
+                    "email_id": "abc123",
+                    "message": "Email sent successfully. ID: abc123",
+                },
+            }
+        ]
+        context = normalize_truth_context(tool_events)
+        outcomes = context.get("outcomes", [])
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0].get("status"), "ok")
+        self.assertEqual(outcomes[0].get("email_id"), "abc123")
+
+    def test_extract_tool_failures_reports_email_tool_error_text(self) -> None:
+        failures = extract_tool_failures(
+            [
+                {
+                    "tool_name": "send_resend_email",
+                    "output": "Email failed: ApiError: domain not verified",
+                }
+            ]
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].get("tool_name"), "send_resend_email")
+        self.assertIn("domain not verified", failures[0].get("message", ""))
+
+    def test_extract_tool_failures_reports_structured_email_tool_error(self) -> None:
+        failures = extract_tool_failures(
+            [
+                {
+                    "tool_name": "send_resend_email",
+                    "output": {
+                        "status": "error",
+                        "error_type": "ApiError",
+                        "message": "Email failed: ApiError: domain not verified",
+                    },
+                }
+            ]
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].get("status"), "error")
+        self.assertIn("domain not verified", failures[0].get("message", ""))
 
     def test_normalize_truth_context_extracts_email_success_from_wrapped_content_text(self) -> None:
         tool_events = [

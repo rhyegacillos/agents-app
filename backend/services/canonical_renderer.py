@@ -27,6 +27,13 @@ NO_CANONICAL_SOURCES_MESSAGE = (
     "I couldn't include canonical web sources because no valid source URLs were returned by the search tool. "
     "Please retry the search request."
 )
+EMAIL_DELIVERY_UNVERIFIED_MESSAGE = (
+    "I couldn't verify that the email was sent. Please ask me to retry the email delivery."
+)
+EMAIL_DELIVERY_UNVERIFIED_WITH_PDF_MESSAGE = (
+    "I couldn't verify that the email was sent. The PDF is ready."
+)
+_THINKING_BLOCK_RE = re.compile(r"<thinking>[\s\S]*?</thinking>", re.IGNORECASE)
 
 
 def _latest_pdf_artifact(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -200,6 +207,11 @@ def _strip_existing_sources_blocks(text: str) -> str:
     return "\n".join(out)
 
 
+def _strip_hidden_reasoning(text: str) -> str:
+    cleaned = _THINKING_BLOCK_RE.sub("", str(text or ""))
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 def render_high_risk_output(
     *,
     user_message: str,
@@ -207,14 +219,14 @@ def render_high_risk_output(
     context: Dict[str, Any],
     require_sources: bool = False,
 ) -> str:
-    text = str(llm_output or "").strip()
+    text = _strip_hidden_reasoning(llm_output)
     user_text = str(user_message or "")
     wants_pdf = bool(_PDF_INTENT_RE.search(user_text))
     wants_email = bool(_EMAIL_INTENT_RE.search(user_text))
     allowed_urls = _canonical_urls(context)
 
     def _clean(output: str) -> str:
-        return _strip_noncanonical_http_links(str(output or ""), allowed_urls)
+        return _strip_noncanonical_http_links(_strip_hidden_reasoning(output), allowed_urls)
 
     pdf = _latest_pdf_artifact(context)
     email = _latest_email_outcome(context)
@@ -231,7 +243,21 @@ def render_high_risk_output(
                     line += f" [Download PDF]({download_url})"
             return _clean(line)
         message = str(email.get("message") or "Email send failed.").strip()
-        return _clean(f"Email send failed: {message}")
+        line = f"Email send failed: {message}"
+        if pdf:
+            download_url = _preferred_pdf_url(pdf)
+            if _is_allowlisted_url(download_url, allowed_urls):
+                line += f" [Download PDF]({download_url})"
+        return _clean(line)
+
+    if wants_email:
+        line = EMAIL_DELIVERY_UNVERIFIED_MESSAGE
+        if pdf:
+            line = EMAIL_DELIVERY_UNVERIFIED_WITH_PDF_MESSAGE
+            download_url = _preferred_pdf_url(pdf)
+            if _is_allowlisted_url(download_url, allowed_urls):
+                line += f" [Download PDF]({download_url})"
+        return _clean(line)
 
     if wants_pdf and pdf:
         line = "Your PDF is ready."

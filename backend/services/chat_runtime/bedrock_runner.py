@@ -5,7 +5,7 @@ from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
 from services.bedrock_tools import run_bedrock_with_tools
-from validator_agent import validate_memory_compliance_bedrock
+from services.chat_runtime.result_types import HighRiskChatResult
 
 
 def _model_candidates(model_id: str, default_region: str) -> List[str]:
@@ -36,50 +36,30 @@ async def run_bedrock_chat(
     bedrock_model_id: str,
     default_aws_region: str,
     system_text: str,
-    history_text: str,
-    user_message: str,
+    user_text: str,
     mcp_specs: List[Dict[str, Any]],
-    approved_memory: List[Dict[str, Any]],
-) -> Tuple[str, int]:
+    required_tool_names: List[str] | None = None,
+) -> HighRiskChatResult:
     candidates = _model_candidates(bedrock_model_id, default_aws_region)
     if not candidates:
         raise HTTPException(status_code=500, detail="BEDROCK_MODEL_ID is not configured")
 
     for model_id in candidates:
         try:
-            total_llm_tokens = 0
-            output, tokens_used = await run_bedrock_with_tools(
+            output, tokens_used, tool_events = await run_bedrock_with_tools(
                 bedrock_client=bedrock_client,
                 model_id=model_id,
                 system_text=system_text,
-                user_text=history_text,
+                user_text=user_text,
                 mcp_specs=mcp_specs,
+                required_tool_names=required_tool_names,
                 inference_config={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
             )
-            total_llm_tokens += tokens_used
-            if approved_memory:
-                logging.info("[memory_validator] running (approved=%d)", len(approved_memory))
-                verdict = validate_memory_compliance_bedrock(approved_memory, user_message, output)
-                if not verdict.get("compliant"):
-                    fix = verdict.get("fix_instructions", "")
-                    system = system_text + "\n\nYou must revise your response to comply with Approved Memory."
-                    if fix:
-                        system += f"\nFix instructions: {fix}"
-                    user_text = history_text + "\n\nRevise your response to comply with Approved Memory."
-                    if fix:
-                        user_text += f"\nFix instructions: {fix}"
-                    output, tokens_used = await run_bedrock_with_tools(
-                        bedrock_client=bedrock_client,
-                        model_id=model_id,
-                        system_text=system,
-                        user_text=user_text,
-                        mcp_specs=mcp_specs,
-                        inference_config={"maxTokens": 2000, "temperature": 0.0, "topP": 0.9},
-                    )
-                    total_llm_tokens += tokens_used
-            else:
-                logging.info("[memory_validator] skipped (no approved memory)")
-            return output, total_llm_tokens
+            return HighRiskChatResult(
+                output=output,
+                tool_events=tool_events,
+                llm_tokens=tokens_used,
+            )
         except ClientError as e:
             error = e.response.get("Error", {})
             error_code = error.get("Code", "")
@@ -117,6 +97,93 @@ async def run_bedrock_chat(
         except Exception as e:
             logging.exception("Bedrock tool call failed for modelId '%s'", model_id)
             raise HTTPException(status_code=500, detail=f"Bedrock tool call failed: {e}")
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Bedrock returned 'Operation not allowed' for all model IDs tried: "
+            f"{', '.join(candidates)}. "
+            "Enable model access for the selected model in this region or set BEDROCK_MODEL_ID "
+            "to an allowed model/inference-profile ID."
+        ),
+    )
+
+
+async def run_bedrock_prose(
+    *,
+    bedrock_client: Any,
+    bedrock_model_id: str,
+    default_aws_region: str,
+    system_text: str,
+    user_text: str,
+) -> Tuple[str, int]:
+    candidates = _model_candidates(bedrock_model_id, default_aws_region)
+    if not candidates:
+        raise HTTPException(status_code=500, detail="BEDROCK_MODEL_ID is not configured")
+
+    for model_id in candidates:
+        try:
+            response = bedrock_client.converse(
+                modelId=model_id,
+                system=[{"text": system_text}],
+                messages=[{"role": "user", "content": [{"text": user_text}]}],
+                inferenceConfig={"maxTokens": 2000, "temperature": 0.7, "topP": 0.9},
+            )
+            usage = response.get("usage", {}) or {}
+            try:
+                tokens_used = int(
+                    usage.get("totalTokens")
+                    or usage.get("total_tokens")
+                    or (
+                        int(usage.get("inputTokens", 0) or 0)
+                        + int(usage.get("outputTokens", 0) or 0)
+                    )
+                )
+            except (TypeError, ValueError):
+                tokens_used = 0
+            content_blocks = response.get("output", {}).get("message", {}).get("content", []) or []
+            parts: List[str] = []
+            for block in content_blocks:
+                if "text" in block:
+                    parts.append(block.get("text") or "")
+            return "".join(parts).strip(), tokens_used
+        except ClientError as e:
+            error = e.response.get("Error", {})
+            error_code = error.get("Code", "")
+            error_message = error.get("Message", str(e))
+
+            if error_code == "ValidationException":
+                if "operation not allowed" in error_message.lower():
+                    logging.warning(
+                        "Bedrock rejected modelId '%s': %s",
+                        model_id,
+                        error_message,
+                    )
+                    continue
+                logging.exception(
+                    "Bedrock validation error for modelId '%s': %s",
+                    model_id,
+                    error_message,
+                )
+                raise HTTPException(status_code=400, detail=f"Bedrock validation error: {error_message}")
+
+            if error_code == "AccessDeniedException":
+                logging.exception(
+                    "Bedrock access denied for modelId '%s': %s",
+                    model_id,
+                    error_message,
+                )
+                raise HTTPException(status_code=403, detail=f"Access denied to Bedrock model: {error_message}")
+
+            logging.exception(
+                "Bedrock error for modelId '%s': %s",
+                model_id,
+                error_message,
+            )
+            raise HTTPException(status_code=500, detail=f"Bedrock error: {error_message}")
+        except Exception as e:
+            logging.exception("Bedrock prose call failed for modelId '%s'", model_id)
+            raise HTTPException(status_code=500, detail=f"Bedrock error: {e}")
 
     raise HTTPException(
         status_code=400,

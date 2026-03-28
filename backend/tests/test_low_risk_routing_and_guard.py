@@ -26,6 +26,27 @@ class LowRiskRoutingAndGuardTests(unittest.TestCase):
         self.assertEqual(out.get("tier"), "high")
         self.assertEqual(out.get("reason"), "email_address")
 
+    def test_followup_retry_in_email_pdf_thread_routes_high(self) -> None:
+        out = classify_risk(
+            "I didn't get it",
+            conversation=[
+                {"role": "user", "content": "Please send the PDF to my email"},
+                {"role": "assistant", "content": "I can email the PDF to you."},
+            ],
+        )
+        self.assertEqual(out.get("tier"), "high")
+        self.assertEqual(out.get("reason"), "followup_prior_action_context")
+
+    def test_followup_retry_without_email_pdf_context_stays_low(self) -> None:
+        out = classify_risk(
+            "I didn't get it",
+            conversation=[
+                {"role": "user", "content": "Tell me about your background"},
+                {"role": "assistant", "content": "Here is a short bio."},
+            ],
+        )
+        self.assertEqual(out.get("tier"), "low")
+
 
 if __name__ == "__main__":
     unittest.main()
