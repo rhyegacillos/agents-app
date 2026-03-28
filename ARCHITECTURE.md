@@ -477,11 +477,50 @@ This section is where the repo keeps the most drift-prone technical facts that s
 ### Generated Upload And Artifact Behavior Summary
 
 - Direct uploads and presigned uploads both use the object-key shape `uploads/{file_id}/{safe_name}` when S3-backed storage is active.
-- The direct `POST /uploads` route stores files in S3 when `USE_S3=true`; otherwise it writes local files under `UPLOADS_DIR` as `{file_id}.{ext}`. 
+- The direct `POST /uploads` route stores files in S3 when `USE_S3=true`; otherwise it writes local files under `UPLOADS_DIR` as `{file_id}.{ext}`.
 - The `POST /uploads/presign` route is only valid in S3 mode and fails fast when `USE_S3` is disabled.
 - The `GET /downloads/{filename}` route only serves local artifacts from `DOWNLOADS_DIR`; it does not proxy S3 PDFs.
 - Generated PDFs use `DOWNLOADS_BUCKET` when set, otherwise they fall back to `S3_BUCKET` in S3 mode.
 - In local PDF mode, the core MCP server only emits a browser-download URL when one of `PUBLIC_BASE_URL`, `API_PUBLIC_URL`, or `BASE_URL` is configured.
+
+### Generated Memory Storage Defaults
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `MEMORY_DIR` | `../memory` | Local filesystem root for conversation and memory JSON files when `USE_S3=false` |
+| `MEMORY_EXTRACT_SYNC` | `false` | Global toggle for forcing memory extraction to run synchronously |
+| `MEMORY_CANDIDATES_MAX` | `50` | Max stored pending memory candidates per user |
+| `MEMORY_APPROVED_MAX` | `200` | Max stored approved memory items per user |
+
+### Generated Memory Storage Behavior Summary
+
+- Pending memory candidates are stored per user at `memory/{user_id}/memory_candidates.json`.
+- Approved memory is stored per user at `memory/{user_id}/memory_approved.json`.
+- The last successful extraction timestamp is stored per user at `memory/{user_id}/memory_last_extracted.json`.
+- Pending candidate writes are truncated to `MEMORY_CANDIDATES_MAX` items.
+- Approved-memory writes are truncated to `MEMORY_APPROVED_MAX` items.
+- Automatic memory extraction currently examines up to the six most recent user turns in a session.
+- Memory extraction is forced synchronous when `MEMORY_EXTRACT_SYNC=true` or when the run is executing inside a worker job.
+
+### Generated Async Worker Defaults
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ASYNC_CHAT_ENABLED` | `false` | Whether `POST /chat` uses queue-and-worker execution by default |
+| `ASYNC_JOB_TTL_SECONDS` | `3600` | TTL for async job records in Upstash |
+| `ASYNC_WORKER_FUNCTION_NAME` | `` | Lambda function name used for async dispatch |
+| `LLM_TIMEOUT_SECONDS` | `` | Provider request timeout passed into Grok runtime configuration |
+| `MCP_STARTUP_TIMEOUT_SECONDS` | `` | MCP subprocess startup timeout used by the Grok runtime |
+| `RUNNER_TIMEOUT_SECONDS` | `` | Overall Grok agent runner timeout |
+| `WORKER_MAX_SECONDS` | `240` | Hard timeout enforced around the shared chat flow in the worker handler |
+
+### Generated Async Worker Behavior Summary
+
+- When `ASYNC_CHAT_ENABLED=true`, `POST /chat` enqueues a worker job and returns `202 Accepted` instead of running the turn inline.
+- Async chat dispatch uses the Lambda function named by `ASYNC_WORKER_FUNCTION_NAME`.
+- The worker enforces a hard job timeout using `WORKER_MAX_SECONDS`, currently defaulting to `240` seconds in the worker handler.
+- Job records are written back to Upstash with the shared `ASYNC_JOB_TTL_SECONDS` TTL on queue, progress, completion, cancellation, and failure transitions.
+- The worker wraps the shared chat flow in `asyncio.wait_for`, so timeout behavior is enforced outside the provider-specific execution code.
 
 ### Generated Bedrock Candidate Resolution
 

@@ -205,7 +205,7 @@ def _upload_download_behavior_summary() -> list[str]:
     if "if USE_S3:" in server_text and 'final_path = os.path.join(UPLOADS_DIR, f"{file_id}.{ext}")' in server_text:
         bullets.append(
             "The direct `POST /uploads` route stores files in S3 when `USE_S3=true`; otherwise it writes local files "
-            f"under {_code('UPLOADS_DIR')} as {_code('{file_id}.{ext}')}. "
+            f"under {_code('UPLOADS_DIR')} as {_code('{file_id}.{ext}')}."
         )
     if 'raise HTTPException(status_code=400, detail="S3 uploads are not enabled")' in server_text:
         bullets.append(
@@ -223,6 +223,75 @@ def _upload_download_behavior_summary() -> list[str]:
         bullets.append(
             "In local PDF mode, the core MCP server only emits a browser-download URL when one of "
             "`PUBLIC_BASE_URL`, `API_PUBLIC_URL`, or `BASE_URL` is configured."
+        )
+
+    return bullets
+
+
+def _memory_behavior_summary() -> list[str]:
+    storage_text = _read(REPO_ROOT / "backend" / "services" / "storage.py")
+    memory_text = _read(REPO_ROOT / "backend" / "services" / "memory.py")
+    server_text = _read(SERVER_PATH)
+
+    bullets: list[str] = []
+
+    if 'return f"memory/{user_id}/memory_candidates.json"' in storage_text:
+        bullets.append(
+            "Pending memory candidates are stored per user at `memory/{user_id}/memory_candidates.json`."
+        )
+    if 'return f"memory/{user_id}/memory_approved.json"' in storage_text:
+        bullets.append(
+            "Approved memory is stored per user at `memory/{user_id}/memory_approved.json`."
+        )
+    if 'return f"memory/{user_id}/memory_last_extracted.json"' in storage_text:
+        bullets.append(
+            "The last successful extraction timestamp is stored per user at `memory/{user_id}/memory_last_extracted.json`."
+        )
+    if "items[:MEMORY_CANDIDATES_MAX]" in storage_text:
+        bullets.append(
+            "Pending candidate writes are truncated to `MEMORY_CANDIDATES_MAX` items."
+        )
+    if "items[:MEMORY_APPROVED_MAX]" in storage_text:
+        bullets.append(
+            "Approved-memory writes are truncated to `MEMORY_APPROVED_MAX` items."
+        )
+    if "build_memory_extraction_input(conversation, limit=6)" in memory_text:
+        bullets.append(
+            "Automatic memory extraction currently examines up to the six most recent user turns in a session."
+        )
+    if "return MEMORY_EXTRACT_SYNC or bool(job_id)" in server_text:
+        bullets.append(
+            "Memory extraction is forced synchronous when `MEMORY_EXTRACT_SYNC=true` or when the run is executing inside a worker job."
+        )
+
+    return bullets
+
+
+def _async_behavior_summary() -> list[str]:
+    server_text = _read(SERVER_PATH)
+    worker_text = _read(REPO_ROOT / "backend" / "worker_handler.py")
+
+    bullets: list[str] = []
+
+    if 'if ASYNC_CHAT_ENABLED:' in server_text and 'status_code=202' in server_text:
+        bullets.append(
+            "When `ASYNC_CHAT_ENABLED=true`, `POST /chat` enqueues a worker job and returns `202 Accepted` instead of running the turn inline."
+        )
+    if 'FunctionName=ASYNC_WORKER_FUNCTION_NAME' in server_text:
+        bullets.append(
+            "Async chat dispatch uses the Lambda function named by `ASYNC_WORKER_FUNCTION_NAME`."
+        )
+    if 'worker_max_seconds = int(os.getenv("WORKER_MAX_SECONDS", "240"))' in worker_text:
+        bullets.append(
+            "The worker enforces a hard job timeout using `WORKER_MAX_SECONDS`, currently defaulting to `240` seconds in the worker handler."
+        )
+    if "_upstash_set(_job_key(job_id), job, ASYNC_JOB_TTL_SECONDS)" in worker_text:
+        bullets.append(
+            "Job records are written back to Upstash with the shared `ASYNC_JOB_TTL_SECONDS` TTL on queue, progress, completion, cancellation, and failure transitions."
+        )
+    if 'await asyncio.wait_for(' in worker_text:
+        bullets.append(
+            "The worker wraps the shared chat flow in `asyncio.wait_for`, so timeout behavior is enforced outside the provider-specific execution code."
         )
 
     return bullets
@@ -278,6 +347,15 @@ def render_generated_block() -> str:
     daily_token_limit = config_defaults.get("DAILY_TOKEN_LIMIT", "")
     daily_pdf_limit = config_defaults.get("DAILY_PDF_LIMIT", "")
     daily_email_limit = config_defaults.get("DAILY_EMAIL_LIMIT", "")
+    memory_dir_default = config_defaults.get("MEMORY_DIR", "")
+    memory_extract_sync_default = config_defaults.get("MEMORY_EXTRACT_SYNC", "")
+    memory_candidates_max_default = config_defaults.get("MEMORY_CANDIDATES_MAX", "")
+    memory_approved_max_default = config_defaults.get("MEMORY_APPROVED_MAX", "")
+    async_job_ttl_default = config_defaults.get("ASYNC_JOB_TTL_SECONDS", "")
+    async_worker_function_default = config_defaults.get("ASYNC_WORKER_FUNCTION_NAME", "")
+    llm_timeout_default = config_defaults.get("LLM_TIMEOUT_SECONDS", "")
+    mcp_startup_timeout_default = config_defaults.get("MCP_STARTUP_TIMEOUT_SECONDS", "")
+    runner_timeout_default = config_defaults.get("RUNNER_TIMEOUT_SECONDS", "")
     uploads_dir_default = config_defaults.get("UPLOADS_DIR", "")
     quota_local_fallback_default = quota_defaults.get("QUOTA_LOCAL_FALLBACK", "")
     s3_quota_max_retries_default = quota_defaults.get("S3_QUOTA_MAX_RETRIES", "")
@@ -301,6 +379,7 @@ def render_generated_block() -> str:
         downloads_dir_default = _extract_env_default_from_text(CORE_MCP_PATH, "DOWNLOADS_DIR")
     if not upload_presign_expires_default:
         upload_presign_expires_default = _extract_env_default_from_text(SERVER_PATH, "UPLOAD_PRESIGN_EXPIRES_SECONDS")
+    worker_max_seconds_default = _extract_env_default_from_text(REPO_ROOT / "backend" / "worker_handler.py", "WORKER_MAX_SECONDS")
 
     route_rows = [
         [_code(route.method), _code(route.path), _code(route.function_name), _code(route.router_file)]
@@ -332,6 +411,21 @@ def render_generated_block() -> str:
         [_code("PDF_MAX_CHARS"), _code(pdf_max_chars_default), "Max text input size for PDF generation"],
         [_code("PDF_URL_EXPIRES_SECONDS"), _code(pdf_url_expires_default), "Default S3 presigned PDF download lifetime"],
     ]
+    memory_rows = [
+        [_code("MEMORY_DIR"), _code(memory_dir_default), "Local filesystem root for conversation and memory JSON files when `USE_S3=false`"],
+        [_code("MEMORY_EXTRACT_SYNC"), _code(memory_extract_sync_default), "Global toggle for forcing memory extraction to run synchronously"],
+        [_code("MEMORY_CANDIDATES_MAX"), _code(memory_candidates_max_default), "Max stored pending memory candidates per user"],
+        [_code("MEMORY_APPROVED_MAX"), _code(memory_approved_max_default), "Max stored approved memory items per user"],
+    ]
+    async_rows = [
+        [_code("ASYNC_CHAT_ENABLED"), _code(async_chat_default), "Whether `POST /chat` uses queue-and-worker execution by default"],
+        [_code("ASYNC_JOB_TTL_SECONDS"), _code(async_job_ttl_default), "TTL for async job records in Upstash"],
+        [_code("ASYNC_WORKER_FUNCTION_NAME"), _code(async_worker_function_default), "Lambda function name used for async dispatch"],
+        [_code("LLM_TIMEOUT_SECONDS"), _code(llm_timeout_default), "Provider request timeout passed into Grok runtime configuration"],
+        [_code("MCP_STARTUP_TIMEOUT_SECONDS"), _code(mcp_startup_timeout_default), "MCP subprocess startup timeout used by the Grok runtime"],
+        [_code("RUNNER_TIMEOUT_SECONDS"), _code(runner_timeout_default), "Overall Grok agent runner timeout"],
+        [_code("WORKER_MAX_SECONDS"), _code(worker_max_seconds_default), "Hard timeout enforced around the shared chat flow in the worker handler"],
+    ]
 
     pdf_action_re = str(regexes.get("_PDF_ACTION_RE", ""))
     email_address_re = str(regexes.get("_EMAIL_ADDRESS_RE", ""))
@@ -345,6 +439,8 @@ def render_generated_block() -> str:
 
     candidate_chain = " -> ".join(_code(item) for item in _bedrock_candidate_chain(bedrock_model_default, default_region))
     artifact_behavior = _upload_download_behavior_summary()
+    memory_behavior = _memory_behavior_summary()
+    async_behavior = _async_behavior_summary()
 
     sections = [
         MARKER_START,
@@ -370,6 +466,22 @@ def render_generated_block() -> str:
         "### Generated Upload And Artifact Behavior Summary",
         "",
         *[f"- {line}" for line in artifact_behavior],
+        "",
+        "### Generated Memory Storage Defaults",
+        "",
+        _markdown_table(["Setting", "Default", "Meaning"], memory_rows),
+        "",
+        "### Generated Memory Storage Behavior Summary",
+        "",
+        *[f"- {line}" for line in memory_behavior],
+        "",
+        "### Generated Async Worker Defaults",
+        "",
+        _markdown_table(["Setting", "Default", "Meaning"], async_rows),
+        "",
+        "### Generated Async Worker Behavior Summary",
+        "",
+        *[f"- {line}" for line in async_behavior],
         "",
         "### Generated Bedrock Candidate Resolution",
         "",
