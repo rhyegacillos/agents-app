@@ -1,17 +1,19 @@
 # IdeaGen
 
-IdeaGen is a multi-model business idea generator and report engine. It generates ideas, ranks model outputs, compares runs, produces decision-ready reports, and builds Execution Plans from saved evidence.
+IdeaGen is a multi-model business idea generator and report engine. It helps a signed-in user move from idea exploration to execution planning:
 
-This repository now runs on a PostgreSQL-first persistence stack:
+1. generate one or more model outputs for a chosen industry, constraint set, and persona
+2. optionally use a premium recommendation helper to choose a stronger persona and constraint combination before generation
+3. save those outputs as durable runs
+4. compare saved runs to identify a stronger direction
+5. create a decision summary over one or more runs
+6. generate an execution plan from saved evidence
 
-- PostgreSQL as the system of record
-- SQLAlchemy 2.x for database access
-- Alembic for schema migrations
-- Amazon RDS for production database hosting
-- AWS App Runner for the application runtime
-- Terraform for infrastructure provisioning
+This README is the guided walkthrough for how the system works and how to run it. The full technical explanation lives in [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md).
 
 ## Current Architecture
+
+The runtime shape of the app is:
 
 ```text
 Browser (Next.js static UI)
@@ -26,7 +28,30 @@ Browser (Next.js static UI)
            -> Amazon RDS PostgreSQL in AWS
 ```
 
-## What Changed in the Database Migration
+In practice, that means one deployed service handles both the frontend and the backend. The frontend is built as static assets and served by FastAPI from the same container image that also serves API routes. The backend is the control plane of the application: it verifies the user, enforces plan and quota limits, coordinates agent modules, persists artifacts, and handles report delivery.
+
+The product is artifact-centric, not one-shot. A generation request is usually followed by an auto-save. Later actions such as compare, decision summary, and execution plan are built from saved artifacts rather than from temporary text sitting only in browser memory.
+
+For the full runtime explanation, see [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#system-summary).
+
+## System Walkthrough
+
+The easiest way to understand IdeaGen is to follow one user request from the browser through the stack.
+
+The browser first loads a static Next.js frontend. The user works in the authenticated workspace implemented in [pages/product.tsx](/home/repos/ideagen-saas-aws/pages/product.tsx). That page manages the step-by-step workflow, retrieves the Clerk token, calls the API, hydrates saved artifacts back into the UI, and triggers export or email actions. It also includes a premium-only recommendation helper that can prefill a suggested persona and constraint set before generation. The frontend is therefore not just a display layer. It actively coordinates the product workflow.
+
+When the user performs an action, the browser calls FastAPI in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py). The backend verifies the Clerk JWT, determines the user’s plan from token claims, checks quota or premium gates, validates the request, and then routes the action to the appropriate feature path. If the action needs reasoning, FastAPI invokes the relevant worker module under [api/agent](/home/repos/ideagen-saas-aws/api/agent). If the action needs durable state, it reads or writes through [api/db.py](/home/repos/ideagen-saas-aws/api/db.py), which uses SQLAlchemy models and sessions to talk to PostgreSQL.
+
+If the result needs to be delivered as a shareable artifact, the backend renders PDFs through WeasyPrint and can send supported report types through Resend. Current email delivery covers the current idea payload, saved comparisons, and saved decision summaries; execution plans currently support PDF and presentation export, but not email delivery. If the result needs to survive beyond the current request, it is stored in PostgreSQL as a saved run, comparison, decision summary, or execution plan. In production, the same application code runs on App Runner, reads secrets from environment variables injected via Secrets Manager, and reaches RDS PostgreSQL through a VPC connector.
+
+For the deeper walkthrough of frontend orchestration, backend orchestration, persistence, and infrastructure, see:
+
+- [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#frontend-architecture)
+- [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#backend-architecture)
+- [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#persistence-architecture)
+- [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#deployment-and-runtime-packaging)
+
+## What Changed In The Database Migration
 
 The application no longer depends on a local SQLite file for runtime persistence.
 
@@ -39,12 +64,14 @@ The migration introduced:
 - an app startup wrapper in [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh) that runs `alembic upgrade head` before starting `uvicorn`
 - Terraform-managed RDS, Secrets Manager, ECR, App Runner, VPC networking, and deployment workflows
 
-This means:
+That changed the operational model of the app:
 
 - schema changes are no longer created ad hoc in app startup code
 - schema ownership is now Alembic
 - production data lives in managed Postgres, not inside the container filesystem
 - local development uses the same database engine as production
+
+For the full persistence explanation, see [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#persistence-architecture).
 
 ## Environment Model
 
@@ -61,7 +88,9 @@ Important behavior:
 - if `APP_ENV=prod`, `DATABASE_URL_PROD` is required
 - if `APP_ENV` is omitted, the backend defaults to `local` outside AWS and `prod` when AWS runtime env markers are present
 
-## Database Ownership and Migrations
+This is separate from Terraform environment selection. The Python app chooses `local` vs `prod`. Terraform chooses which AWS environment, such as `dev`, `test`, or `prod`, is being provisioned or updated.
+
+## Database Ownership And Migrations
 
 Database schema is defined in two layers:
 
@@ -80,7 +109,7 @@ The migration also changes storage semantics from SQLite text blobs to Postgres-
 
 - JSON payloads are stored as `JSONB`
 - timestamps are stored as timezone-aware `timestamptz`
-- list/report queries use explicit indexes for the dominant access patterns
+- list and report queries use explicit indexes for dominant access patterns
 
 ### Runtime migration behavior
 
@@ -115,7 +144,7 @@ APP_ENV=local
 DATABASE_URL_LOCAL=postgresql+psycopg://postgres:postgres@localhost:5432/ideagen_dev
 ```
 
-Also provide the provider/auth/email variables used by the app:
+Also provide the provider, auth, and email variables used by the app:
 
 - `CLERK_JWKS_URL`
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
@@ -149,9 +178,11 @@ npm install
 npm run dev
 ```
 
+This path is the normal development loop when you want maximum visibility into backend and frontend behavior separately.
+
 ## Local Docker Run
 
-If you want to run the container locally against local Postgres:
+If you want to run the full container locally against local Postgres:
 
 ```bash
 docker build \
@@ -174,15 +205,15 @@ docker run -p 8000:8000 \
   ideagen-app
 ```
 
-The container startup script runs Alembic automatically before `uvicorn`.
+The container startup script runs Alembic automatically before `uvicorn`, so this is the closest local approximation of the production runtime contract.
 
 ## Production Deployment Model
 
-Production now assumes this shape:
+Production assumes this shape:
 
-- app container built once and pushed to ECR
-- App Runner pulls the image
-- App Runner service runs in public ingress mode
+- the app container is built and pushed to ECR
+- App Runner pulls the image and runs the application
+- App Runner serves public HTTPS ingress
 - App Runner uses a VPC connector for private egress to RDS
 - RDS PostgreSQL runs in private subnets
 - runtime app secrets live in AWS Secrets Manager
@@ -190,7 +221,9 @@ Production now assumes this shape:
 
 Terraform resources for this are defined in [terraform](/home/repos/ideagen-saas-aws/terraform).
 
-## Terraform and Deployment Scripts
+The important point is that the application code itself does not change between local and production. The environment changes around it.
+
+## Terraform And Deployment Scripts
 
 The repo includes environment-aware deployment wrappers:
 
@@ -229,6 +262,8 @@ For a given environment, the local deploy wrapper:
 
 This is intentionally different from the earlier design that toggled App Runner off and on. Redeployments now update in place.
 
+For the full infra explanation, see [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md#deployment-and-runtime-packaging).
+
 ## GitHub Actions
 
 The repo includes:
@@ -239,11 +274,13 @@ The repo includes:
 
 Current behavior:
 
-- CI runs backend tests, lint, Terraform validation, and Docker build checks
+- CI runs backend tests, frontend lint, Terraform validation, and Docker build checks
 - deploy workflow supports `dev`, `test`, and `prod`
 - destroy workflow is manual-only and requires explicit confirmation
 
-## Custom Domain and Host Allowlist
+The deploy workflow is the automated version of the same operational contract used by the local deployment scripts: prepare state, reconcile infrastructure, synchronize secrets, publish the image, roll the service, and verify health.
+
+## Custom Domain And Host Allowlist
 
 The production custom domain is:
 
@@ -265,15 +302,16 @@ Important behavior:
 - Alembic baseline: [alembic/versions/20260319_000001_initial_postgres_schema.py](/home/repos/ideagen-saas-aws/alembic/versions/20260319_000001_initial_postgres_schema.py)
 - container startup: [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh)
 - Terraform infra: [terraform/main.tf](/home/repos/ideagen-saas-aws/terraform/main.tf)
+- main architecture reference: [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md)
 
 ## Related Documentation
 
-- API reference: [api_reference.md](/home/repos/ideagen-saas-aws/api_reference.md)
 - architecture: [ARCHITECTURE.md](/home/repos/ideagen-saas-aws/ARCHITECTURE.md)
+- API reference: [api_reference.md](/home/repos/ideagen-saas-aws/api_reference.md)
 - backend technical guide: [technical_backend.md](/home/repos/ideagen-saas-aws/technical_backend.md)
 - data model: [data_model.md](/home/repos/ideagen-saas-aws/data_model.md)
 - deployment runbook: [deployment_runbook.md](/home/repos/ideagen-saas-aws/deployment_runbook.md)
 - Terraform guide: [terraform/README.md](/home/repos/ideagen-saas-aws/terraform/README.md)
-- current usage/quota behavior: [current_usage.md](/home/repos/ideagen-saas-aws/current_usage.md)
-- security/privacy notes: [security_privacy.md](/home/repos/ideagen-saas-aws/security_privacy.md)
+- current usage and quota behavior: [current_usage.md](/home/repos/ideagen-saas-aws/current_usage.md)
+- security and privacy notes: [security_privacy.md](/home/repos/ideagen-saas-aws/security_privacy.md)
 - stakeholder dossier schema: [stakeholder_report_schema.md](/home/repos/ideagen-saas-aws/stakeholder_report_schema.md)

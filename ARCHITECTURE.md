@@ -1,2144 +1,939 @@
-# IdeaGen Architecture (Implementation Reference)
+# IdeaGen Architecture
 
-This document describes the architecture that is **actually implemented** in this repository (`ideagen-saas-aws`), based on the current source code.
+This is the main architecture document for `ideagen-saas-aws`.
 
-## Documentation Sync: Adaptive Decision Flow + Step Guide (2026-02-20)
+Its job is to describe how the app actually works end to end:
 
-This document is synchronized with the latest UX/flow implementation in `pages/product.tsx`.
+- what the product does
+- how the frontend and backend collaborate
+- how data is stored and reused
+- how generation, comparison, reporting, and execution planning work
+- how the app is packaged and deployed
 
-- **Adaptive flow modes**: UI now shifts between `guided` and `status` modes.
-- **Hysteresis guard**: mode switching uses `guided -> status` at `<= 40` and `status -> guided` at `>= 60` to avoid flip-flop around a single threshold.
-- **Persistent Step Guide**: every workspace step includes a structured guide panel (`What you do`, `What you get`, `When to use`, `To move forward`).
-- **Per-step memory**: collapse/expand is saved per user and per step using local storage (`collapsedByStep`, `touchedByStep`).
-- **Adaptive Step Guide defaults**: untouched guides auto-expand in guided mode and auto-collapse in status mode.
-- **User override priority**: once a user manually toggles a step guide, that preference is preserved and not auto-overridden.
-- **Generated empty-state scenarios**: first-time vs returning-with-library cases are explicitly separated for clearer onboarding.
-- **Decision Summary behavior**: supports single-run and multi-run (1-5) synthesis; compare-first is recommended but not mandatory.
-- **Compare behavior**: compares two selected saved runs and surfaces winner/diff insight; best quality when config alignment is preserved.
-- **Execution handoff**: Decision Summary remains the source artifact for Execution Plan generation and export workflow.
-- **Scope note**: this update is primarily frontend UX/state orchestration; backend endpoint contracts remain unchanged unless otherwise stated in backend/API docs.
+If this document and another repo document disagree, trust the runtime code first, then update the docs. This file is intended to stay aligned with the current implementation in:
 
+- [api/index.py](/home/repos/ideagen-saas-aws/api/index.py)
+- [pages/product.tsx](/home/repos/ideagen-saas-aws/pages/product.tsx)
+- [api/db.py](/home/repos/ideagen-saas-aws/api/db.py)
+- [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py)
+- [terraform/main.tf](/home/repos/ideagen-saas-aws/terraform/main.tf)
+- [Dockerfile](/home/repos/ideagen-saas-aws/Dockerfile)
 
-It is intentionally detailed and code-aligned, and is written as a technical reference for engineering, debugging, onboarding, and production hardening.
+Use [README.md](/home/repos/ideagen-saas-aws/README.md) as the guided walkthrough. Use this file as the full explanation of how the system works internally.
 
----
+## 1. System Summary
 
-## 0) Agentic Framework Architecture (Implemented)
+IdeaGen is a single web application that helps a signed-in user move from idea exploration to execution planning.
 
-IdeaGen uses an **API-orchestrated agentic pattern**:
-
-- FastAPI is the control plane and request coordinator.
-- Agent modules are specialized inference workflows, each scoped to one feature domain.
-- Validation, retries, and deterministic fallback behaviors are embedded per agent.
-- There is no autonomous background planning loop and no inter-agent message bus.
-
-This gives strong determinism and debuggability at the cost of lower decoupling than queue-based systems.
-
-### 0.1 Core agentic primitives in this codebase
-
-The implemented pattern combines:
-
-1. Provider wrappers (`generate_openai_compatible`, `generate_gemini`) in `api/index.py`
-2. Chain fallback runtime (`generate_with_fallback`) in `api/agent/model_fallback.py`
-3. Output validation loops in each feature agent:
-   - `idea_generation_agent.py` (HTML contract)
-   - `rank_result_agent.py` (JSON contract)
-   - `compare_results_agent.py` (JSON contract)
-   - `rank_report_agent.py` (JSON contract)
-   - `recommend_combination_agent.py` (strict exact-match + HTML contract)
-4. Request-level orchestration in endpoint handlers in `api/index.py`
-
-### 0.2 Agent topology by feature
-
-There are six functional agent modules and one fallback runtime module:
-
-- `idea_generation_agent.py`
-  - Generates idea output in semantic HTML.
-  - Applies validation/retry and delegates provider fallback to `model_fallback.py`.
-
-- `rank_result_agent.py`
-  - Scores/ranks outputs from a single multi-model run.
-  - Enforces a rigid JSON response contract.
-
-- `compare_results_agent.py`
-  - Compares top-ranked output of Run A vs Run B.
-  - Produces winner, rationale, key changes, risks, and decision memo.
-
-- `rank_report_agent.py`
-  - Produces multi-run decision summary and ranking.
-  - Adds email-ready summary payload.
-
-- `recommend_combination_agent.py`
-  - Selects persona + 1-2 constraints from **allowed lists only**.
-  - Enforces exact-string selection semantics.
-
-- `email_agent.py`
-  - Uses tool-calling to create email payload + audit metadata.
-  - Sends via Resend and returns send status.
-
-- `model_fallback.py`
-  - Shared fallback policy engine used by generation agent.
-
-### 0.3 Why this architecture is used here
-
-This implementation chooses **request-scoped orchestration** rather than long-running agent graphs because:
-
-- product actions are user-triggered and synchronous from UI,
-- feature scope is bounded and naturally endpoint-oriented,
-- reliability can be achieved with local retry/fallback contracts,
-- deployment remains simple (single container app runtime with managed PostgreSQL persistence).
-
-### 0.4 Cross-agent reliability contract
-
-Across agents, the platform applies consistent reliability rules:
-
-- **Validate outputs** against expected shape/content.
-- **Retry with correction feedback** when validation fails.
-- **Fallback safely** when retries are exhausted.
-- **Track token usage** when provider usage metadata is available.
-- **Avoid hidden assumptions** via prompt rules (explicitly stated in system/user prompts).
-
-### 0.5 Control-plane boundaries
-
-What FastAPI controls:
-
-- Authentication and user identity resolution.
-- Premium gating and quota checks.
-- Model/provider routing.
-- Orchestration ordering (generate -> rank -> persist, etc.).
-- Artifact persistence and retrieval.
-- PDF rendering and email dispatch.
-
-What agents control:
-
-- Prompted reasoning for task-specific analysis.
-- Local schema-format output.
-- Task-level fallback payload generation.
-
-### 0.6 Demonstration: Core Agentic AI Development Patterns
-
-This section maps core Agentic AI development patterns to the exact implementation in this project.
-
-#### Pattern A: Orchestrator-Worker (API as control plane, agents as workers)
-
-Intent:
-
-- Keep business workflow deterministic in a central orchestrator.
-- Delegate reasoning-heavy subtasks to specialized worker agents.
-
-Where implemented:
-
-- Orchestrator: endpoint handlers in `api/index.py`
-- Workers: `api/agent/*.py`
-
-Concrete demonstration:
-
-1. `POST /api` orchestrates request parsing, gating, model fan-out, usage aggregation, and ranking trigger.
-2. `generate_idea_agentic` performs worker-level generation and validation loop.
-3. `rank_result_agent` is called as a second worker only when multi-model outputs exist.
-
-Reusable pattern template:
+At a high level, the system looks like this:
 
 ```text
-Controller receives request
-  -> validates/gates
-  -> dispatches specialized workers
-  -> merges worker outputs
-  -> persists + returns normalized response
+Browser
+  -> Next.js static frontend
+  -> Clerk auth session / JWT template token
+  -> FastAPI API
+       -> auth + host checks
+       -> quota and premium gates
+       -> multi-provider LLM orchestration
+       -> comparison / decision / execution-plan generation
+       -> PDF rendering
+       -> email sending
+       -> PostgreSQL persistence
+
+AWS deployment
+  -> Docker image in ECR
+  -> App Runner service
+  -> RDS PostgreSQL in private subnets
+  -> Secrets Manager for runtime secrets
+  -> VPC connector for private DB access
 ```
 
-#### Pattern B: Contract-First Agent Outputs
+The application is not an asynchronous job system. It is a request/response product:
 
-Intent:
+- the frontend drives each action
+- FastAPI orchestrates each request
+- agent modules are invoked inside the request lifecycle
+- artifacts are saved to PostgreSQL for later reload, comparison, export, and email
 
-- Treat each agent output as a machine-consumable contract, not free-form text.
+### 1.1 What The System Is Actually Doing
 
-Where implemented:
+The easiest way to misunderstand IdeaGen is to think of it as a simple "prompt in, answer out" app. That is not how the implemented product behaves.
 
-- HTML contract: `api/agent/idea_generation_agent.py`
-- JSON contracts:
-  - `api/agent/rank_result_agent.py`
-  - `api/agent/compare_results_agent.py`
-  - `api/agent/rank_report_agent.py`
-  - `api/agent/recommend_combination_agent.py`
+In practice, the system is organized around durable decision artifacts. A user does not come to the app only to generate text. They come to build a chain of evidence:
 
-Concrete demonstration:
+- a generated run that captures one exploration of an idea
+- a comparison that explains which of two runs is stronger
+- a decision summary that ranks one or more runs and recommends a direction
+- an execution plan that turns the selected direction into an operational plan
 
-- Generation agent rejects fenced markdown and too-short output.
-- Ranking/comparison/report agents validate required keys, list lengths, and ID coverage.
-- Recommend agent enforces exact-string selection from allowed values plus `reason_html` wrapper shape.
+This matters architecturally because the backend is not optimized only for one-shot inference. It is optimized for preserving state between those steps. That is why the persistence layer stores generated runs, comparisons, decision summaries, and execution plans as first-class objects. It is also why the frontend keeps a library panel and treats loading historical artifacts as a normal workflow rather than an edge case.
 
-Reusable pattern template:
 
-```text
-LLM call
-  -> parse output
-  -> validate against strict contract
-  -> accept only if contract is satisfied
-```
+The deployment model reflects the same assumption. The frontend is statically built and served from the same container as the API, but the durable system state lives outside the container in PostgreSQL. The app container can be replaced during deployment without losing application history because the real product memory is in the database, not on disk inside the runtime.
 
-#### Pattern C: Self-Correction Retry Loop (validator-in-the-loop)
+## 2. Product Operation
 
-Intent:
+### 2.1 User-facing surfaces
 
-- Let the same agent self-correct by feeding validation errors back as actionable constraints.
+The repo has two main frontend entry points:
 
-Where implemented:
+- [pages/index.tsx](/home/repos/ideagen-saas-aws/pages/index.tsx): landing and marketing page
+- [pages/product.tsx](/home/repos/ideagen-saas-aws/pages/product.tsx): authenticated product workspace
 
-- `generate_idea_agentic` (`max_attempts=3`)
-- `rank_result_agent` (`max_attempts=2`)
-- `compare_results_agent` (`max_attempts=2`)
-- `rank_report_agent` (`max_attempts=2`)
-- `recommend_combination_agent` (`max_attempts=3`)
+The product workspace is the operational center of the app. It is built around four workflow steps:
 
-Concrete demonstration:
+1. Generate Results
+2. Compare Results
+3. Decision Summary
+4. Execution Plan
 
-- On validation failure, agents append a correction block:
-  - "VALIDATION ERRORS FROM YOUR LAST OUTPUT..."
-- Next attempt must return corrected output only.
+### 2.2 Frontend flow model
 
-Reusable pattern template:
+The frontend is not a thin API wrapper. It contains a fairly large state machine that manages:
 
-```text
-for attempt in N:
-  output = call_model(prompt + correction_feedback)
-  if validate(output): return output
-  correction_feedback = build_errors(validate_errors)
-return deterministic_fallback()
-```
+- current step via `resultsView`
+- guided vs status UI mode
+- per-step guidance panels
+- saved library panel modes for runs, comparisons, decision reports, and execution plans
+- compare-run selections
+- decision selection state
+- execution-plan source selection state
+- export and email actions
 
-#### Pattern D: Multi-Provider Routing + Ordered Fallback
+Important UX behavior implemented in [pages/product.tsx](/home/repos/ideagen-saas-aws/pages/product.tsx):
 
-Intent:
+- guidedness is persisted in local storage per user
+- the workspace switches between `guided` and `status` modes using hysteresis
+- each step has a persistent, collapsible Step Guide
+- the Library acts as the cross-step artifact loader
+- the frontend silently auto-saves newly generated runs after a successful `/api` generation call
 
-- Increase reliability by routing to provider-specific chains and failing over on transient errors.
+### 2.3 End-to-end user workflow
 
-Where implemented:
+The product normally operates like this:
 
-- Routing map: `FALLBACK_CHAINS` in `api/index.py`
-- Fallback engine: `generate_with_fallback` in `api/agent/model_fallback.py`
+1. The user chooses industry, constraints, persona, and one or more model providers.
+2. If the user is premium, they can call `POST /api/recommend-combination` to ask the backend to recommend a persona and constraint combination before generation. The frontend applies that recommendation directly back into the current form state.
+3. The frontend calls `POST /api` to generate outputs.
+4. The frontend stores the returned outputs in local UI state and then calls `POST /api/saved-results` to auto-save the run.
+5. The user can compare two saved runs with `POST /api/compare-results`.
+6. The user can generate a decision summary over 1-5 runs with `POST /api/rank-report`, or reload an existing saved decision report.
+7. The user can generate an execution plan from a decision report, comparison, or saved run with `POST /api/stakeholder-report`.
+8. At multiple points the user can export PDFs, and some artifact types also support email delivery. Execution plans currently do not.
 
-Concrete demonstration:
+This is an artifact-centric product. The user does not just get transient LLM output; they build a library of saved evidence.
 
-- Provider inferred from model prefix or resolved from chain.
-- Transient non-timeout failures trigger fallback to next model.
-- Timeout errors do not silently switch provider; caller retry logic handles timeout separately.
+### 2.4 Artifact Lifecycle Across The Whole Product
 
-Reusable pattern template:
+The most important cross-cutting concept in the app is the artifact lifecycle. Everything else in the architecture exists to support it.
 
-```text
-for model in ordered_chain:
-  try call(model)
-  except timeout: raise_for_retry_same_context
-  except transient: continue_to_next_model
-  except hard_error: raise
-```
+A generation request creates the base artifact: a saved run. A saved run contains the request context the user chose, the outputs returned by one or more models, and optional per-run ranking metadata. That object is the raw material for later steps. Comparisons do not operate on arbitrary text. They operate on saved runs. Decision summaries do not operate on arbitrary prompts. They operate on one or more saved runs. Execution plans do not operate on arbitrary summaries typed into a form. They operate on a decision report, a comparison, or a saved run that already exists in the library.
 
-#### Pattern E: Progressive Analysis Pipelines (compose agents by stage)
+Because of that, the database is not just a persistence convenience. It is the backbone of the product workflow. The app would lose most of its value if artifacts were ephemeral because the user would have to regenerate, re-rank, and re-justify every step each time they revisited the app. The current architecture prevents that by caching derived artifacts and, in the case of decision summaries, snapshotting the underlying runs so the report remains renderable even if source rows later change.
 
-Intent:
+The frontend reflects this same lifecycle. The product page silently saves generated runs after a successful generation, exposes a library for every major artifact class, and treats hydrate-from-library as a normal state transition. The UI is therefore not simply rendering backend responses. It is coordinating movement between artifact states.
 
-- Build higher-value outputs by chaining specialized analysis stages.
+## 3. Frontend Architecture
 
-Where implemented:
+### 3.1 Frontend stack
 
-- Generation pipeline (`/api`): generate -> rank -> finalize labels/titles
-- Compare pipeline (`/api/compare-results`): ensure rank -> pick top outputs -> compare
-- Decision pipeline (`/api/rank-report`): resolve run set -> report agent -> delivery (pdf/email)
+The frontend uses:
 
-Concrete demonstration:
+- Next.js static export
+- React 19
+- Clerk for auth UI and token retrieval
+- Tailwind-based styling
 
-- Compare path computes missing rank data before comparison.
-- Decision path reuses cached report when available, otherwise runs report agent.
-
-Reusable pattern template:
-
-```text
-stage_1 artifact -> stage_2 enrichment -> stage_3 decision artifact
-```
-
-#### Pattern F: Cache-Before-Infer
-
-Intent:
-
-- Avoid repeated expensive inference for identical artifact requests.
-
-Where implemented:
-
-- Comparison cache: `db.get_saved_comparison(...)`
-- Report cache: `db.get_saved_rank_report(...)` keyed by sorted `run_ids_key`
-
-Concrete demonstration:
-
-- Same run pair returns cached comparison.
-- Same run-set key returns cached decision report.
-- If cached artifacts are partially missing fields (e.g., top outputs), runtime backfills from source rows.
-
-Reusable pattern template:
-
-```text
-lookup(cache_key)
-if hit: return cached_or_backfilled
-else: infer -> persist -> return
-```
-
-#### Pattern G: Deterministic Safety Fallbacks
-
-Intent:
-
-- Ensure feature continuity even when model output quality/availability fails.
-
-Where implemented:
-
-- `_fallback_ranking` in `rank_result_agent.py`
-- `_fallback_comparison` in `compare_results_agent.py`
-- `_fallback_report` in `rank_report_agent.py`
-- deterministic first-option fallback in `recommend_combination_agent.py`
-- fallback email payload in `email_agent.py`
-
-Concrete demonstration:
-
-- System returns usable, explicit fallback payloads instead of empty responses or hard crashes.
-- Fallback text marks reduced-confidence output clearly for user/operator awareness.
-
-#### Pattern H: Tool-Calling for Side Effects (email as controlled action)
-
-Intent:
-
-- Keep side effects explicit and auditable through tool contracts.
-
-Where implemented:
-
-- `api/agent/email_agent.py` with tools:
-  - `send_email`
-  - `log_action`
-
-Concrete demonstration:
-
-- Prompt enforces exactly one send tool call and one log tool call.
-- Structured audit metadata is captured before dispatching via Resend.
-
-Reusable pattern template:
-
-```text
-LLM plans message -> emits structured tool args -> runtime executes external side effect
-```
-
-#### Pattern I: Guardrails at Multiple Layers
-
-Intent:
-
-- Prevent misuse and cost blowups with layered guardrails beyond prompt instructions.
-
-Where implemented:
-
-- Auth guard: Clerk JWT verification (`CustomClerkHTTPBearer`)
-- Plan guard: premium checks (`require_premium`)
-- Quota guards: API/token/email/storage checks in `api/db.py` and endpoints
-- UI guardrails: disabled states, premium locks, limit notices in `pages/product.tsx`
-
-Concrete demonstration:
-
-- Recommend endpoint is premium-gated server-side even if UI is bypassed.
-- Save endpoint blocks writes when storage cap is exceeded.
-- Compare/report generation is blocked when token quota is reached.
-
-#### Pattern J: State Snapshotting for Durable Report Reproducibility
-
-Intent:
-
-- Keep generated report artifacts renderable even if source records later change or are deleted.
-
-Where implemented:
-
-- `runs_json` snapshot stored in `saved_rank_reports`.
-
-Concrete demonstration:
-
-- PDF generation for saved rank report first uses snapshot; only reconstructs from IDs if snapshot missing.
-- Missing reconstruction is surfaced via response header (`X-Report-Runs-Missing`).
-
-#### Practical takeaway from these patterns
-
-The project demonstrates a production-lean agentic style:
-
-- centralized deterministic orchestration,
-- strict output contracts and correction loops,
-- explicit fallback and caching strategies,
-- controlled external side effects,
-- layered guardrails tied to billing and auth boundaries.
-
----
-
-## 1) High-Level System Context
-
-### 1.1 Top-level architecture
-
-```text
-Browser (Next.js static export)
-  |
-  | Bearer JWT (Clerk template token)
-  v
-FastAPI (api/index.py)
-  |-- Custom Clerk JWT verify (JWKS + PyJWT)
-  |-- Plan & quota checks (api/db.py -> SQLAlchemy session)
-  |-- Agent orchestration (api/agent/*.py)
-  |-- PDF rendering (api/utils/pdf_utils.py + WeasyPrint)
-  |-- Email delivery (api/agent/email_agent.py -> Resend)
-  |
-  +--> PostgreSQL via SQLAlchemy (api/database/session.py, models in api/database/models.py; schema via Alembic)
-  +--> OpenAI / Gemini / DeepSeek / Grok APIs
-```
-
-**AWS production (reference deployment):** the container image lives in **Amazon ECR** and runs on **AWS App Runner**. Durable data lives in **Amazon RDS for PostgreSQL** (private subnets; App Runner reaches RDS via **VPC connector** / private egress). Sensitive runtime values—especially **`DATABASE_URL_PROD`** and API keys—are intended to live in **AWS Secrets Manager** and be **referenced into App Runner** as environment variables (see `terraform/secrets.tf`), not committed to the repository or baked into the image.
-
-### 1.2 Runtime boundaries
-
-- Frontend is built as static assets (`next export`) and served by FastAPI at root path.
-- Backend API remains dynamic under `/api/*`.
-- Authentication is enforced only on protected API routes (not on static assets).
-- Data persistence is PostgreSQL-backed; local dev uses Docker Compose Postgres; **AWS** production uses **Amazon RDS** with **`DATABASE_URL_PROD`** typically sourced from **AWS Secrets Manager** and injected into **App Runner**.
-
-### 1.3 Capability map
-
-Implemented product capabilities:
-
-1. Generate multi-model idea outputs for one configuration.
-2. Rank model outputs inside a run.
-3. Auto-save generated runs and reload/delete them.
-4. Compare two runs (same-config constraint) and cache comparison.
-5. Generate decision summary report across selected runs.
-6. Export generated/compare/rank-report PDFs.
-7. Email generated/compare/rank-report artifacts.
-8. Premium-only recommendation of persona + constraints.
-
-### 1.4 Non-goals (current implementation)
-
-Not implemented in current architecture:
-
-- asynchronous job queue for long-running tasks,
-- read replicas, automated failover drills, or multi-region database topology as first-class architecture (single primary PostgreSQL / RDS is the current target),
-- event-driven or pub/sub orchestration,
-- distributed tracing and metrics backend,
-- strict global response error schema contract.
-
----
-
-## 2) Deployment Topology and Runtime Packaging
-
-### 2.1 Container build pipeline
-
-`Dockerfile` uses two stages:
-
-1. **Frontend builder** (`node:22-alpine`)
-   - installs npm dependencies via `npm ci`
-   - runs `npm run build`
-   - emits static files in `/app/out`
-
-2. **Python runtime** (`python:3.12-slim`)
-   - installs system deps required by WeasyPrint stack
-   - installs Python dependencies from `requirements.txt`
-   - copies backend (`api/`) and aliases `api/index.py` as `server.py`
-   - copies static export from stage 1 into `/app/static`
-   - runs uvicorn (`server:app`) on port `8000`
-
-### 2.2 Process model
-
-- Single uvicorn process serves:
-  - API routes (`/api/*`, `/health`)
-  - static frontend routes (`/` and exported files)
-- No sidecar services required for baseline runtime.
-
-### 2.3 Static hosting behavior
-
-Next.js config:
+Build behavior is defined in [next.config.ts](/home/repos/ideagen-saas-aws/next.config.ts):
 
 - `output: "export"`
 - `trailingSlash: true`
 
-FastAPI static mount:
+That means the frontend is built into static assets, then served by FastAPI from the same container.
 
-- `app.mount("/", StaticFiles(directory="static", html=True), name="static")`
+### 3.2 Frontend responsibilities
 
-Implication:
+The frontend is responsible for:
 
-- Paths depend on exported static path structure, so trailing slash behavior matters.
-- Refresh behavior differs from SSR apps because this is static export + static serving.
+- collecting idea-generation inputs
+- constraining free-tier actions in the UI
+- retrieving Clerk JWTs with the configured template
+- calling the API
+- tracking current artifact context
+- silently auto-saving generated runs
+- driving the compare, decision, and execution-plan flows
+- rendering saved artifacts and step guidance
+- triggering export/email actions for the currently active artifact
 
-### 2.4 Runtime ports and health
+### 3.3 Frontend-to-backend contract
 
-- Service port: `8000`
-- Health endpoint: `GET /health`
-- Docker healthcheck calls `http://localhost:8000/health`
+The product page calls the backend for:
 
-### 2.5 Persistent data paths
+- subscription and usage state
+- generation
+- saved run CRUD
+- comparison generation and CRUD
+- decision report generation and CRUD
+- execution plan generation and CRUD
+- PDF export
+- email sending
+- premium recommendation flow
 
-- No application database file path is used in the current architecture.
-- Persistence is externalized to PostgreSQL.
-- Local development uses `DATABASE_URL_LOCAL`; AWS deploys use `DATABASE_URL_PROD`.
+The frontend assumes artifact reuse is normal. The backend is therefore designed around saved runs and saved derived artifacts, not only live generation responses.
 
-### 2.6 Environment variable matrix
+The recommendation flow deserves explicit mention because it is not just a cosmetic helper. The frontend sends the full allowed persona and constraint sets to `POST /api/recommend-combination`, the backend enforces premium access and normal API rate limits, and the returned recommendation mutates the active generation inputs in place. Architecturally, that means recommendation sits before generation as an input-shaping step rather than after generation as an analysis step.
 
-Backend/auth:
+### 3.4 How `pages/product.tsx` Actually Orchestrates The App
 
-- `CLERK_JWKS_URL`
+The product page is a large orchestration component, not just a visual shell around API calls.
 
-Database (PostgreSQL via SQLAlchemy; see **§6**):
+At runtime it coordinates five different concerns at once:
 
-- `APP_ENV` — `local` or `prod` (selects which URL is active; see `api/config.py`)
-- `DATABASE_URL_LOCAL` — required when `APP_ENV=local` (typical local form: `postgresql+psycopg://user:pass@host:5432/dbname`)
-- `DATABASE_URL_PROD` — required when `APP_ENV=prod`; in **AWS**, this should be the SQLAlchemy URL to **Amazon RDS** (see **§2.7**), injected via **AWS Secrets Manager** into **App Runner** (Terraform: `aws_secretsmanager_secret.database_url_prod` and service configuration—not checked into git)
+1. input collection for generation
+2. step-based workflow guidance
+3. artifact loading and hydration
+4. plan and quota awareness
+5. delivery actions such as PDF export and email
 
-LLM providers:
+That coordination explains why the file is large. The app needs to remember which step the user is in, what artifact is currently loaded, whether the user is new or returning, whether a step guide should be expanded or collapsed, whether a compare or report action is currently in flight, and which saved artifact lists need refreshing.
 
-- `OPENAI_API_KEY`
-- `DEEPSEEK_API_KEY`
-- `DEEPSEEK_API_URL`
-- `GROK_API_KEY`
-- `GROK_API_URL`
-- `GEMINI_API_KEY`
-- `GEMINI_API_URL`
+The component also has to bridge the mismatch between product-facing concepts and backend-facing concepts. The user selects model providers such as OpenAI or Gemini, but the backend runs concrete model IDs defined in `FALLBACK_CHAINS`. The user thinks in terms of "my current decision summary" or "the execution plan I just generated", but the backend thinks in terms of saved artifact IDs and source types. `pages/product.tsx` is where those translations are coordinated.
 
-Email:
+Another important detail is that the frontend deliberately performs follow-up work after primary actions. For example, generation does not end when `/api` returns. The frontend takes that response, updates the visible results state, updates usage state, marks workflow milestones, and then silently calls `POST /api/saved-results` so the new run becomes part of the artifact library. That means the visible user action of "Generate Ideas" is implemented as a multi-step client-side orchestration, not a single request.
 
-- `RESEND_API_KEY`
-- `EMAIL_FROM` (optional, default no-reply format)
+The same pattern appears in the compare, decision, and execution-plan flows. The frontend is responsible for choosing the right endpoint, preparing the right request shape, deciding which saved artifact list to refresh, hydrating the resulting artifact into the main view, and showing the user a stable transition with loaders and notices rather than a jarring state swap. The architecture of the app therefore depends on the frontend being stateful and workflow-aware, not stateless and purely presentational.
 
-Usage/storage limits:
+## 4. Backend Architecture
 
-- `TOKEN_LIMIT_FREE` (default 50000)
-- `TOKEN_LIMIT_PREMIUM` (default 500000)
-- `SAVED_RESULTS_LIMIT_FREE_BYTES` (default 100MB)
-- `SAVED_RESULTS_LIMIT_PREMIUM_BYTES` (default 1GB)
-- `DB_POOL_SIZE` (optional override)
-- `DB_MAX_OVERFLOW` (optional override)
-- `DB_POOL_TIMEOUT` (optional override)
-- `DB_POOL_RECYCLE` (optional override)
-- `DB_ECHO` (optional override)
+### 4.1 FastAPI as control plane
 
-Frontend env used in UI behavior:
+[api/index.py](/home/repos/ideagen-saas-aws/api/index.py) is the central orchestrator.
 
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
-- `NEXT_PUBLIC_CLERK_JWT_TEMPLATE`
-- `NEXT_PUBLIC_TOKEN_LIMIT_FREE`
-- `NEXT_PUBLIC_TOKEN_LIMIT_PREMIUM`
+It owns:
 
-### 2.7 AWS services in the reference deployment (RDS + Secrets Manager)
+- FastAPI app creation
+- startup DB connectivity verification
+- host allowlisting
+- Clerk bearer-token verification
+- premium and quota checks
+- provider client initialization
+- request-scoped orchestration of all generation and report flows
+- PDF rendering responses
+- email dispatch entry points
+- static frontend mounting
 
-This repository’s **Terraform** stack models a small-SaaS shape on AWS. The following services are the ones worth naming explicitly when explaining deployment:
+This is an orchestrator-worker style architecture:
 
-| AWS service | Role in this design |
-|-------------|---------------------|
-| **Amazon ECR** | Stores the built **Docker** image; App Runner pulls from here (often with automatic deploy on push). |
-| **AWS App Runner** | Runs the **FastAPI** + static frontend container on port **8000**; maps **Secrets Manager** secrets and plain env vars into the task environment. |
-| **Amazon RDS for PostgreSQL** | **System of record** for all application tables (usage, saved artifacts, reports). Placed in **private subnets** in the Terraform layout; not dependent on ephemeral container disk. |
-| **AWS Secrets Manager** | Holds **`DATABASE_URL_PROD`** (full connection string to RDS) and provider keys (OpenAI, Gemini, DeepSeek, Grok, Resend, etc.) under names like `{prefix}/app/DATABASE_URL_PROD` — see `terraform/secrets.tf`. App Runner is configured to expose these as **environment variables** to the app. |
-| **VPC / VPC connector** | Lets App Runner use **private** egress to reach **RDS** without exposing the database to the public internet. |
-| **Route 53** (optional) | Custom domain (e.g. `ideagen.agentairg.site`) in front of App Runner. |
-| **IAM** | Least-privilege roles for App Runner to read secrets, pull from ECR, and (where configured) manage related resources. |
+- FastAPI routes are the orchestrator
+- `api/agent/*.py` modules are specialized LLM workers
+- `api/db.py` is the persistence boundary
 
-**Application contract:** the Python code still reads **`DATABASE_URL_PROD`** and API keys from the process environment (`api/config.py`, standard `os.getenv` paths). The **AWS** responsibility is to populate those variables from **Secrets Manager** at runtime—not to change application code per cloud.
+### 4.2 Authentication and request guards
 
----
+Auth is implemented with a custom Clerk bearer dependency in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py):
 
-## 3) Codebase Responsibility Map
+- the frontend obtains a Clerk JWT
+- the backend verifies it against Clerk JWKS
+- the decoded token is attached to the request credentials
+- `sub` is used as the application `user_id`
+- `pla` is used as the current plan value
 
-### 3.1 Frontend layers
+Request host validation is also enforced in middleware:
 
-- `pages/_app.tsx`
-  - wraps app in Clerk provider.
+- `ALLOWED_HOSTS` controls allowed production hosts
+- localhost and test hosts are always allowed
+- wildcard host patterns like `*.awsapprunner.com` are supported
+- `/health` bypasses the host allowlist
 
-- `pages/index.tsx`
-  - landing/marketing shell.
-  - auth-aware entry to product page.
+### 4.3 Public vs protected routes
 
-- `pages/product.tsx`
-  - core product workspace.
-  - UI state machine for generation, saved artifacts, compare, decision report.
-  - modal orchestration and draggable saved-panel behavior.
-  - all API integrations from browser.
+Most app routes are protected by Clerk auth.
 
-### 3.2 Backend layers
+Current public routes:
 
-- `api/index.py`
-  - FastAPI app lifecycle.
-  - authentication and plan gating.
-  - all endpoint orchestration.
-  - model provider wrapper calls.
+- `GET /health`
+- `POST /api/download-pdf`
 
-- `api/config.py`
-  - resolves `APP_ENV` and a single effective `database_url` plus pool tuning settings.
+Protected routes include:
 
-- `api/database/models.py`
-  - SQLAlchemy 2.x declarative ORM definitions (tables, columns, JSONB, indexes, check constraints).
+- `GET /api/subscription`
+- `POST /api`
+- saved result routes
+- compare routes
+- rank report routes
+- stakeholder report routes
+- `POST /api/email`
+- `POST /api/recommend-combination`
 
-- `api/database/session.py`
-  - engine creation, connection pool, `sessionmaker`, `session_scope`, `verify_database_connection`.
+### 4.4 Current model and provider runtime
 
-- `api/db.py`
-  - persistence helpers used by routes: usage counters and limit checks, CRUD for saved runs/comparisons/reports/execution plans.
-  - `init_db()` verifies DB connectivity only; **schema is not created here** (Alembic owns DDL).
+The backend initializes clients for:
 
-- `alembic/`
-  - versioned schema migrations applied with `alembic upgrade head` (container entry runs this before Uvicorn when a DB URL is set).
+- OpenAI
+- DeepSeek
+- Grok
+- Gemini
 
-- `api/agent/*.py`
-  - feature-specific agentic workflows.
+Current primary generation model constants in [api/index.py](/home/repos/ideagen-saas-aws/api/index.py):
 
-- `api/utils/pdf_utils.py`
-  - HTML templating for all PDF artifact types.
-  - WeasyPrint conversion.
-
-- `api/instructions/instructions_prompt.py`
-  - generation prompt contracts (system/user prompt scaffolds).
-
-### 3.3 Supporting technical docs in repo
-
-- `technical_backend.md`
-- `agentic_architecture.md`
-- `api_reference.md`
-- `data_model.md`
-- `billing_limits.md`
-- `deployment_runbook.md`
-
-These are supporting docs; source-of-truth behavior remains the runtime code.
-
----
-
-## 4) Detailed Backend Architecture (`api/index.py`)
-
-### 4.1 App bootstrap and logging
-
-- `load_dotenv()` loads env values.
-- `app = FastAPI()` initializes app.
-- `startup_event()` runs `db.init_db()`, which **only verifies** database connectivity (`SELECT 1`). Table creation and DDL changes are applied by **Alembic** before the process starts in the supported Docker/deploy path (`scripts/start_server.sh`).
-- logging is configured with `force=True`, INFO level, and noisy libraries are muted.
-
-### 4.2 Authentication architecture
-
-Auth is implemented via `CustomClerkHTTPBearer`:
-
-1. Read `Authorization` header.
-2. Extract bearer token.
-3. Resolve signing key via `PyJWKClient` and Clerk JWKS URL.
-4. Decode token using RS256 with:
-   - `leeway=120`
-   - `verify_aud=False`
-5. Attach decoded payload to credentials object (`creds.decoded`).
-6. Raise `403` on any verification failure.
-
-This is a manual verification path replacing default strict middleware behavior.
-
-### 4.3 Provider clients and model IDs
-
-Configured clients:
-
-- `openai_client` (OpenAI)
-- `deepseek_client` (OpenAI-compatible endpoint)
-- `grok_client` (OpenAI-compatible endpoint)
-- `google_client` (OpenAI-compatible Gemini endpoint)
-- `gemini_client` (Google GenAI native SDK path)
-
-Primary model constants:
-
-- OpenAI: `gpt-5-mini`
-- Gemini: `gemini-2.5-pro`
-- DeepSeek: `deepseek-chat`
 - Grok: `grok-4-1-fast-reasoning`
+- Gemini: `gemini-2.5-flash`
+- OpenAI: `gpt-5-nano`
+- DeepSeek: `deepseek-chat`
 
-Fallback model constants also exist per provider.
+Current fallback constants:
 
-### 4.4 Fallback chain map
+- `grok-4-fast-non-reasoning`
+- `gemini-2.5-flash-lite`
+- `gpt-5-mini`
+- `deepseek-chat-v3.1`
 
 `FALLBACK_CHAINS` maps each primary model to:
 
-- provider name (`openai`, `gemini`, `deepseek`, `grok`)
-- ordered model chain list `[primary, fallback]`
+- a provider label
+- an ordered fallback chain
 
-This is consumed by generation orchestration and agent-level fallback runtime.
+### 4.5 Agent modules
 
-### 4.5 Request and response schemas (Pydantic)
+The backend uses the following specialized agent modules:
 
-Core request models include:
+- [api/agent/idea_generation_agent.py](/home/repos/ideagen-saas-aws/api/agent/idea_generation_agent.py)
+- [api/agent/rank_result_agent.py](/home/repos/ideagen-saas-aws/api/agent/rank_result_agent.py)
+- [api/agent/compare_results_agent.py](/home/repos/ideagen-saas-aws/api/agent/compare_results_agent.py)
+- [api/agent/rank_report_agent.py](/home/repos/ideagen-saas-aws/api/agent/rank_report_agent.py)
+- [api/agent/recommend_combination_agent.py](/home/repos/ideagen-saas-aws/api/agent/recommend_combination_agent.py)
+- [api/agent/email_agent.py](/home/repos/ideagen-saas-aws/api/agent/email_agent.py)
+- [api/agent/execution_plan_agent.py](/home/repos/ideagen-saas-aws/api/agent/execution_plan_agent.py)
+- [api/agent/model_fallback.py](/home/repos/ideagen-saas-aws/api/agent/model_fallback.py)
 
-- `IdeaRequest`
-- `ReportData`
-- `EmailRequest`
-- `SaveResultsRequest`
-- `CompareResultsRequest`
-- `RankReportRequest`
-- `RecommendCombinationRequest`
+The important architectural point is that these are request-scoped workers. There is no background agent graph, queue, or inter-agent message bus.
 
-Response model with explicit typing:
+### 4.6 How `api/index.py` Coordinates Requests In Practice
 
-- `RecommendCombinationResponse`
+`api/index.py` is the place where product rules become runtime behavior.
 
-### 4.6 Utility functions in `index.py`
+Every major request goes through the same broad phases:
 
-Key helpers:
+1. identify the user
+2. determine plan and quota status
+3. validate request shape and feature-specific constraints
+4. load or write artifacts through `api/db.py`
+5. invoke the necessary agent modules
+6. normalize the response into a product-facing payload
 
-- filename builders (`build_pdf_filename`, `build_rank_report_filename`, `build_compare_report_filename`)
-- title extraction (`extract_result_title`)
-- ranking cleanup (`sanitize_rank_text`, `finalize_rank_result`)
-- email brief construction (`build_rank_report_email_brief`, `build_idea_report_email_brief`, etc.)
-- JSON parsing helper (`_extract_json_object`)
-- plan gating helpers (`get_user_plan`, `is_premium`, `require_premium`)
+That sequencing is why FastAPI is best described as the control plane of the application. The agent modules do the reasoning-heavy work, but they do not decide who is allowed to use a feature, how artifacts are resolved, whether a comparison can be reused from cache, when a PDF should be rendered, or how report delivery should happen. Those responsibilities remain centralized in `api/index.py`.
 
-### 4.7 Provider wrapper behavior
+The startup path is also important. On startup, FastAPI only verifies database connectivity through `db.init_db()`. It does not create schema. That design is intentional and depends on the container entrypoint running Alembic first. If someone skipped the startup wrapper and ran Uvicorn directly against an empty database, the process could start but fail later when routes touched missing tables. The architecture therefore assumes a deployment discipline: migrations first, then app startup.
 
-`generate_openai_compatible(...)`:
+Authentication is similarly explicit. Rather than delegating entirely to framework defaults, the app verifies Clerk JWTs manually against the JWKS URL, applies a leeway window, relaxes audience verification, and attaches the decoded claims to the request credentials object. That gives the rest of the code a predictable source for `sub` and `pla`, which then drive user scoping and plan gating. The architecture of authorization in this app is therefore claim-driven and centralized, not scattered across route-specific ad hoc checks.
 
-- Calls chat completions API with `temperature` and `top_p`.
-- If model rejects sampling params, retries without custom params.
-- Returns `(text, usage)` with usage token counters when present.
+The request handlers also make a clear distinction between orchestration and storage. Route functions do not embed large amounts of SQL. They call `db.*` helpers. That keeps product flow logic in one layer and persistence semantics in another. When a route needs to create, update, or look up an artifact, it asks the persistence layer to do that. When it needs model reasoning, it asks an agent module to do that. `api/index.py` itself remains the traffic director between those concerns.
 
-`generate_gemini(...)`:
+### 4.7 Prompt And Validation Architecture
 
-- Calls Gemini native SDK with config.
-- On 429/resource exhaustion, attempts fallback Gemini model.
-- Returns `(text, usage)` or error-formatted fallback.
+The app does not treat LLM output as trusted just because a provider returned it. Every major reasoning path is built around an output contract.
 
-### 4.8 Premium and storage gate constants
+For idea generation, the contract is semantic HTML rather than markdown. For ranking, comparison, recommendation, and decision-summary generation, the contract is structured JSON with required keys and shape constraints. For execution-plan generation, the contract is an even stricter JSON dossier that must survive validation and normalization before it can be returned and saved.
 
-- `PREMIUM_PLANS` contains accepted premium plan strings.
-- Saved result storage limit byte caps are plan-dependent.
+The practical consequence is that LLM calls are embedded inside validator loops. A first response is treated as a candidate output, not as guaranteed truth. If it violates the expected contract, the app feeds the validation errors back into the next attempt. If that still fails after the configured number of tries, the code uses deterministic fallbacks in some cases or raises a controlled error in others. This validation-first design is one of the reasons the backend can safely persist artifacts and later render them into PDFs: it does not blindly store whatever text the model emitted.
 
----
+### 4.8 Execution-Plan Generation Is Its Own Subsystem
 
-## 5) API Surface and Request Semantics
+The execution-plan feature is the most architecturally complex path in the app because it combines artifact resolution, deterministic modeling, LLM narrative generation, validation, and persistence.
 
-All protected routes expect Clerk bearer auth unless explicitly public (`/health`).
+The backend first resolves a source context from one of three supported origins: a decision report, a comparison, or a saved run. That source context is not just an ID. It includes the chosen run, any preferred model selection, and the evidence payload that should inform the resulting plan. The backend then determines which model output within the source run should be treated as the winning or selected concept.
 
-### 5.1 `GET /api/subscription`
+From there, the app can follow one of two finance modes. The default `grounded_v2` path builds a deterministic baseline dossier from assumption packs and bounded transforms, then asks an LLM to supply only the narrative sections. The `llm_v1` path allows fuller LLM generation but still forces the resulting output back through validation and baseline grounding logic. In both cases the final dossier is normalized, checked for internal consistency, annotated with provenance, and only then saved as a stakeholder report.
 
-Purpose:
+This is why the execution-plan endpoint cannot be explained as "just another prompt". It is a hybrid subsystem with explicit financial rules, scenario handling, profitability checks, provenance tracking, and saved output formats. It is closer to a report engine than to a generic text-generation endpoint.
 
-- sync/create user usage row,
-- return plan + usage snapshot.
+## 5. Core Runtime Flows
 
-Behavior:
+### 5.1 Generation flow
 
-1. Resolve `user_id` (`sub`) and `plan` (`pla`) from token.
-2. Ensure user row exists and plan sync is applied.
-3. Return usage stats from DB.
+`POST /api` is the primary generation entry point.
 
-### 5.2 `POST /api/saved-results`
+Flow:
 
-Purpose:
+1. Validate auth and quota.
+2. Build system and user prompts from industry, constraints, and persona.
+3. Map requested provider labels to concrete primary model IDs.
+4. Run one generation task per model concurrently with `asyncio.gather`.
+5. For each model, apply:
+   - provider-specific generation
+   - validation
+   - retry with correction feedback
+   - ordered fallback across model chain
+6. Aggregate usage.
+7. If more than one result was generated, run ranking.
+8. Return `results`, `usage`, and `rank_result`.
 
-- persist generated run artifacts.
+The backend does not save the run in this endpoint. The frontend follows up by calling `POST /api/saved-results`.
 
-Behavior:
+What actually makes this flow reliable is the combination of concurrency and local correction loops. The route fans out one task per selected model with `asyncio.gather`, so generation latency is dominated by the slowest selected model rather than the sum of all model latencies. Inside each task, however, the model call is not "fire once and trust the output". The generation agent validates the returned HTML, strips or rejects invalid wrapper patterns such as fenced markdown, retries with correction feedback when necessary, and can fall back to the next configured model in the provider chain when the failure mode is transient. The route then aggregates the surviving outputs, tracks usage, and only afterward decides whether ranking is appropriate.
 
-1. Validate `results` is non-empty.
-2. Compute current storage bytes for user.
-3. Estimate payload byte size.
-4. Enforce plan-based storage cap.
-5. Persist run row with JSON fields.
+That means the route is doing three different kinds of orchestration at once:
 
-Failure modes:
+- concurrency across requested models
+- sequential fallback inside each model chain
+- post-processing across the combined result set
 
-- `400` no results.
-- `413` storage cap exceeded.
+The ranking step is also important. The route only invokes the ranking agent when there is more than one successful output to compare. If only one model is involved, the response includes a structured "ranking skipped" payload so the frontend can still behave consistently. The architecture therefore treats ranking as a first-class but conditional stage in the generation pipeline rather than bolting it on later in the UI.
 
-### 5.3 `GET /api/saved-results`
+### 5.2 Saved run flow
 
-Purpose:
+Saved runs are stored in `saved_results`.
 
-- list saved runs + storage usage meter values.
+The save route:
 
-Behavior:
+- rejects empty result payloads
+- estimates current saved-results storage usage
+- applies a plan-based storage cap
+- stores the run payload and optional ranking JSON
 
-- returns limited list, usage bytes, limit bytes.
+Saved runs are the base artifact for:
 
-### 5.4 `GET /api/saved-results/{saved_id}`
+- compare results
+- decision summaries
+- execution plans
 
-Purpose:
+This route is also where the product’s storage economics show up most clearly. The backend does not blindly accept every save. It estimates the size of the user’s saved-result footprint and enforces a plan-specific storage cap before writing the row. That means saved runs are durable product state, but they are still governed by account limits. The save endpoint therefore sits at the intersection of product flow, persistence, and billing policy.
 
-- fetch one saved run scoped to current user.
+### 5.3 Compare flow
 
-Failure:
+`POST /api/compare-results` compares two saved runs.
 
-- `404` not found.
+Important business rule:
 
-### 5.5 `DELETE /api/saved-results/{saved_id}`
+- the two runs must match on normalized industry, persona, constraints, and model set
 
-Purpose:
+Operational flow:
 
-- delete one saved run scoped to current user.
+1. Validate token limit and run IDs.
+2. Load both saved runs.
+3. Enforce configuration parity.
+4. Reuse a cached comparison if one exists.
+5. If rank data is missing for a run, generate and persist it.
+6. Select the top output from each run.
+7. Run the comparison agent.
+8. Save the comparison artifact.
 
-Failure:
+Saved comparisons are stored in `saved_comparisons`.
 
-- `404` not found.
+The compare path is one of the best examples of why the backend is an orchestrator instead of just a thin model proxy. Before any comparison agent is invoked, the route has to prove that the two runs are meaningfully comparable. It normalizes industry, persona, constraints, and model selection to avoid comparing artifacts that came from different experimental conditions. If that parity check fails, the route rejects the request because a comparison would be misleading. If a cached comparison already exists, the route can return it and only backfill missing fields such as top outputs when older stored payloads are incomplete. If no cache exists, the route may have to generate ranking metadata for one or both runs first so it can identify the top candidate from each run before the comparison agent even has valid inputs. The comparison feature therefore depends on orchestration of saved-run loading, config validation, cache reuse, ranking backfill, comparison inference, and persistence in one coherent flow.
 
-### 5.5a `DELETE /api/saved-results`
+### 5.4 Decision summary flow
 
-Purpose:
+The decision-summary feature is implemented by `POST /api/rank-report` plus the saved rank-report routes.
 
-- bulk-delete all saved generated runs scoped to current user.
+Key behavior:
 
-Behavior:
+- the user may select 1-5 runs directly
+- `include_all_runs` is also supported
+- reports are cached by a sorted `run_ids_key`
+- a saved report stores both the generated report and a snapshot of the source runs
 
-- deletes all rows in `saved_results` for the authenticated user,
-- returns deleted row count in response payload.
+That snapshotting matters because it allows later PDF rendering even if source runs change or disappear.
 
-Response:
+Saved decision summaries are stored in `saved_rank_reports`.
 
-- `{ "status": "deleted", "count": <int> }`
+Decision-summary generation is more than "run a report prompt on some runs". The route first resolves which runs are in scope, applies product limits such as a maximum of five directly selected runs, and converts that selection into a deterministic cache key. That key is what allows the app to treat the same run set as the same logical report request, even if the user triggers it from different UI states later. When a cached report is found, the backend can reuse it and still repair missing snapshot metadata if older rows are incomplete. When a report is not cached, the route performs the expensive reasoning step, persists the report together with a run snapshot, and then renders delivery output. The saved snapshot is what makes the report durable as an artifact instead of a transient response.
 
-### 5.6 `POST /api/compare-results`
+### 5.5 Execution plan flow
 
-Purpose:
+Execution plans are implemented through `POST /api/stakeholder-report` and the saved stakeholder-report routes.
 
-- compare two saved runs and produce diff insight.
+Current source modes:
 
-Detailed flow:
+- `decision_report`
+- `compare_result`
+- `saved_run`
 
-1. Token limit check (`check_token_limit`).
-2. Ensure run IDs are distinct.
-3. Load both runs, user-scoped.
-4. Validate normalized config equality:
-   - industry
-   - persona
-   - constraints set (normalized)
-   - models set (normalized)
-5. Check cached comparison (`get_saved_comparison`).
-6. If cached exists but missing top outputs, backfill top outputs from runs.
-7. For non-cached path:
-   - ensure per-run ranking exists (`ensure_rank_result_for_run`)
-   - rank on-demand for multi-model runs if missing
-   - persist rank result back to saved run
-   - select top output per run
-   - call `compare_results_agent`
-8. Attach `top_outputs` payload to comparison.
-9. Derive `winner_run_id` from winner label.
-10. Save comparison row.
-11. Track token usage if provided.
-12. Return comparison payload with `cached` flag.
+Current request constraints enforced in code:
 
-Failure modes:
+- `output` must be `json`
+- `currency` must be `USD`
+- `region` must be `US`
+- `scenario_profile` must be `conservative`, `base`, `aggressive`, or `all`
+- `finance_mode` must be `grounded_v2` or `llm_v1`
 
-- `429` token limit reached
-- `400` same run or mismatched config
-- `404` run not found
+One current implementation detail is easy to miss: `scenario_profile=all` is accepted by the route, but the execution-plan builders currently normalize it to `base` before constructing the dossier. In other words, `all` is part of the public request contract today, but it does not yet produce a true multi-scenario execution-plan artifact.
 
-### 5.7 `GET /api/compare-results`
+Current default behavior is effectively a hybrid model:
 
-Purpose:
+- finance baseline is deterministic and generated from assumption packs plus bounded transforms
+- narrative sections are generated by an LLM
+- the final dossier is validated before being returned and saved
 
-- list saved comparisons for user.
+Saved execution plans are stored in `saved_stakeholder_reports`.
 
-### 5.8 `DELETE /api/compare-results/{comparison_id}`
+The execution-plan flow is also constrained much more tightly than the generation and comparison flows because the output is intended to be operational, not exploratory. The route only accepts supported currencies, supported regions, bounded scenario profiles, and explicit source modes. It then resolves the exact artifact context from which the plan should be derived. In the `decision_report` path, for example, it may need to recover the winning run from the report or default to the top-ranked run in the snapshot. In the `compare_result` path, it may infer the selected output from the winning side of the comparison. Only once the source context is stable does the execution-plan subsystem build its deterministic financial baseline and narrative sections. This is a more constrained and more opinionated path than generation because the product is trying to turn analysis into an action plan with traceable provenance.
 
-Purpose:
+### 5.6 Export and email flow
 
-- delete saved comparison.
+The app supports several export and delivery paths:
 
-### 5.8a `DELETE /api/compare-results`
+- generated run PDF via `POST /api/download-pdf`
+- compare PDF via `GET /api/compare-results/{id}/pdf`
+- decision summary PDF via `GET /api/rank-reports/{id}/pdf`
+- execution plan PDF via `GET /api/stakeholder-reports/{id}/pdf`
+- execution-plan presentation PDF via `GET /api/stakeholder-reports/{id}/presentation`
 
-Purpose:
+Email delivery is implemented separately for:
 
-- bulk-delete all saved comparisons for current user.
+- current idea payload
+- saved comparison
+- saved rank report
 
-Behavior:
+Execution-plan email delivery is not implemented in the current product UI or backend route surface. Execution plans can be downloaded as a standard PDF or as a presentation PDF, but not emailed from the app.
 
-- removes all rows from `saved_comparisons` scoped by `user_id`,
-- returns deleted count for UI toast/status consistency.
+Email sending uses Resend through [api/agent/email_agent.py](/home/repos/ideagen-saas-aws/api/agent/email_agent.py).
 
-### 5.9 `GET /api/compare-results/{comparison_id}/pdf`
+PDF rendering uses WeasyPrint through [api/utils/pdf_utils.py](/home/repos/ideagen-saas-aws/api/utils/pdf_utils.py).
 
-Purpose:
+The delivery layer is intentionally split between unsaved current-context exports and saved-artifact exports. `POST /api/download-pdf` and `POST /api/email` operate on the current generation payload, even if it has not yet been reloaded from storage. By contrast, compare, decision-summary, and execution-plan exports are tied to saved artifact IDs. Email support is narrower than PDF support: compare and decision-summary artifacts can be emailed, but execution plans currently stop at downloadable exports. That distinction matters because some exports are intended to reflect immediate UI state while others are intended to reflect durable saved records, and not every artifact type has the same delivery contract yet.
 
-- render compare result PDF.
+## 6. Persistence Architecture
 
-Behavior details:
+### 6.1 Storage stack
 
-1. Load saved comparison.
-2. If `top_outputs` are missing in stored blob, reconstruct from referenced runs.
-3. Build compare report HTML via `create_compare_report_html`.
-4. Convert HTML to PDF bytes.
-5. Return streaming response with filename header.
+The application is PostgreSQL-first.
 
-### 5.10 `POST /api/compare-results/{comparison_id}/email`
+Persistence components:
 
-Purpose:
+- [api/config.py](/home/repos/ideagen-saas-aws/api/config.py): resolves the active DB URL
+- [api/database/session.py](/home/repos/ideagen-saas-aws/api/database/session.py): engine and sessions
+- [api/database/models.py](/home/repos/ideagen-saas-aws/api/database/models.py): ORM models
+- [api/db.py](/home/repos/ideagen-saas-aws/api/db.py): app-facing persistence helpers
+- [alembic](/home/repos/ideagen-saas-aws/alembic): schema migration ownership
 
-- email compare report PDF.
+The database schema is not created on app startup. Startup only verifies connectivity. Schema changes belong to Alembic.
 
-Behavior:
+### 6.2 Environment resolution
 
-1. Check/increment email quota.
-2. Load saved comparison.
-3. Backfill top outputs if missing.
-4. Build compare PDF.
-5. Build compare-specific subject and brief.
-6. Call centralized `send_report_email`.
+[api/config.py](/home/repos/ideagen-saas-aws/api/config.py) resolves exactly one effective database URL:
 
-Failures:
+- `APP_ENV=local` -> `DATABASE_URL_LOCAL`
+- `APP_ENV=prod` -> `DATABASE_URL_PROD`
 
-- `429` email quota
-- `404` comparison not found
-- `502` email delivery failure
+If `APP_ENV` is omitted:
 
-### 5.11 `GET /api/rank-reports`
+- AWS runtime markers default it to `prod`
+- otherwise it defaults to `local`
 
-Purpose:
+### 6.3 Core tables
 
-- list saved decision summary reports.
+Current core tables:
 
-### 5.11a `DELETE /api/rank-reports`
+- `user_usage`
+- `saved_results`
+- `saved_rank_reports`
+- `saved_comparisons`
+- `saved_stakeholder_reports`
 
-Purpose:
+Important schema traits:
 
-- bulk-delete all saved decision summary reports for current user.
+- JSON-heavy artifacts are stored as `JSONB`
+- timestamps are timezone-aware
+- artifact lookup paths are indexed by `user_id` and `created_at`
+- usage counters have non-negative check constraints
 
-Behavior:
+### 6.4 Artifact and cache strategy
 
-- removes all rows from `saved_rank_reports` for authenticated user,
-- returns deleted count for UI feedback.
+The persistence layer is not just CRUD. It also supports application-level caching and reproducibility:
 
-### 5.12 `GET /api/rank-reports/{report_id}`
+- comparisons are reused for the same run pair
+- decision summaries are reused for the same run set
+- rank reports store `runs_snapshot`
+- stakeholder reports store the generated dossier and assumptions
 
-Purpose:
+This lets the UI reload earlier work without regenerating every artifact.
 
-- fetch one decision summary report payload.
+### 6.5 Usage metering
 
-### 5.13 `GET /api/rank-reports/{report_id}/pdf`
+`user_usage` is the authoritative source for:
 
-Purpose:
+- monthly token totals
+- per-minute API call counts
+- daily email counts
+- current plan string
 
-- render decision summary report PDF.
+Current limit behavior in [api/db.py](/home/repos/ideagen-saas-aws/api/db.py):
 
-Behavior:
+- free API call rate: 1/minute
+- premium API call rate: 5/minute
+- free email sending: not allowed
+- premium email sending: 10/day
+- monthly token caps differ by plan
 
-1. Load report row.
-2. Prefer `runs_snapshot` if present.
-3. Else reconstruct runs via `run_ids` lookup.
-4. Render rank report HTML + PDF.
-5. Return `X-Report-Runs-Missing: true` header when reconstructed set is incomplete.
+Saved-result storage caps are also plan-based.
 
-### 5.14 `POST /api/rank-reports/{report_id}/email`
+### 6.6 How The Persistence Layer Supports Product Behavior
 
-Purpose:
+The persistence layer exists to support specific product behaviors, not just to "store data somewhere".
 
-- email existing saved decision summary report.
+`user_usage` exists so the app can enforce usage rules consistently on the server, even if a client tries to bypass UI restrictions. `saved_results` exists so the user can move from one generation session to comparison and reporting without losing context. `saved_comparisons` and `saved_rank_reports` exist so the app can avoid re-running expensive reasoning for the same artifact selections. `saved_stakeholder_reports` exists because execution plans are meant to be reviewed, exported, and revisited, not discarded after generation.
 
-Behavior:
+This is also why the database schema is JSON-heavy. The product is centered on structured AI artifacts whose exact shapes evolve faster than a fully normalized relational model would comfortably allow. Instead of decomposing every report into many child tables, the architecture stores coherent artifact payloads as JSONB and uses the database primarily for identity, ownership, ordering, caching, and reuse. That is a deliberate tradeoff: stronger flexibility for evolving product artifacts, at the cost of keeping some integrity rules in application logic instead of foreign keys.
 
-1. Check/increment email quota.
-2. Load report row.
-3. Render PDF from snapshot + report payload.
-4. Build report email context and call `send_report_email`.
+### 6.7 Session And Transaction Boundaries
 
-Failures:
+The code in `api/db.py` uses short-lived SQLAlchemy sessions and explicit transaction blocks. That choice fits the request-scoped design of the whole app.
 
-- `429` email quota
-- `404` report not found
-- `502` email send failure
+For quota updates and writes, helpers typically open a session, begin a transaction, perform a small unit of work, and close the session immediately. That minimizes the time a DB connection stays checked out while the app is still waiting on external LLM latency. The architecture would be much less stable if it held database transactions open across long model calls. Instead, the DB is used in short bursts before or after inference, which is the correct pattern for a service dominated by external API latency.
 
-### 5.15 `POST /api/rank-report`
+## 7. API Surface
 
-Purpose:
+This is the current route inventory that matters to product operation.
 
-- generate (or reuse cached) decision summary report for selected run set.
+| Route | Auth | Purpose |
+| --- | --- | --- |
+| `GET /api/subscription` | yes | Sync user record and return plan/usage |
+| `POST /api` | yes | Generate idea outputs and optional ranking |
+| `POST /api/saved-results` | yes | Save a generated run |
+| `GET /api/saved-results` | yes | List saved runs |
+| `GET /api/saved-results/{id}` | yes | Load one saved run |
+| `DELETE /api/saved-results/{id}` | yes | Delete one saved run |
+| `DELETE /api/saved-results` | yes | Delete all saved runs |
+| `POST /api/compare-results` | yes | Generate or reuse a comparison |
+| `GET /api/compare-results` | yes | List saved comparisons |
+| `DELETE /api/compare-results/{id}` | yes | Delete one comparison |
+| `DELETE /api/compare-results` | yes | Delete all comparisons |
+| `GET /api/compare-results/{id}/pdf` | yes | Export compare PDF |
+| `POST /api/compare-results/{id}/email` | yes | Email compare PDF |
+| `POST /api/rank-report` | yes | Generate or reuse a decision summary |
+| `GET /api/rank-reports` | yes | List saved decision summaries |
+| `GET /api/rank-reports/{id}` | yes | Load one decision summary |
+| `DELETE /api/rank-reports/{id}` | yes | Delete one decision summary |
+| `DELETE /api/rank-reports` | yes | Delete all decision summaries |
+| `GET /api/rank-reports/{id}/pdf` | yes | Export decision-summary PDF |
+| `POST /api/rank-reports/{id}/email` | yes | Email decision-summary PDF |
+| `POST /api/stakeholder-report` | yes | Generate and save an execution plan |
+| `GET /api/stakeholder-reports` | yes | List saved execution plans |
+| `GET /api/stakeholder-reports/{id}` | yes | Load one execution plan |
+| `DELETE /api/stakeholder-reports/{id}` | yes | Delete one execution plan |
+| `DELETE /api/stakeholder-reports` | yes | Delete all execution plans |
+| `GET /api/stakeholder-reports/{id}/pdf` | yes | Export execution-plan PDF |
+| `GET /api/stakeholder-reports/{id}/presentation` | yes | Export execution-plan presentation PDF |
+| `POST /api/download-pdf` | no | Export current unsaved generated report |
+| `POST /api/email` | yes | Email current unsaved generated report |
+| `POST /api/recommend-combination` | yes, premium | Recommend persona + constraints |
+| `GET /health` | no | Health probe |
 
-Detailed flow:
+One implementation detail worth keeping in mind: error response shapes are not fully standardized yet. Some handlers return `{"detail": ...}` and some quota handlers return `{"error": ...}` with HTTP 429.
 
-1. Token limit check.
-2. Validate `output` mode (`pdf|email|both`).
-3. Validate email requirement for `email|both`.
-4. If email required, check/increment email quota.
-5. Resolve run set:
-   - selected run IDs (max 5), or
-   - include all saved runs
-6. Build deterministic `run_ids_key` from sorted IDs.
-7. Lookup cached report by key.
-8. On cache miss:
-   - call `rank_report_agent`
-   - track token usage
-   - persist report + snapshot
-9. Build PDF bytes regardless of output mode.
-10. If email mode requested, send via `send_report_email`.
-11. Return:
-   - JSON status for `output=email`
-   - PDF stream for `output=pdf|both`
-   - response headers indicating cache/email outcomes.
+The route list above is useful as an inventory, but operationally the API is better understood as four feature families plus two cross-cutting support families.
 
-### 5.16 `POST /api`
+The four feature families are:
 
-Purpose:
+- generation and saved runs
+- comparisons
+- decision summaries
+- execution plans
 
-- primary generation endpoint.
+The cross-cutting support families are:
 
-Detailed flow:
+- subscription and quota introspection
+- delivery actions such as PDF export and email
 
-1. Generate `request_id`.
-2. Check/increment API call quota (also checks token monthly limit).
-3. Build prompts:
-   - system prompt from persona (`system_instructions`)
-   - user prompt from industry + constraints (`user_instruction`)
-4. Resolve requested model labels to model IDs:
-   - UI sends labels (`OpenAI`, `Gemini`, etc.)
-   - backend maps to primary model IDs via `FALLBACK_CHAINS`
-5. For each model ID, run concurrent generation task (`asyncio.gather`):
-   - infer provider
-   - choose client + generate function
-   - call `generate_idea_agentic`
-6. Aggregate outputs and token usage.
-7. Track generation token usage.
-8. Build `title_map` and `label_map`.
-9. If multi-model output, call `rank_result_agent` and finalize rank payload.
-10. If single model, return rank skipped payload.
-11. Return JSON: `results`, `usage`, `rank_result`.
+That grouping is how the frontend actually consumes the API. `pages/product.tsx` does not treat the route surface as a flat list of unrelated endpoints. It treats it as a workflow graph. A generation endpoint creates raw material, saved-result endpoints manage the base artifact, comparison endpoints derive a verdict from two base artifacts, decision-summary endpoints derive a stronger recommendation from one or more artifacts, and execution-plan endpoints derive an operational dossier from the output of earlier stages. Thinking about the API in those families makes the overall system design much easier to reason about than reading the route table alone.
 
-### 5.17 `POST /api/download-pdf`
+## 8. Deployment and Runtime Packaging
 
-Purpose:
+### 8.1 Container shape
 
-- generate PDF for current unsaved generated run payload.
+[Dockerfile](/home/repos/ideagen-saas-aws/Dockerfile) builds the app in two stages:
 
-Behavior:
+1. Node build stage
+   - installs frontend dependencies
+   - runs `npm run build`
+   - emits the static export in `out/`
+2. Python runtime stage
+   - installs Python deps and WeasyPrint system packages
+   - copies `api/`, Alembic files, and scripts
+   - copies the frontend export into `static/`
+   - starts the app through [scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh)
 
-- render HTML via `create_report_html`
-- convert to PDF bytes
-- stream with generated filename
+### 8.2 Process model
 
-### 5.18 `POST /api/email`
+The deployed service is a single container process:
 
-Purpose:
+- `uvicorn server:app`
 
-- email generated run report PDF (not saved-artifact specific).
+That process serves:
 
-Behavior:
+- API routes
+- `/health`
+- the static frontend mounted at `/`
 
-1. Check/increment email quota.
-2. Render PDF from request payload.
-3. Build idea email brief.
-4. Send via `send_report_email`.
+### 8.3 Startup behavior
 
-### 5.19 `POST /api/recommend-combination`
+[scripts/start_server.sh](/home/repos/ideagen-saas-aws/scripts/start_server.sh) does two things:
 
-Purpose:
+1. runs `alembic upgrade head` if a database URL is configured
+2. starts Uvicorn
 
-- premium-only recommendation endpoint.
+This is important because [api/index.py](/home/repos/ideagen-saas-aws/api/index.py) does not create schema on startup.
 
-Behavior:
+### 8.4 Local development
 
-1. Enforce premium plan.
-2. Check/increment API quota.
-3. Call `recommend_combination_agent` with:
-   - industry
-   - allowed constraints
-   - allowed personas
-4. Track usage tokens if present.
-5. Return recommended constraints/persona + `reason_html`.
+Local DB runtime is defined in [docker-compose.yml](/home/repos/ideagen-saas-aws/docker-compose.yml):
 
-### 5.20 `GET /health`
+- PostgreSQL 16
+- persistent local volume
+- init scripts from `docker/postgres/init`
 
-Purpose:
+Normal local loop:
 
-- health probe endpoint.
+1. start local Postgres
+2. set `APP_ENV=local` and `DATABASE_URL_LOCAL`
+3. run `alembic upgrade head`
+4. run backend and frontend
 
-Returns:
+### 8.5 AWS deployment topology
 
-- `{"status": "healthy"}`
+Terraform models a small-SaaS AWS deployment in [terraform/main.tf](/home/repos/ideagen-saas-aws/terraform/main.tf) and related files.
 
-### 5.21 Static mount order
+Current major AWS components:
 
-`app.mount("/", StaticFiles(...))` is intentionally last so API routes resolve first.
+- VPC
+- public and private subnets
+- NAT gateway
+- App Runner VPC connector
+- security groups
+- RDS PostgreSQL
+- ECR repository
+- Secrets Manager secrets
+- optional Route 53 custom domain wiring
 
----
-
-## 6) Persistence Architecture (PostgreSQL, SQLAlchemy, Alembic)
-
-Persistence is intentionally split across three concerns so the architecture stays understandable in reviews and interviews:
-
-1. **PostgreSQL** — durable system of record (local Docker Compose in dev, **Amazon RDS for PostgreSQL** in the documented AWS path; **`DATABASE_URL_PROD`** supplied from **AWS Secrets Manager** into **App Runner** per **§2.7**). The database is never a file inside the container image.
-2. **SQLAlchemy 2.x** — typed application access: declarative ORM models, a pooled engine, and short-lived sessions. Routes and agents do not embed raw SQL for routine CRUD; they call helpers in `api/db.py`.
-3. **Alembic** — **exclusive** owner of schema creation and change. DDL is versioned, reviewable, and replayed with `alembic upgrade head`.
-
-Together, these replace an older SQLite-in-container approach: multiple App Runner instances can share one database, JSON payloads use **JSONB**, and schema drift is handled with migrations instead of startup `ALTER TABLE` scripts.
-
-### 6.1 How the pieces fit at runtime
+Runtime topology:
 
 ```text
-FastAPI request
-  -> api/index.py (auth, orchestration)
-  -> api/db.py (transactions + domain persistence helpers)
-        -> session_scope() / Session
-              -> SQLAlchemy ORM (api/database/models.py)
-                    -> psycopg (SQLAlchemy URL: postgresql+psycopg://...)
-                          -> PostgreSQL
+Internet
+  -> App Runner public HTTPS ingress
+  -> app container
+  -> VPC connector private egress
+  -> RDS PostgreSQL in private DB subnets
 ```
 
-**Read path:** `get_settings()` supplies `database_url`; `get_engine()` builds (once) a SQLAlchemy `Engine` with pooling; `sessionmaker` produces `Session` instances; `api/db.py` runs queries/updates inside `session_scope()` or explicit `session.begin()` blocks.
+Secrets Manager currently holds app secrets such as:
 
-**Write path:** the same stack applies. User isolation is enforced in application logic by **always** scoping queries with `user_id` (and by never trusting client-supplied IDs without a user match).
+- `DATABASE_URL_PROD`
+- provider API keys
+- `RESEND_API_KEY`
 
-**Schema path:** before Uvicorn accepts traffic in the standard container entrypoint, `scripts/start_server.sh` runs `alembic upgrade head` when `DATABASE_URL_LOCAL` or `DATABASE_URL_PROD` is set. FastAPI startup then calls `init_db()`, which only runs `verify_database_connection()` — a cheap sanity check that the pool can reach the server.
+The important architectural point here is that the application runtime only ever sees normal environment variables. It does not speak directly to Terraform state and it does not query Secrets Manager itself during request handling. Secret creation, secret population, and secret injection happen before the application starts serving traffic. That keeps the app runtime simple: by the time Uvicorn starts, configuration must already be complete.
 
-### 6.2 Configuration: one URL, explicit environment (`api/config.py`)
+### 8.6 Terraform architecture
 
-The backend does not discover the database implicitly. `get_settings()` (cached) enforces:
+Terraform is the infrastructure source of truth.
 
-- `APP_ENV` is `local` or `prod` (with a heuristic default toward `prod` when AWS environment markers are present).
-- `APP_ENV=local` requires **`DATABASE_URL_LOCAL`**.
-- `APP_ENV=prod` requires **`DATABASE_URL_PROD`**.
+Current Terraform characteristics:
 
-Exactly **one** `database_url` is selected for the process. Documented examples use the SQLAlchemy v2 driver form **`postgresql+psycopg://...`** (Psycopg 3). Using the same dialect locally and in production avoids subtle semantic differences between SQLite and Postgres that used to hide behind ad hoc SQL.
+- a single root stack under [terraform](/home/repos/ideagen-saas-aws/terraform)
+- remote state in S3, configured dynamically through [terraform/backend.tf](/home/repos/ideagen-saas-aws/terraform/backend.tf)
+- one var-file per environment: `dev`, `test`, `prod`
+- one Terraform workspace per environment
 
-Optional pool tuning (all read in `get_settings()`):
+Current Terraform responsibilities include:
 
-- `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE`, `DB_ECHO`
+- networking and subnet layout
+- App Runner service and VPC connector
+- RDS PostgreSQL
+- ECR repository and lifecycle policy
+- Secrets Manager secret containers
+- IAM attachments for runtime and GitHub Actions integration
+- optional Route 53 custom-domain resources
 
-These map directly to `create_engine(...)` in `api/database/session.py`. **`pool_pre_ping`** is enabled so stale connections are discarded before they surface as random request failures after idle periods — important behind RDS and NAT.
+Infrastructure environment selection is separate from app runtime mode:
 
-### 6.3 Engine, pool, and session semantics (`api/database/session.py`)
+- Terraform chooses `dev|test|prod` via var-files and workspaces
+- the app chooses `local|prod` via `APP_ENV`
 
-- **`get_engine()`** — lazily constructs a single global `Engine` bound to `settings.database_url`, with `future=True` for SQLAlchemy 2.x behavior.
-- **`get_session_factory()`** — `sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)`.
-  - `autoflush=False` keeps flush timing explicit inside transaction boundaries.
-  - `expire_on_commit=False` avoids surprise lazy reloads on committed instances when response serialization still touches ORM attributes.
-- **`session_scope()`** — context manager: open session, `yield`, **always** `close()` in `finally` so connections return to the pool.
-- **`verify_database_connection()`** — `SELECT 1`; used by `init_db()` at app startup.
+That distinction matters because GitHub Actions runs tests with `APP_ENV=local` even while deploying real AWS infrastructure for `dev`, `test`, or `prod`.
 
-No async SQLAlchemy stack is used in the current phase: the API remains synchronous end-to-end for DB I/O, which keeps the Postgres migration tractable and is sufficient while LLM latency dominates most routes.
+That separation between infrastructure environment and app runtime mode is subtle but important. The Terraform environment decides which cloud resources you are targeting. The application environment decides which database URL the Python process should resolve at startup. Those are related concerns, but not the same concern. The workflow design keeps them separate so that the deployment pipeline can test the application against a temporary local Postgres service while still provisioning or updating real AWS resources for a named environment.
 
-### 6.4 Alembic: schema ownership and workflow
+### 8.7 Local deploy and destroy wrappers
 
-Files:
+Local infrastructure operations are wrapped by:
 
-- `alembic.ini` — script location and logging hooks.
-- `alembic/env.py` — binds metadata from the SQLAlchemy `Base`, loads `database_url` from application settings, runs migrations **offline** (SQL) or **online** (engine).
-- `alembic/versions/*.py` — one revision per logical schema change (e.g. initial baseline creating all application tables).
+- [scripts/deploy.sh](/home/repos/ideagen-saas-aws/scripts/deploy.sh)
+- [scripts/destroy.sh](/home/repos/ideagen-saas-aws/scripts/destroy.sh)
 
-**Rule:** new tables, columns, indexes, or constraints are added by **generating a new Alembic revision**, not by editing startup code in `api/db.py`. That rule is what makes schema changes auditable in pull requests and reproducible across environments.
+`deploy.sh` is a thin environment selector that delegates to `deploy_terraform_local.sh`.
 
-**Deploy ordering:** `scripts/start_server.sh` runs `alembic upgrade head` first, then starts Uvicorn. If you run `uvicorn` directly on a laptop without that wrapper, you must run Alembic yourself once the database exists — otherwise the app will fail on missing tables even though `init_db()` “succeeds” (connectivity only).
+`destroy.sh` is more opinionated. It:
 
-**Optional one-time data path:** `scripts/import_sqlite_to_postgres.py` exists for migrating legacy SQLite dumps into Postgres. Normal operation reads and writes **only** through PostgreSQL.
+- validates the selected environment and tfvars file
+- bootstraps the Terraform backend
+- selects the matching workspace
+- disables RDS deletion protection if needed
+- empties the ECR repository before destroy
+- runs `terraform destroy`
 
-### 6.5 ORM models and the persistence façade (`api/database/models.py`, `api/db.py`)
+This means destroy is not just a raw Terraform call. It includes cleanup steps required by the current AWS resource design.
 
-**Models** (`api/database/models.py`) define:
+The cleanup behavior in `destroy.sh` is especially important because some AWS resources have lifecycle constraints that plain `terraform destroy` does not smooth over by itself. ECR repositories with remaining images and RDS instances with deletion protection are the obvious examples in this stack. The wrapper script exists because the current infrastructure architecture requires those constraints to be cleared in the right order before destroy can succeed cleanly.
 
-- table names and column types aligned with Postgres (`BigInteger` + `Identity()` for surrogate keys, `DateTime(timezone=True)` for timestamps, `JSONB` for structured blobs),
-- **check constraints** (e.g. non-negative usage counters, allowed `source_type` values on stakeholder reports),
-- **indexes** supporting common list and lookup patterns (`user_id` + `created_at`, compare pair + user, etc.).
+### 8.8 GitHub Actions delivery pipeline
 
-Relationships between tables are **not** heavily normalized with ORM `relationship()` cascades: artifact graphs are intentionally **JSON-heavy** for fast iteration on LLM output shapes; referential integrity for “run A / run B” is enforced by application logic and typing, not by foreign keys to `saved_results` in the baseline schema.
+Current GitHub workflows:
 
-**Persistence façade** (`api/db.py`) is what `api/index.py` imports. It:
+- [ci.yml](/home/repos/ideagen-saas-aws/.github/workflows/ci.yml)
+- [deploy.yml](/home/repos/ideagen-saas-aws/.github/workflows/deploy.yml)
+- [destroy.yml](/home/repos/ideagen-saas-aws/.github/workflows/destroy.yml)
 
-- imports ORM classes from `database.models`,
-- uses `session_scope`, `get_session`, and SQLAlchemy `select` / `update` / `delete` / `func` patterns,
-- implements quota checks, saved artifact CRUD, caching lookups for reports and comparisons, and storage byte estimation for plan limits.
+CI currently covers:
 
-This layout keeps FastAPI routes thin: they authenticate, validate Pydantic payloads, and delegate storage rules to `db.*` functions.
+- backend tests
+- frontend lint
+- Terraform format and validate
+- Docker build
 
-### 6.6 Table reference (logical schema)
+The deploy workflow is effectively the production delivery pipeline.
 
-The following matches the ORM intent; authoritative DDL is in Alembic revisions.
+Current deploy flow in [deploy.yml](/home/repos/ideagen-saas-aws/.github/workflows/deploy.yml):
 
-#### `user_usage`
+1. validate environment selection and tfvars metadata
+2. assume AWS credentials through OIDC
+3. bootstrap the Terraform backend
+4. initialize Terraform and select the matching workspace
+5. bootstrap prerequisite infrastructure on first deploy
+6. read Terraform outputs such as ECR and RDS metadata
+7. sync runtime secrets into Secrets Manager
+8. if App Runner already exists, apply config first and wait for a stable state
+9. build and push the Docker image to ECR
+10. wait for App Runner rollout, or create App Runner on first deploy
+11. verify `/health`
 
-Purpose: per-user **plan** and **quota counters** (tokens, API window, emails).
+There are two notable design choices here:
 
-Notable columns:
+- deployment includes backend tests before rollout
+- existing App Runner services are updated in place rather than torn down and recreated
 
-- `user_id` (`TEXT`, primary key)
-- `plan` (`TEXT`)
-- `total_tokens` (`BIGINT`, constrained non-negative)
-- `api_calls_count`, `emails_sent_count` (`INTEGER`, constrained non-negative)
-- `api_window_start` (`TIMESTAMPTZ`) — rolling window anchor for per-minute API limits
-- `emails_last_sent_date` (`DATE`, nullable) — UTC date for daily email cap
-- `tokens_last_reset_month` (`TEXT`, `YYYY-MM`) — month bucket for token totals
-- `created_at`, `updated_at` (`TIMESTAMPTZ`)
+The destroy workflow is intentionally manual and gated by an explicit `DESTROY` confirmation string.
 
-#### `saved_results`
+### 8.9 How Terraform, Secrets, App Runner, And The App Fit Together
 
-Purpose: **generated runs** (multi-model outputs + config).
+The AWS side of the system is easiest to understand if you follow responsibility boundaries rather than resource names.
 
-Notable columns:
+Terraform owns the infrastructure envelope. It creates the VPC, subnets, routing, security groups, RDS instance, ECR repository, App Runner service definition, VPC connector, and secret containers in Secrets Manager. That means Terraform decides what cloud resources exist and how they are wired together. It does not decide application behavior. The Python app still reads environment variables such as `DATABASE_URL_PROD`, `OPENAI_API_KEY`, and `RESEND_API_KEY` exactly as if it were running locally.
 
-- `id` (`BIGINT`, Postgres `IDENTITY`, primary key)
-- `user_id`, `created_at` (`TIMESTAMPTZ`)
-- `industry`, `tone` (`TEXT`, nullable)
-- `constraints_json`, `models_json`, `results_json`, `rank_result_json` (`JSONB`)
+Secrets Manager sits between Terraform and the application runtime. Terraform creates the secret containers, and the deploy pipeline populates them with environment-specific values. App Runner then injects those values into the runtime environment. From the application's perspective, it simply sees environment variables at process startup. This separation is important because it keeps cloud secret storage concerns out of the application code while still letting the app use a normal configuration model.
 
-Indexes support listing by user ordered by time and keyed lookups by `(user_id, id)`.
+App Runner is the runtime boundary. It pulls the image from ECR, runs the container, exposes public HTTPS ingress, and uses its VPC connector for private egress toward RDS. That means the container does not need to know anything about VPC routing or RDS networking. It only needs a valid database URL and working network reachability. Terraform and App Runner provide that environment; the app consumes it.
 
-#### `saved_rank_reports`
+### 8.10 How GitHub Actions Actually Delivers A Change
 
-Purpose: **decision summary** artifacts with **snapshot** durability.
+The GitHub Actions pipeline is not just "run tests and deploy". It is the automated version of the operational contract this architecture depends on.
 
-Notable columns:
+When code is pushed, CI first proves that the repo is internally coherent enough to ship: Python dependencies install, backend tests pass against PostgreSQL, the frontend lints cleanly, Terraform validates, and the Docker image still builds. That is the quality gate for the codebase itself.
 
-- `id` (`BIGINT` identity PK), `user_id`, `created_at`
-- `run_ids_key` (`TEXT`) — normalized cache key (sorted run ids)
-- `run_ids_json`, `report_json`, `runs_json` (`JSONB`) — `runs_json` stores snapshot payloads for reproducible PDF/email even if source runs change
-- `model` (`TEXT`, nullable)
+The deploy workflow then performs the cloud-facing part of the contract. It validates that the selected tfvars file really matches the requested environment, assumes AWS credentials through OIDC, bootstraps the remote Terraform backend, selects the correct workspace, and ensures the underlying infrastructure exists. It then reads outputs such as the ECR repository URL and RDS connection metadata, syncs the actual runtime secrets into Secrets Manager, and only then builds and pushes the application image.
 
-#### `saved_comparisons`
+For an existing service, the workflow deliberately applies App Runner configuration before the image push and waits for the service to be in a safe state. After the image is pushed, it waits for App Runner to detect or apply the rollout and then verifies the `/health` endpoint. For a first deploy, it creates the App Runner service only after the prerequisites are in place. That sequencing is important because the app expects migrations, secrets, networking, and database connectivity to be correct at container startup.
 
-Purpose: **compare** artifacts for a run pair.
+In other words, GitHub Actions is part of the architecture, not external ceremony around it. The deployment pipeline enforces the order in which infrastructure, secrets, image publishing, and runtime health checks must happen for this application design to work reliably.
 
-Notable columns:
+There is also a meaningful distinction between first deploy and subsequent deploys. On first deploy, the workflow has to bootstrap the infrastructure envelope before an App Runner service can exist at all: network, database, repository, roles, connector, and secret containers. On subsequent deploys, the problem changes. The workflow is no longer creating the whole system from scratch; it is reconciling configuration, updating secrets if necessary, publishing a new image, and rolling the existing App Runner service forward without breaking connectivity or health checks. That is why the workflow contains explicit logic for detecting an existing service and handling configuration and rollout differently in that case.
 
-- `id` (identity PK), `user_id`, `created_at`
-- `run_a_id`, `run_b_id`, `winner_run_id` (`BIGINT`)
-- `comparison_json` (`JSONB`), `model` (`TEXT`, nullable)
+The deploy workflow also acts as the enforcement point for startup assumptions that the code itself does not verify deeply. For example, the application assumes a valid `DATABASE_URL_PROD` will exist by container startup, that the image can reach RDS through the VPC connector, and that the schema will be migrated before requests arrive. The workflow helps make those assumptions true by sequencing secret sync, Terraform application, image publication, service rollout, and health checks in the correct order. Without that operational discipline, the runtime architecture described in this document would be much more fragile in production.
 
-Indexes support “latest comparison for this user + pair” query patterns.
+## 9. Security and Reliability Boundaries
 
-#### `saved_stakeholder_reports`
+### 9.1 Security controls in the current app
 
-Purpose: **Execution Plan** / stakeholder dossiers (Grounded Finance v2 and related metadata).
+Implemented controls include:
 
-Notable columns:
+- Clerk JWT verification
+- host allowlisting
+- premium feature checks on the server
+- usage and storage enforcement in the backend
+- user-scoped artifact access in DB queries
+- DB isolation through private AWS networking in production
 
-- `id` (identity PK), `user_id`, `created_at`
-- `source_type` (`TEXT`) — constrained to `decision_report`, `compare_result`, or `saved_run`
-- `source_id` (`BIGINT`)
-- `scenario_profile`, `horizon_months`, `currency`, `region`, `model` (optional metadata)
-- `dossier_json`, `assumptions_json` (`JSONB`)
+### 9.2 Reliability patterns
 
-### 6.7 Plan and quota lifecycle
+The app uses several reliability patterns repeatedly:
 
-`get_or_create_user(...)`:
+- validation-first LLM outputs
+- retry with correction feedback
+- ordered model fallback
+- deterministic fallback payloads for some agent failures
+- saved-artifact caching to avoid repeated inference
+- snapshot persistence for decision-summary reproducibility
 
-- creates user row on first seen request.
-- resets selected counters on plan change.
+### 9.3 Known architectural limitations
 
-Token policy:
+Current limitations visible in code:
 
-- `check_token_limit` blocks when month total reaches plan cap.
-- monthly reset uses UTC month string in `tokens_last_reset_month` (compared to current `YYYY-MM`).
+- no background job queue for long-running work
+- no standardized error envelope across all routes
+- no first-class distributed tracing or metrics backend
+- no frontend integration or end-to-end test suite in the repo
+- no explicit relational foreign keys between artifact tables; relationships are application-managed
 
-API rate policy:
+These are not theoretical gaps; they are current design choices.
 
-- free: 1/minute
-- premium: 5/minute
-- 60-second rolling window tracked via `api_window_start` + `api_calls_count`.
+### 9.4 Observability And Diagnostics
 
-Email policy:
+The current app does have some operational diagnostics, but they are lightweight and embedded in application behavior rather than backed by a separate observability platform.
 
-- free: 0/day
-- premium: 10/day
-- daily reset by UTC date string.
+On the backend, logging is configured centrally and noisy library logs are reduced. Route handlers and agent modules emit enough information to understand validation failures, model fallback behavior, and delivery failures during debugging. On the frontend, the user sees notices, spinners, skeleton hydration states, and lock states that correspond to long-running operations. Some report responses also include diagnostic headers such as cache and email outcome flags.
 
-### 6.8 Token tracking semantics
+What the architecture does not yet have is a dedicated tracing or metrics system. There is no distributed trace spanning browser, API, provider calls, and PDF generation. There is no metrics backend aggregating fallback rates, queue times, or per-endpoint latency histograms. Operational visibility therefore exists, but it is still application-level rather than platform-level.
 
-`track_token_usage(...)`:
+## 10. Testing Posture
 
-- ensures month boundary reset,
-- then increments `total_tokens`.
+The repo has backend-focused tests under [tests](/home/repos/ideagen-saas-aws/tests).
 
-`get_user_stats(...)`:
+Current test coverage includes:
 
-- lazily resets expired API window counter for display consistency.
+- config resolution
+- Alembic migration behavior
+- database contract behavior
+- usage and concurrency behavior
+- SQLite-to-Postgres import tool behavior
 
-### 6.9 Saved results storage accounting
+Current gaps:
 
-`get_saved_results_usage_bytes(...)` estimates storage by summing lengths of key text/JSON columns.
+- no automated frontend behavior tests
+- no end-to-end product-flow tests
+- no API contract test suite covering the full FastAPI route surface
 
-This is used for save-time plan storage gating and usage UI meter.
+### 10.1 Testing What Matters Versus What Is Missing
 
-### 6.10 Saved report and comparison caching behavior
+The existing tests are strongest around the parts of the system that were most sensitive during the Postgres migration: configuration resolution, Alembic correctness, DB contract behavior, concurrency safety around counters, and import tooling. That gives the backend storage layer a reasonable safety baseline.
 
-Decision report caching:
+What is still missing is broad system verification of the end-to-end product behavior. There is no automated test that signs in, generates a run, confirms auto-save, compares two runs, creates a decision summary, and then generates an execution plan. There is also no contract suite that locks down every response shape the frontend relies on. That means the architecture is documented and partially tested, but not yet fully exercised as a whole system in automation.
 
-- deterministic key = sorted run IDs joined by comma.
-- same run set reuses previous report payload.
+## 11. Supporting Documents
 
-Comparison caching:
+This file is the main system document. The other docs should be treated as drill-down references:
 
-- same run pair (order-insensitive) reuses latest stored comparison.
+- [README.md](/home/repos/ideagen-saas-aws/README.md): setup and repo entry point
+- [technical_backend.md](/home/repos/ideagen-saas-aws/technical_backend.md): backend-specific detail
+- [api_reference.md](/home/repos/ideagen-saas-aws/api_reference.md): route-by-route request and response reference
+- [data_model.md](/home/repos/ideagen-saas-aws/data_model.md): schema detail
+- [agentic_architecture.md](/home/repos/ideagen-saas-aws/agentic_architecture.md): agent orchestration detail
+- [ux_flow.md](/home/repos/ideagen-saas-aws/ux_flow.md): user workflow and step-guide behavior
+- [deployment_runbook.md](/home/repos/ideagen-saas-aws/deployment_runbook.md): deployment and ops detail
+- [billing_limits.md](/home/repos/ideagen-saas-aws/billing_limits.md): quota and plan detail
+- [security_privacy.md](/home/repos/ideagen-saas-aws/security_privacy.md): security and privacy notes
 
-Snapshot strategy:
+Those docs should deepen this one, not compete with it.
 
-- reports store `runs_json` so artifacts stay renderable even if original run rows change.
+## 12. Maintenance Rule
 
----
+When the app changes, update this file if any of the following changed:
 
-## 7) Agent Module Internals
+- primary user workflow
+- route inventory
+- auth or quota boundaries
+- storage model
+- deployment topology
+- primary model or fallback strategy
+- execution-plan generation rules
 
-## 7.1 `api/agent/model_fallback.py`
-
-Core behavior of `generate_with_fallback(...)`:
-
-1. Iterate model chain in order.
-2. For each model:
-   - invoke provider generate function with timeout wrapper,
-   - parse tuple/string response shape,
-   - return on success with fallback metadata.
-3. On timeout:
-   - do **not** fallback to next model,
-   - re-raise timeout so caller can retry same model context.
-4. On non-timeout errors:
-   - detect transient via regex patterns,
-   - fallback on transient,
-   - fail fast on non-transient.
-5. Raise runtime error if chain exhausted.
-
-Transient detector includes 429/5xx, overloaded/capacity, and network/connection patterns.
-
-## 7.2 `api/agent/idea_generation_agent.py`
-
-Key functions:
-
-- `_strip_code_fences`
-- `_validate_idea_output_html`
-- `generate_idea_agentic`
-
-Generation contract:
-
-- non-empty output,
-- no markdown fences,
-- minimum length threshold,
-- HTML-only expectation.
-
-Retry behavior:
-
-- up to `max_attempts` (default 3),
-- correction prompt includes previous validation errors,
-- timeout gets explicit retry path,
-- terminal fallback returns controlled error text.
-
-Usage propagation:
-
-- returns provider usage metadata when available.
-
-## 7.3 `api/agent/rank_result_agent.py`
-
-Purpose:
-
-- rank model outputs within one run.
-
-Important internals:
-
-- strips HTML from outputs before prompt payload to reduce noise.
-- enforces output schema:
-  - `summary`
-  - `ranked_models` covering all model IDs
-  - unique rank values in 1..N
-  - non-empty title/rationale per ranked entry
-  - at least 5 `highlights`
-
-Failure behavior:
-
-- retry with validation error feedback (default 2 attempts),
-- deterministic fallback ranking if validation continues to fail.
-
-## 7.4 `api/agent/compare_results_agent.py`
-
-Purpose:
-
-- compare top outputs from two same-config runs.
-
-Validation contract:
-
-- winner in `{A, B, tie}`
-- required summary
-- non-empty `key_changes`
-- required `winner_rationale`
-
-Adds synthesized `decision_memo` structure even when missing from model payload.
-
-Fallback behavior:
-
-- safe tie-biased comparison payload when validation retries fail.
-
-## 7.5 `api/agent/rank_report_agent.py`
-
-Purpose:
-
-- generate decision summary over multiple runs.
-
-Validation contract:
-
-- summary required,
-- `ranked_runs` includes all run IDs,
-- non-empty key insights,
-- `risks` at least 5 bullets,
-- `email_brief` object with subject/summary/highlights.
-
-Fallback behavior:
-
-- deterministic report fallback with conservative guidance.
-
-## 7.6 `api/agent/recommend_combination_agent.py`
-
-Purpose:
-
-- choose best-fit persona + constraints for the selected industry from user-provided allowed lists.
-
-Strict rules:
-
-- recommended constraints must be exact-match items from allowed set,
-- max 2 constraints,
-- persona must be exact allowed persona ID,
-- `reason_html` must include section wrapper and 3-5 list bullets.
-
-Fallback behavior:
-
-- deterministic first-option selection + fallback reason HTML.
-
-## 7.7 `api/agent/email_agent.py`
-
-Design:
-
-- wraps email drafting in tool-calling LLM interaction.
-- enforces one `send_email` call and one `log_action` call through prompt rules.
-
-Execution flow:
-
-1. run LLM with required tool choice,
-2. extract tool-call arguments,
-3. enforce subject hint override consistency,
-4. send email via Resend API with PDF attachment,
-5. return status and subject.
-
-Failure behavior:
-
-- retry LLM call (`max_retries + 1` attempts),
-- fallback deterministic email payload on failure.
-
----
-
-## 8) Prompt Architecture
-
-### 8.1 Generation prompt contract (`instructions_prompt.py`)
-
-`system_instructions(tone)`:
-
-- binds persona voice,
-- forbids unsupported factual invention,
-- biases for concrete workflows and measurable outcomes.
-
-`user_instruction(industry, constraint)`:
-
-- defines exact HTML section order and required content blocks,
-- enforces domain-specific constraints,
-- includes hard requirements and edge-case guidance (e.g., no-code constraints).
-
-### 8.2 Analysis prompt principles
-
-Ranking, compare, and report agents all include:
-
-- JSON-only output requirement,
-- “use only provided data” rule,
-- correction loop when schema validation fails.
-
-### 8.3 Recommendation prompt principles
-
-Recommend agent adds stricter constraints:
-
-- exact string matching,
-- no paraphrasing allowed values,
-- bounded constraint count,
-- HTML wrapper contract for explainability block.
-
----
-
-## 9) PDF and Reporting Architecture (`api/utils/pdf_utils.py`)
-
-### 9.1 Report types
-
-`pdf_utils.py` renders three artifact classes:
-
-1. Generated run report (`create_report_html`)
-2. Decision summary report (`create_rank_report_html`)
-3. Compare report (`create_compare_report_html`)
-
-All are converted by `html_to_pdf_bytes(...)` using WeasyPrint.
-
-### 9.2 Shared report rendering strategy
-
-- Render complete HTML document string with embedded CSS.
-- Escape non-trusted text values where necessary.
-- Preserve model output HTML where feature requires full content rendering.
-- Use consistent visual language (headers, section blocks, metadata fields).
-
-### 9.3 Generated report structure
-
-Includes:
-
-- report header (brand, title, date),
-- configuration table (industry, constraints, persona, models),
-- per-model output sections,
-- optional ranking section:
-  - summary,
-  - highlights,
-  - ranked outputs with score and rationale.
-
-### 9.4 Decision summary report structure
-
-Includes:
-
-- report metadata and generated timestamp,
-- overall summary,
-- ranked runs with rationale,
-- key insights,
-- risks,
-- next steps,
-- optional run snapshot data for context.
-
-### 9.5 Compare report structure
-
-Includes:
-
-- Run A / Run B metadata,
-- winner and summary,
-- key changes,
-- winner rationale,
-- risks,
-- top outputs compared.
-
----
-
-## 10) Frontend Architecture (`pages/product.tsx`)
-
-`pages/product.tsx` is a large stateful workspace component that centralizes feature orchestration.
-
-### 10.1 High-level UI domains
-
-Primary page regions:
-
-1. Configuration panel (industry, constraints, persona, models, advanced settings)
-2. Usage panel (tokens/API/email/storage)
-3. Saved Results launcher card (four modal buttons)
-4. Main results area with four tabs:
-   - Generated Results
-   - Compare Rank Results
-   - Decision Summary Report
-   - Execution Plan
-
-### 10.2 Core state domains
-
-Notable state groups:
-
-- generation state: `results`, `isLoading`, `activeTab`, `rankResult`
-- saved artifacts: `savedResults`, `savedComparisons`, `savedReports`
-- execution artifacts: `savedStakeholderReports`, `stakeholderReport`, execution picker state
-- compare state: `compareSelection`, `compareResult`, `compareError`, `compareLoading`
-- report state: `reportSelection`, `reportOutput`, `reportEmail`, `reportLoading`, `decisionReport`
-- modal state: `savedPanelMode`, `savedPanelPos`, drag refs, lock state
-- UX feedback: notices, skeleton/loading flags, delete modals
-
-### 10.3 Model selection and payload mapping
-
-UI model IDs are concrete model IDs, but generation request sends provider labels:
-
-- selected IDs -> labels (`OpenAI`, `Gemini`, `DeepSeek`, `Grok`)
-- backend resolves labels to configured primary model IDs
-
-This decouples frontend selection UX from backend fallback-chain internals.
-
-### 10.4 Free vs premium UX gating
-
-UI gating behavior:
-
-- free users limited to one constraint and one model,
-- premium-only controls include recommendation and advanced sliders,
-- upgrade modal prompts when restricted controls are used,
-- backend still enforces hard policy independently.
-
-### 10.5 Usage polling and refresh
-
-- `refreshUsage()` calls `/api/subscription`.
-- periodic refresh interval runs while signed in.
-- refresh button includes spinner and minimum display delay to reduce flicker perception.
-
-### 10.6 Saved Results modal architecture
-
-The Saved Results card opens one shared modal shell in one of four modes:
-
-- `generated`
-- `compare`
-- `decision`
-- `stakeholder` (Execution Plan)
-
-Shared modal shell properties:
-
-- fixed size (`h-[520px]`, max viewport cap),
-- draggable by header,
-- constrained to viewport bounds,
-- overlay backdrop,
-- outside click + Escape close behavior,
-- lock mode during long-running compare/report actions,
-- parent modal outside-click close is paused while delete-confirm dialogs are open.
-
-### 10.7 Draggable modal implementation
-
-Drag flow (`startSavedPanelDrag`):
-
-1. Ignore drag if modal locked or click is on interactive control.
-2. Capture pointer start and panel origin.
-3. On mousemove, compute deltas and clamp left/top to viewport bounds.
-4. Apply updated position via state.
-5. On mouseup, detach listeners and stop drag.
-
-Position management:
-
-- `updateSavedPanelPos(forceCenter)` computes centered initial position,
-- resize handler clamps position back into viewport when dimensions change.
-
-### 10.8 Modal mode behavior
-
-Generated mode:
-
-- list saved runs,
-- load or delete actions,
-- header-level `Delete All` action beside `Refresh`,
-- bulk-delete confirmation modal with record count,
-- row-level pending-delete animation during bulk delete,
-- load action closes modal and hydrates results area.
-
-Compare mode:
-
-- run selector (A/B),
-- saved comparisons list,
-- per-row `View` and `Delete` actions,
-- list-header `Delete All` action on the right,
-- bulk-delete confirmation + animated deleting state,
-- fixed-height footer with status/error and Compare action.
-
-Decision mode:
-
-- run-selection controls,
-- saved reports list with `View` and `Delete` actions,
-- list-header `Delete All` action on the right,
-- bulk-delete confirmation + animated deleting state,
-- fixed footer with output mode/email input/generate action.
-
-Execution Plan mode:
-
-- saved execution plans list with `View` and `Delete` actions,
-- list-header `Delete All` action on the right,
-- same shared floating modal shell and drag/lock semantics,
-- `View` hydrates Execution Plan tab with loading skeleton before content render.
-
-### 10.9 Loading and hydration patterns
-
-The UI uses staged loading patterns to avoid abrupt transitions:
-
-- minimum-delay loaders (`ensureMinLoadingTime`),
-- skeleton card (`ResultsSkeletonCard`) when loading saved artifact into main view,
-- per-button spinners,
-- animated status dots (`LoadingDots`) for compare/report in-progress status text,
-- modal lock banner while long actions are in progress.
-
-### 10.10 Generated tab blank-state guidance
-
-Generated tab includes:
-
-- header guidance message,
-- detailed quick-start steps,
-- premium upsell cue for Recommend Combination,
-- optional advanced settings hints.
-
-Compare and Decision tabs mirror this pattern with feature-specific quick-tip steps.
-
-### 10.10b Decision Flow adaptive mode + hysteresis
-
-The flow strip above the tab content uses an adaptive guidance mode:
-
-- `guided` mode for stronger onboarding hints and next-step prompts
-- `status` mode for compact artifact/status signaling
-
-Switching is controlled by a global guidedness score with hysteresis:
-
-- `GUIDEDNESS_SWITCH_TO_STATUS = 40`
-- `GUIDEDNESS_SWITCH_TO_GUIDED = 60`
-
-Applied behavior:
-
-- when current mode is guided, switch to status only if `guidednessGlobal <= 40`
-- when current mode is status, switch to guided only if `guidednessGlobal >= 60`
-- within `41-59`, mode does not change
-
-This prevents rapid mode toggling around a single threshold and keeps UX stable.
-
-### 10.10c Persistent Step Guide panel (all tabs)
-
-A structured Step Guide card is rendered directly below the flow strip in every workspace tab.
-
-Shared structure:
-
-- What you do here
-- What you get
-- When you should use it
-- To move forward
-
-Per-step CTA support:
-
-- Compare tab -> `Generate Decision Summary`
-- Decision tab -> `Generate Execution Plan`
-- Execution tab -> `Export Plan`
-
-Persistence and default policy:
-
-- collapse state is tracked per step (`generated|insights|decision|stakeholder`)
-- user manual toggle marks the step as touched
-- touched steps keep user preference and are not auto-overridden
-- untouched steps use adaptive default:
-  - guided mode => expanded
-  - status mode => collapsed
-
-Storage model:
-
-- key: `ideagen.flow.step_guide.v1:<user_or_anon>`
-- payload includes:
-  - `collapsedByStep`
-  - `touchedByStep`
-- legacy compatibility: older boolean-per-step payloads are still read and upgraded in-memory
-
-Generated tab empty-state scenario policy now aligns with saved-artifact state:
-
-- fresh/no artifacts -> Start by generating ideas
-- saved artifacts exist/no selected run -> load from library or generate new run
-
-### 10.11a Execution Plan terminology assist
-
-Execution Plan cards and tables include inline tooltip icons on technical labels (for example: `ARPU`, `COGS`, `OpEx`, `Break-even`, `Year 1 Net`, `Confidence`, `Avg FTE`).
-
-Design intent:
-
-- reduce ambiguity for non-technical stakeholders,
-- keep definitions in-context without navigating away,
-- preserve compact report density while improving readability.
-
-### 10.11b Execution Plan card-level info pills
-
-Execution Plan panel titles now include a dedicated `Info` pill tooltip (`InfoPillTooltip` in `pages/product.tsx`) for plain-English, panel-level guidance.
-
-Panels covered:
-
-- Execution Plan
-- Executive decision
-- Business terms and definitions
-- Execution blueprint
-- Budget and unit economics
-- Stakeholder ask
-- Scenario outcomes (Year 1)
-- Sensitivity analysis
-- Monthly financial projection
-- Resource plan
-- Risk register
-- Assumptions
-- Profitability recovery plan
-
-Design intent:
-
-- explain what each panel is for before users parse metrics/tables,
-- improve readability for non-technical stakeholders without adding visual clutter,
-- keep contextual help colocated with the panel header instead of separate docs.
-
-### 10.11 Delivery actions in main workspace
-
-Download and email actions route to context-specific API endpoints:
-
-- generated view -> `/api/download-pdf`, `/api/email`
-- compare view -> `/api/compare-results/{id}/pdf`, `/api/compare-results/{id}/email`
-- decision view -> `/api/rank-reports/{id}/pdf`, `/api/rank-reports/{id}/email`
-- execution plan view -> `/api/stakeholder-reports/{id}/pdf`, `/api/stakeholder-reports/{id}/presentation`
-
-### 10.12 Execution Plan architecture (Grounded Finance v2)
-
-Execution Plan generation is split into deterministic finance + narrative composition.
-
-Request path:
-
-- `POST /api/stakeholder-report`
-- accepts `source`, `scenario_profile`, `horizon_months`, `currency`, `region`, `output`, `finance_mode`
-
-Modes:
-
-- `grounded_v2` (default)
-  - deterministic sections: `resources`, `costs`, `revenue_profit`, `scenarios`, `stakeholder_ask`, finance assumptions
-  - finance baseline is now **run-conditioned** (still deterministic):
-    - starts from industry assumption pack,
-    - applies bounded multipliers derived from selected run constraints/persona/output signals/model confidence,
-    - recalculates scenario probabilities and funnel assumptions per selected report/output.
-  - LLM narrative sections: thesis phrasing, blueprint language, risk wording, plan narrative
-  - output includes `proposal_disclaimer` and `sensitivity_analysis`
-- `llm_v1` (compatibility path)
-
-Validation:
-
-- server-side dossier normalization and schema checks run after generation,
-- decision gates and profitability recovery are computed and enforced in backend,
-- provenance records `finance_mode`, `financials_grounded`, `formula_version`, and `narrative_model`.
-- assumptions now include run-conditioned metadata (`selected_output_title`, model confidence, scenario mix, adjustment tags) for auditability.
-
----
-
-## 11) End-to-End Runtime Sequences
-
-## 11.1 Generate -> rank -> auto-save
-
-```text
-User clicks Generate Ideas
-  -> frontend builds payload (industry, constraints, persona, model labels, advanced settings)
-  -> POST /api
-  -> backend runs multi-model generation concurrently
-  -> backend optionally runs rank_result_agent
-  -> backend returns results + rank_result + usage
-  -> frontend updates UI and silently POSTs /api/saved-results
-  -> saved list refreshes
-```
-
-## 11.2 Load saved generated result
-
-```text
-User opens Saved Results modal (Generated)
-  -> frontend GET /api/saved-results
-  -> user clicks Load
-  -> frontend GET /api/saved-results/{id}
-  -> modal closes
-  -> workspace shows hydration skeleton
-  -> generated tab state is replaced with saved payload
-```
-
-## 11.3 Compare flow
-
-```text
-User opens Saved Results modal (Compare)
-  -> frontend loads saved runs + saved comparisons
-  -> user chooses Run A and Run B
-  -> click Compare
-  -> POST /api/compare-results
-  -> backend validates same configuration and runs compare agent
-  -> backend saves comparison and returns payload
-  -> modal closes, insights tab updates
-```
-
-## 11.4 Decision summary flow
-
-```text
-User opens Saved Results modal (Decision)
-  -> frontend loads saved runs + saved reports
-  -> user selects runs and output mode
-  -> click Decision Summary Report
-  -> POST /api/rank-report
-  -> backend reuses cache or generates via rank_report_agent
-  -> backend optionally emails and/or returns PDF
-  -> frontend refreshes saved reports and loads latest into decision tab
-```
-
-## 11.5 Email and PDF flow
-
-```text
-User clicks Download PDF / Send Email
-  -> frontend picks endpoint by active results tab
-  -> backend renders PDF using html templates
-  -> for email paths: backend runs email agent + sends via Resend
-  -> UI reports success/failure status
-```
-
-## 11.6 Execution Plan flow
-
-```text
-User opens Decision Summary tab
-  -> clicks Generate Execution Plan
-  -> selector modal opens with ranked outputs (one selectable variant per run)
-  -> user selects one output variant
-  -> POST /api/stakeholder-report (finance_mode=grounded_v2)
-  -> backend resolves source artifact and selected model output
-  -> backend builds deterministic finance baseline
-  -> backend composes narrative sections (LLM)
-  -> backend validates/normalizes dossier and saves artifact
-  -> selector modal closes
-  -> workspace loads Execution Plan tab with hydration skeleton
-  -> user can export PDF or Presentation report
-```
-
----
-
-## 12) Observability and Diagnostics
-
-### 12.1 Backend logs
-
-Logging exists at:
-
-- endpoint orchestration level,
-- agent lifecycle level (attempt, success, validation failure, fallback),
-- model fallback level (try index, latency, transient detection),
-- email agent audit log.
-
-### 12.2 Diagnostic response headers
-
-Some report endpoints add operational headers:
-
-- `X-Report-Cached`
-- `X-Report-Email-Sent`
-- `X-Report-Email-Failed`
-- `X-Report-Runs-Missing`
-
-### 12.3 Frontend diagnostics UX
-
-- usage notices/toasts for operation outcomes,
-- spinner states on long actions,
-- skeleton/hydration transitions for loaded artifacts,
-- modal lock indicators during processing.
-
----
-
-## 13) Security and Trust Boundaries
-
-### 13.1 Auth and identity
-
-- Clerk JWT bearer verification via JWKS and RS256.
-- decoded claims (`sub`, `pla`) drive authorization and plan logic.
-
-### 13.2 Data isolation
-
-- all DB accesses are user-scoped (`user_id` filters),
-- no cross-user artifact queries should be reachable through API contract.
-
-### 13.3 Service trust boundaries
-
-External providers used:
-
-- Clerk (identity)
-- OpenAI / Gemini / DeepSeek / Grok (generation/analysis)
-- Resend (email delivery)
-
-### 13.4 Current security notes
-
-- `verify_aud=False` is intentionally used in JWT decode path.
-- report payloads may include user-generated HTML content.
-- no at-rest encryption layer beyond underlying storage platform.
-
----
-
-## 14) Performance Characteristics and Scaling Constraints
-
-### 14.1 Current operating profile
-
-- synchronous request/response orchestration,
-- concurrent fan-out for generation only,
-- PostgreSQL-backed persistence,
-- no async worker queue.
-
-### 14.2 Latency contributors
-
-Major contributors:
-
-- external LLM API latency,
-- ranking/compare/report post-processing calls,
-- PDF rendering cost,
-- email provider roundtrip.
-
-### 14.3 Throughput constraints
-
-Primary bottlenecks at scale:
-
-- database connection pool sizing and long-running request occupancy,
-- long-running report requests occupying API workers,
-- no background execution channel for delivery-heavy workloads.
-
-### 14.4 Existing mitigation choices
-
-- cache reuse for compare/report artifacts,
-- partial success response for generation,
-- minimal-delay loading UX to stabilize perceived responsiveness.
-
----
-
-## 15) Reliability and Failure Handling
-
-### 15.1 Provider call failures
-
-- transient provider errors can fallback to next model (generation flow),
-- timeout behavior prefers retry over fallback in `model_fallback.py`,
-- non-transient errors fail fast.
-
-### 15.2 Validation failures
-
-- schema/content validation triggers correction retries,
-- exhausted retries yield deterministic fallback payloads.
-
-### 15.3 Quota and gate failures
-
-- API/token/email/storage limits return controlled error responses,
-- frontend disables controls when limits are reached where possible.
-
-### 15.4 Artifact backfill behavior
-
-- compare email/pdf endpoints backfill missing `top_outputs` from source runs,
-- rank-report pdf endpoint can reconstruct from run IDs when snapshot missing.
-
----
-
-## 16) Known Implementation Gaps and Drift Points
-
-These are important to track for maintainability:
-
-1. **Mixed error response shape**
-   - some endpoints return `detail` (HTTPException),
-   - some quota paths return `{error: ...}` JSON payload.
-
-2. **Decision report delete API mismatch**
-   - frontend issues `DELETE /api/rank-reports/{id}`,
-   - backend currently has no matching FastAPI delete route, despite DB helper existing.
-
-3. **Static export routing assumptions**
-   - route refresh behavior depends on static export path conventions and trailing slash discipline.
-
-4. **Single-process coupling**
-   - API, PDF rendering, and static serving are all in one process footprint.
-
-5. **No background jobs**
-   - report/email heavy operations are request-bound.
-
----
-
-## 17) Hardening Roadmap (Architecture-Level)
-
-Priority 1:
-
-1. standardize API error schema (`code`, `message`, `details`)
-2. add missing decision-report delete route if UI feature is expected
-3. add request correlation ID propagation from frontend to backend logs
-4. formalize provider timeout and retry policy per endpoint type
-
-Priority 2:
-
-5. move long-running report/email operations to async jobs
-6. externalize persistence to managed SQL for concurrent load
-7. separate static hosting from API runtime for independent scaling
-8. add endpoint-level metrics (latency, fallback rate, error classes)
-
-Priority 3:
-
-9. define versioned API contracts and typed SDK for frontend
-10. add idempotency semantics for report generation requests
-11. formalize security posture around JWT audience verification contract
-
----
-
-## 18) Function-Level Reference Index
-
-This section is a compact index for where key behavior lives.
-
-### 18.1 `api/index.py`
-
-- App lifecycle: `startup_event`
-- Auth: `CustomClerkHTTPBearer.__call__`
-- Providers: `generate_openai_compatible`, `generate_gemini`
-- JSON parse: `_extract_json_object`
-- Plan gates: `get_user_plan`, `is_premium`, `require_premium`
-- Endpoints:
-  - `/api/subscription`
-  - `/api/saved-results` (POST/GET/GET by id/DELETE)
-  - `/api/compare-results` (POST/GET/DELETE)
-  - `/api/compare-results/{id}/pdf`
-  - `/api/compare-results/{id}/email`
-  - `/api/rank-reports` (GET list, GET by id, GET pdf, POST email)
-  - `/api/rank-report`
-  - `/api` (generation)
-  - `/api/download-pdf`
-  - `/api/email`
-  - `/api/recommend-combination`
-  - `/health`
-
-### 18.2 Persistence stack (see **§6**)
-
-- `api/config.py`: `get_settings`, `reset_settings_cache`
-- `api/database/session.py`: `get_engine`, `get_session_factory`, `get_session`, `session_scope`, `verify_database_connection`, `reset_engine`
-- `api/database/models.py`: ORM table classes (`UserUsage`, `SavedResult`, `SavedRankReport`, `SavedComparison`, `SavedStakeholderReport`)
-- `alembic/env.py` + `alembic/versions/*`: schema revisions
-- `scripts/start_server.sh`: `alembic upgrade head` then Uvicorn
-
-### 18.3 `api/db.py`
-
-- Startup: `init_db` (connectivity check only; **not** DDL — Alembic applies schema)
-- User lifecycle: `ensure_user`, `get_or_create_user`, `get_user`
-- Limits: `check_token_limit`, `check_and_increment_api_call`, `check_and_increment_email`
-- Usage: `track_token_usage`, `get_user_stats`
-- Saved runs:
-  - `save_results`
-  - `list_saved_results`
-  - `list_saved_results_full`
-  - `get_saved_result`
-  - `get_saved_results_by_ids`
-  - `delete_saved_result`
-  - `delete_all_saved_results`
-  - `update_saved_result_rank`
-  - `get_saved_results_usage_bytes`
-- Rank reports:
-  - `get_saved_rank_report`
-  - `save_rank_report`
-  - `get_saved_rank_report_by_id`
-  - `list_saved_rank_reports`
-  - `delete_saved_rank_report`
-  - `delete_all_saved_rank_reports`
-  - `update_rank_report_snapshot`
-- Comparisons:
-  - `get_saved_comparison`
-  - `get_saved_comparison_by_id`
-  - `save_comparison`
-  - `list_saved_comparisons`
-  - `delete_saved_comparison`
-  - `delete_all_saved_comparisons`
-- Stakeholder / execution plans:
-  - `save_stakeholder_report`
-  - `get_saved_stakeholder_report_by_id`
-  - `list_saved_stakeholder_reports`
-  - `delete_saved_stakeholder_report`
-  - `delete_all_saved_stakeholder_reports`
-
-### 18.4 Agent modules
-
-- `model_fallback.py`: `generate_with_fallback`
-- `idea_generation_agent.py`: `generate_idea_agentic`
-- `rank_result_agent.py`: `rank_result_agent`
-- `compare_results_agent.py`: `compare_results_agent`
-- `rank_report_agent.py`: `rank_report_agent`
-- `recommend_combination_agent.py`: `recommend_combination_agent`
-- `email_agent.py`: `run_email_agent`, `send_report_email`
-
-### 18.5 Frontend (`pages/product.tsx`) key orchestration functions
-
-- Data fetchers:
-  - `fetchSavedResults`
-  - `fetchSavedComparisons`
-  - `fetchSavedReports`
-  - `refreshUsage`
-- Generation and recommendation:
-  - `generateIdeas`
-  - `recommendCombination`
-- Saved artifact operations:
-  - `saveCurrentResults`
-  - `loadSavedResult`
-  - `deleteSavedResult`
-  - `deleteComparison`
-  - `deleteDecisionReport` (calls missing backend route)
-- Compare/report orchestration:
-  - `runCompare`
-  - `runAgenticReport`
-  - `downloadSavedReport`
-- Delivery:
-  - `downloadPDF`
-  - `sendEmail`
-- Modal behavior:
-  - `openSavedPanel`
-  - `startSavedPanelDrag`
-  - `updateSavedPanelPos`
-
----
-
-## 19) Related Docs
-
-Use this file as primary architecture reference, then consult supporting docs for focused views:
-
-- `technical_backend.md`
-- `agentic_architecture.md`
-- `api_reference.md`
-- `data_model.md`
-- `POSTGRES_MIGRATION_SPEC.md` (design notes for SQLite → Postgres + SQLAlchemy + Alembic)
-- `deployment_runbook.md`
-- `billing_limits.md`
-- `security_privacy.md`
+If a change is too detailed for this file, summarize it here and push the deeper explanation into the relevant specialist document.
