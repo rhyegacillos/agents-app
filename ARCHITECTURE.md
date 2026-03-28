@@ -532,7 +532,7 @@ For the current defaults, the candidate chain is: `amazon.nova-lite-v1:0`.
 
 The current `required_tool_sequence(message, conversation)` implementation appends required tools in this order:
 
-1. `generate_pdf_from_text` when the current message matches `_PDF_ACTION_RE`, currently ``.
+1. `generate_pdf_from_text` when the current message matches `_PDF_ACTION_RE`, currently `\b(pdf|download|export|report)\b`.
 2. `send_resend_email` when `requires_email_tool_action(message, conversation)` returns `True`.
 
 Because the list is built in that order, the enforced combined contract for a request that needs both actions is:
@@ -542,8 +542,8 @@ Because the list is built in that order, the enforced combined contract for a re
 The current email-action detector returns `True` when any of these conditions holds:
 
 - the current message matches `_EMAIL_ADDRESS_RE`, currently `\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`
-- the current message matches `_EMAIL_ACTION_RE`, currently ``
-- the current message matches `_FOLLOWUP_ACTION_RE`, currently ``, and recent conversation text matches `_PRIOR_ACTION_CONTEXT_RE`, currently ``
+- the current message matches `_EMAIL_ACTION_RE`, currently `\b(send|resend|email|mail)\b`
+- the current message matches `_FOLLOWUP_ACTION_RE`, currently `\b(resend|retry|try again|send again|email again|mail again|send it again|send that again|send this again|did(?:n't| not)\s+(?:get|receive)\s+it|haven(?:'t| not)\s+received\s+it|still\s+(?:did(?:n't| not)\s+(?:get|receive)\s+it|haven(?:'t| not)\s+received\s+it)|still\s+not(?:\s+\w+){0,2}\s+receive|check\s+(?:my\s+)?(?:inbox|spam))\b`, and recent conversation text matches `_PRIOR_ACTION_CONTEXT_RE`, currently `\b(pdf|download|export|report|email|mail|inbox|spam|send_resend_email|generate_pdf_from_text|send to|email to|mail to)\b`
 
 The current high-risk keyword patterns are:
 
