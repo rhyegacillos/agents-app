@@ -164,6 +164,7 @@ resource "aws_iam_role_policy" "lambda_runtime_secrets" {
 # ECR repository for Lambda container image
 resource "aws_ecr_repository" "lambda" {
   name                 = "${local.name_prefix}-lambda"
+  force_delete         = true
   image_tag_mutability = "MUTABLE"
   tags                 = local.common_tags
 

@@ -117,11 +117,11 @@ empty_bucket() {
         local delete_json
         delete_json=$(mktemp)
         read -r has_objects is_truncated next_key next_version <<< "$(
-            printf '%s' "$response" | python3 - "$delete_json" <<'PY'
+            python3 - "$delete_json" "$response" <<'PY'
 import json
 import sys
 
-data = json.load(sys.stdin)
+data = json.loads(sys.argv[2])
 objects = []
 for v in data.get("Versions", []) or []:
     objects.append({"Key": v["Key"], "VersionId": v["VersionId"]})
