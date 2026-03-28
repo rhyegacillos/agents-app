@@ -1,122 +1,184 @@
 # MediNotes Capstone (AI/ML Engineer)
 
 ## Project Overview
-MediNotes is an agentic clinical documentation platform that transforms unstructured clinical inputs into structured, verifiable visit summaries with safety checks, evidence linking, and longitudinal memory. The core contribution is a multi-agent architecture that integrates retrieval, external research, QA loops, and explainability into a production-grade pipeline.
 
----
+MediNotes is an agentic clinical documentation platform that converts messy, multimodal consultation inputs into structured, reviewable visit summaries with longitudinal memory, quality review, and evidence grounding.
+
+This capstone is not only a prompt-engineering exercise. The work spans:
+
+- multi-agent orchestration
+- grounded generation
+- reflection and regeneration
+- retrieval-augmented clinical context
+- deployed AWS infrastructure for durable memory and runtime secret handling
+
+The system is currently deployed on AWS and uses App Runner, ECR, DynamoDB, Secrets Manager, Route53, and GitHub Actions.
 
 ## Problem
-Clinical documentation is time-intensive and error-prone, especially when data is spread across handwritten prescriptions, audio recordings, and uploaded documents. Clinicians need fast, accurate, and auditable summaries without sacrificing safety or context continuity.
 
----
+Clinical documentation is slow, fragmented, and easy to get wrong when the source material arrives in multiple forms:
 
-## Solution (Agentic System Design)
+- handwritten notes
+- audio
+- uploaded records
+- prior visit context
 
-### 1) Multi-Agent Topology
-A hub-and-spoke architecture orchestrates specialized agents:
+Doctors need summaries that are:
 
-- **Summary Agent (Orchestrator)**: builds prompts, calls tools, merges outputs, streams results.
-- **Extraction Agent**: converts PDF/DOCX/TXT, audio (Whisper), and prescription images (vision model) into clean text.
-- **Research Agent (MCP)**: external retrieval via Brave MCP for drug interactions and clinical guidelines.
-- **Critic Agent**: QA loop for hallucinations, omissions, contradictions, safety gaps.
-- **Evidence Agent**: grounds summary statements in source chunks for auditability.
-- **Memory Agent (RAG)**: stores and retrieves longitudinal patient history.
-- **Coordinator Agent**: extracts structured next steps.
-- **Chat Agent**: scoped clinical Q&A + app usage guidance.
+- fast
+- structured
+- auditable
+- aware of prior patient history
+- safer than a single-pass generation workflow
+
+## Solution
+
+MediNotes uses a hub-and-spoke agentic architecture in which one orchestrator coordinates multiple specialist agents.
+
+### Agent topology
+
+- Summary Agent: orchestration, prompt assembly, streaming, persistence trigger
+- Extraction Agent: multimodal input normalization
+- Research Agent: external retrieval for drug interactions and guidelines
+- Critic Agent: quality scoring and regeneration feedback
+- Evidence Agent: summary-to-source grounding
+- Memory Agent: long-term patient memory and retrieval
+- Coordinator Agent: structured next-action extraction
+- Chat Agent: assistant grounded in current and historical context
+- Email Agent: translation-aware patient communication routing
 
 ```mermaid
 flowchart LR
     U[Consultation Input] --> E[Extraction Agent]
     E --> S[Summary Agent]
-    S -->|meds/conditions| R[Research Agent]
+    S --> M[Memory Recall]
+    S --> R[Research Agent]
     S --> C[Critic Agent]
     C --> S
     S --> EV[Evidence Agent]
     S --> CO[Coordinator Agent]
-    S --> M[Memory Agent]
+    S --> MW[Memory Write]
 ```
 
----
+## Orchestration flow
 
-### 2) Orchestration Flow (Deterministic Pipeline)
-1. **Context build**: multimodal extraction into a unified visit context.
-2. **Initial generation**: strict 3-section HTML summary.
-3. **Conditional tool routing**: research + action extraction in parallel when heuristics trigger.
-4. **Critic review**: evaluation against source text + history + research.
-5. **Regeneration**: tournament regen (N=3) if critic fails; best candidate selected.
-6. **Evidence mapping**: summary sentences linked to source chunks.
-7. **Persistence**: summary, notes, evidence stored in memory for RAG.
-8. **Streaming output**: status, metadata, actions, evidence, summary via SSE.
+The implemented workflow is:
 
----
+1. build visit context from notes, uploads, audio, and prescription images
+2. retrieve prior patient history from memory
+3. generate a draft summary
+4. call external research tools when heuristics detect medications or conditions
+5. run a critic review against source material and historical context
+6. regenerate if the draft fails quality review
+7. map evidence to the final summary
+8. extract structured next actions
+9. persist summary, notes, and evidence for future retrieval
+10. stream progress and final output to the UI
 
-### 3) Model Routing and Fallback
-Multi-provider routing based on model name:
+## Model and provider strategy
 
-- **Summary generation**: `deepseek-chat` (OpenAI-compatible routing).
-- **Critic**: `gemini-2.5-flash`.
-- **Chat**: `gemini-2.5-flash` then `gemini-2.5-flash-lite`.
-- **Doctor info extraction**: `gpt-5-nano`.
-- **OCR (prescriptions)**: `OPENAI_VISION_MODEL` (default `gpt-4o-mini`).
-- **Audio transcription**: `whisper-1`.
+The system uses provider routing rather than relying on one model vendor for everything.
 
-Global fallback chain: `gpt-5-nano` → `gpt-4o-mini` → `gpt-3.5-turbo`.
+Current responsibilities include:
 
----
+- summary generation: DeepSeek-compatible routing
+- critic and chat: Gemini
+- OCR and embeddings: OpenAI
+- transcription: Whisper
 
-### 4) Retrieval + Grounding Strategy
-- **RAG store**: DynamoDB-backed vector store with embeddings (`text-embedding-3-small`).
-- **Doc types**: `visit_summary`, `visit_notes`, `visit_evidence`.
-- **Dedup**: `(patient, date, type, template_id, encounter_id)` ensures stable overwrites.
+This matters from an AI/ML engineering perspective because the system is designed around model-role fit and fallback behavior, not one-model-does-everything.
 
----
+## Retrieval and memory design
 
-### 5) Evidence-Linked Summaries (Explainability)
-The Evidence Agent maps summary sentences to the best source chunk:
+One of the most important implementation changes was moving patient memory to DynamoDB.
 
-- Sources: Notes, Uploads, History, Research, Guidelines.
-- One best chunk per sentence; snippet capped at 140 chars.
-- Safety/guideline notes must map to Research/Guidelines.
+Current long-term memory behavior:
 
-This enforces **auditable, verifiable outputs** in a clinical domain.
+- summaries, notes, and evidence are persisted as embedded documents
+- documents are keyed by patient and deduped by encounter metadata
+- the assistant and future consultations can retrieve that memory semantically
 
----
+Why this matters:
 
-### 6) QA / Critic Loop + Self-Improving Guardrails
-The Critic Agent evaluates for:
+- App Runner is stateless
+- container-local files are not an acceptable long-term memory mechanism
+- patient history must survive redeploys and infrastructure changes
 
-- Hallucinations
-- Missing facts
-- Safety omissions
-- Contradictions
+This project therefore includes not only RAG logic, but production-grade persistence design for RAG memory.
 
-If failing, the system runs **parallel regeneration** and re-reviews candidates.
+## Explainability and quality control
 
-Repeated issues are promoted into persistent **format guardrails** (`data/critic_guardrails.json`) and injected into future prompts, enabling incremental improvement without retraining.
+Two parts of the system specifically target trustworthiness.
 
----
+### Critic loop
 
-## System Reliability
-- SSE keep-alives during long-running steps.
-- Resumable job IDs for reconnecting streams.
-- Optional Upstash for multi-instance resilience.
-- Research agent caches results with TTL to reduce repeat calls.
+The Critic Agent checks:
 
----
+- hallucinations
+- omissions
+- contradictions
+- safety gaps
 
-## Deployment
-- Dockerized app (single container).
-- **ECR + AWS App Runner** deployment.
-- Custom domain: `medinotes.agentairg.site`.
-- Health check: `/health`.
+If the draft is not good enough, the system regenerates rather than accepting the first answer.
 
----
+### Evidence mapping
 
-## Why This Capstone Is Strong (AI/ML Perspective)
-- **Tool-assisted reasoning** via MCP.
-- **QA-driven regeneration** for factual accuracy.
-- **Explainability** through evidence mapping.
-- **Long-term memory** integrated into clinical workflows.
-- **Production-grade streaming** and resiliency.
+The Evidence Agent links important summary statements back to source snippets and external references. This gives the UI an audit trail instead of asking clinicians to trust a raw summary blindly.
 
-This project demonstrates agentic design, grounded generation, and robust evaluation loops in a high-stakes domain.
+## Infrastructure and deployment contribution
+
+This capstone also includes a real production deployment model, not just local prototypes.
+
+Current AWS stack:
+
+- App Runner for application runtime
+- ECR for image delivery
+- DynamoDB for memory persistence
+- Secrets Manager for runtime secrets
+- Route53 for the custom domain
+- S3 + DynamoDB for Terraform backend state and locking
+
+Current production domain:
+
+- `medinotes.agentairg.site`
+
+Current CI/CD model:
+
+- Terraform-managed AWS infrastructure
+- GitHub Actions deploy workflow
+- environment-scoped GitHub secrets and OIDC role assumption
+
+This is an important part of the capstone because it demonstrates that the agentic system was carried through to operational deployment instead of stopping at notebook-level experimentation.
+
+## Technical depth demonstrated
+
+This project demonstrates:
+
+- multi-agent system design
+- retrieval-augmented generation with durable storage
+- tool-assisted reasoning
+- reflection and regeneration loops
+- evidence-grounded output generation
+- production deployment on AWS
+- CI/CD integration with secure secret handling
+
+## Why this is strong as an AI/ML capstone
+
+The capstone is strong because it combines model orchestration with platform engineering.
+
+It does not stop at:
+
+- calling an LLM
+- generating text
+- showing a demo UI
+
+It goes further into:
+
+- controllable reasoning structure
+- persistence boundaries
+- failure handling
+- deployment identity and secret management
+- production viability in a high-stakes domain
+
+That combination is what makes the project more representative of real AI/ML engineering work than a single-model prototype.
+

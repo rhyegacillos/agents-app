@@ -1,107 +1,265 @@
 # Agentic Architecture Documentation
 
-This document outlines the multi-agent architecture implemented in the `api/agent` module. The system is designed to provide robust, clinically accurate, and verifiable medical summaries by leveraging specialized autonomous agents, tool use, and reflection loops.
+This document explains the agentic design of `healthcare-saas-aws` as it exists today. It focuses on the reasoning model, agent responsibilities, and how agent behavior now fits into the deployed AWS persistence model.
 
-## 1. Architectural Overview
+This document is narrower than the full architecture guide. The goal here is to explain how the agents think, coordinate, and persist work.
 
-The system follows a **Hub-and-Spoke** agentic pattern, where a central orchestration pipeline (`summary_agent.py`) coordinates specialized worker agents. It incorporates advanced patterns such as **Reflection (Critic Loop)**, **Retrieval-Augmented Generation (RAG)**, and **Autonomous Routing**.
+## 1. Agentic design goals
 
-### Core Components
+The system is not built around a single prompt call. It is built around a controlled agent graph intended to solve four problems at the same time:
 
-*   **Coordinator/Orchestrator:** `Summary Agent`
-*   **Worker Agents:**
-    *   `Extraction Agent` (Input processing)
-    *   `Research Agent` (External knowledge retrieval)
-    *   `Critic Agent` (Quality Assurance & Reflection)
-    *   `Evidence Agent` (Fact-checking & Source mapping)
-    *   `Memory Agent` (Long-term persistence)
-    *   `Email Agent` (Action & Routing)
-    *   `Chat Agent` (Interactive Co-pilot)
+- handle multimodal clinical input
+- produce grounded summaries rather than free-form guesses
+- catch errors before they become long-term patient memory
+- preserve useful clinical context across visits
 
----
+Those goals lead directly to the current multi-agent design.
 
-## 2. Agent Details
+## 2. Core agentic pattern
 
-### A. Summary Agent (The Orchestrator)
-*   **Role:** The primary driver that manages the lifecycle of a patient visit summary.
-*   **Agentic Pattern:** **ReAct (Reason + Act)** and **Tool Use**.
-*   **Workflow:**
-    1.  **Context Assembly:** Aggregates inputs from the Extraction Agent and Memory Agent.
-    2.  **Autonomous Reasoning:** Evaluates the clinical notes to decide if external information is needed.
-    3.  **Tool Execution:**
-        *   If multiple medications are detected $\rightarrow$ Calls `check_drug_interactions` (Research Agent).
-        *   If specific conditions are noted $\rightarrow$ Calls `search_medical_guidelines` (Research Agent).
-    4.  **Draft Generation:** synthesizes the summary using the augmented context.
-    5.  **Reflection Loop:** Submits the draft to the Critic Agent and enters a regeneration loop if the quality score is below threshold.
+The backend uses a hub-and-spoke model:
 
-### B. Critic Agent (The Reflector)
-*   **Role:** Ensures clinical safety, factual accuracy, and completeness.
-*   **Agentic Pattern:** **Reflection / Self-Correction**.
-*   **Function:**
-    *   Compares the generated summary against the source ground truth (notes + transcripts).
-    *   Identifies hallucinations, missing critical info, or safety risks.
-    *   Returns a structured score and a list of issues.
-    *   *Crucially:* If the summary fails review, the Summary Agent uses this feedback to "self-correct" and regenerate the output.
+- one orchestrator owns the consultation workflow
+- specialized worker agents own narrow reasoning or tool domains
+- persistence happens after quality review rather than before it
 
-### C. Research Agent (The Tool User)
-*   **Role:** Fetches external medical data to validate safety and provide guidelines.
-*   **Agentic Pattern:** **Tool Abstraction** via **MCP (Model Context Protocol)**.
-*   **Function:**
-    *   Uses MCP servers (standardized tool interfaces) to perform live web searches.
-    *   Returns structured findings (Drug Interactions, Clinical Guidelines) with verifiable URLs.
+The orchestrator is the Summary Agent. The worker agents are:
 
-### D. Evidence Agent (The Fact-Checker)
-*   **Role:** Provides explainability and trust ("Why did the AI say this?").
-*   **Agentic Pattern:** **Semantic Mapping**.
-*   **Function:**
-    *   Deconstructs the final summary into sentences.
-    *   Uses an LLM to semantically map each sentence back to specific "chunks" of the source data (Notes, Audio Transcripts, or Research URLs).
-    *   Generates the "Citations" and "Evidence Links" used in the UI.
+- Extraction Agent
+- Research Agent
+- Critic Agent
+- Evidence Agent
+- Memory Agent
+- Coordinator Agent
+- Email Agent
+- Chat Agent
 
-### E. Email Agent (The Autonomous Router)
-*   **Role:** Handles patient communication delivery.
-*   **Agentic Pattern:** **Router / Chain of Thought**.
-*   **Function:**
-    *   Instead of hardcoded logic, it receives a high-level goal: "Send this email."
-    *   It **observes** the request parameters (e.g., target language).
-    *   It **reasons** about the necessary steps: "The user asked for Spanish, but the text is English. I must translate first."
-    *   It **acts** by calling the `translate_email` tool, then the `send_email_final` tool.
-
-### F. Memory Agent (The Long-Term Store)
-*   **Role:** Provides persistence across sessions.
-*   **Agentic Pattern:** **RAG (Retrieval-Augmented Generation)**.
-*   **Function:**
-    *   **Write:** Vectorizes and stores summaries and notes after every visit.
-    *   **Read:** Semantically searches past history when a new visit starts or during Chat interactions, injecting relevant past context into the agent's working memory.
-
----
-
-## 3. Data Flow Diagram
+## 3. Agent graph
 
 ```mermaid
-graph TD
-    UserInput[User Notes/Audio/Files] --> ExtractionAgent
-    ExtractionAgent --> SummaryAgent
-    
-    subgraph "Reasoning Loop"
-        SummaryAgent -->|Decide: Needs Info?| ResearchAgent
-        ResearchAgent -->|External Data| SummaryAgent
-    end
-    
-    SummaryAgent -->|Draft| CriticAgent
-    CriticAgent -->|Feedback| SummaryAgent
-    
-    SummaryAgent -->|Final Output| EvidenceAgent
-    SummaryAgent -->|Store| MemoryAgent
-    
-    subgraph "Interactive"
-        UserChat --> ChatAgent
-        ChatAgent -->|Retrieve| MemoryAgent
-    end
+flowchart LR
+    U[Consultation inputs] --> E[Extraction Agent]
+    E --> S[Summary Agent]
+    S --> M[Memory Agent recall]
+    S --> R[Research Agent when needed]
+    S --> C[Critic Agent]
+    C --> S
+    S --> EV[Evidence Agent]
+    S --> CO[Coordinator Agent]
+    S --> MW[Memory Agent write]
 ```
 
-## 4. Key Implementation Highlights
+This graph is intentionally not symmetrical. The Critic Agent can force the Summary Agent back into regeneration, while the Memory Agent should only write after the output has passed the quality gate.
 
-*   **Hybrid Control Flow:** The system balances autonomous LLM decision-making (for tools and research) with deterministic code (forcing the Critic review step) to ensure safety compliance in a healthcare setting.
-*   **Model Fallbacks:** All agents utilize a `generate_with_fallback` utility, allowing them to degrade gracefully from high-intelligence models (e.g., GPT-4o/Gemini 1.5 Pro) to faster/cheaper models if errors or rate limits occur.
-*   **Guardrails:** System prompts act as "Constitutional AI" guardrails, enforcing strict formatting and prohibition of non-medical advice.
+## 4. Summary Agent: the orchestrator
+
+File:
+
+- [summary_agent.py](/home/repos/healthcare-saas-aws/api/agent/summary_agent.py)
+
+The Summary Agent is the main controller. It owns:
+
+- job startup and resumability
+- visit context assembly
+- patient-history injection
+- tool-routing decisions
+- summary generation
+- critic loop entry
+- evidence mapping trigger
+- action extraction trigger
+- persistence trigger
+- streaming output to the UI
+
+### 4.1 Why this agent is not just “generate summary”
+
+The Summary Agent exists because the problem is not only generation. The actual problem is orchestration under constraints:
+
+- some context comes from files
+- some context comes from history
+- some facts need research
+- the first answer may not be good enough
+- the final result must be persisted for later recall
+
+Without an orchestrator, those steps become brittle ad hoc glue instead of an explainable workflow.
+
+## 5. Extraction Agent: multimodal normalization
+
+File:
+
+- [extraction_agent.py](/home/repos/healthcare-saas-aws/api/agent/extraction_agent.py)
+
+The Extraction Agent is the “senses” layer. It turns heterogeneous inputs into a unified context:
+
+- notes
+- PDFs, DOCX, TXT, Markdown
+- audio via Whisper
+- prescription images via a vision model
+
+This agent exists so the rest of the pipeline reasons over a consistent representation rather than raw upload formats.
+
+## 6. Research Agent: controlled external retrieval
+
+File:
+
+- [research_agent.py](/home/repos/healthcare-saas-aws/api/agent/research_agent.py)
+
+The Research Agent performs controlled web retrieval for:
+
+- drug interactions
+- guideline lookups
+- clinically relevant external references
+
+The reason it is separate from the Summary Agent is architectural discipline. The system should not let the main summarizer perform unconstrained external search as part of the same prompt. External retrieval belongs to a tool-owning specialist agent.
+
+## 7. Critic Agent: reflection and self-correction
+
+File:
+
+- [critic_agent.py](/home/repos/healthcare-saas-aws/api/agent/critic_agent.py)
+
+The Critic Agent is the main reflection layer. It checks:
+
+- hallucinations
+- omissions
+- contradictions
+- safety gaps
+
+If the review fails, the Summary Agent regenerates. This is the central self-correction loop in the system.
+
+### 7.1 Why the critic matters operationally
+
+Without the critic, low-quality summaries could become persisted patient memory. The critic is what separates “LLM output” from “candidate clinical artifact”.
+
+## 8. Evidence Agent: explainability by grounding
+
+File:
+
+- [evidence_agent.py](/home/repos/healthcare-saas-aws/api/agent/evidence_agent.py)
+
+The Evidence Agent makes the system inspectable. It maps summary sentences back to:
+
+- notes
+- uploads
+- prior history
+- research or guideline output
+
+That is what enables the UI to show evidence snippets rather than forcing the user to trust a summary with no provenance.
+
+## 9. Memory Agent: long-term context across visits
+
+File:
+
+- [memory_agent.py](/home/repos/healthcare-saas-aws/api/agent/memory_agent.py)
+
+The Memory Agent is the long-term continuity layer. It handles:
+
+- persisting summaries, notes, and evidence
+- retrieving prior context by semantic search
+- patient list and visit list derivation
+- rename, soft delete, and restore behavior
+
+### 9.1 Current persistence boundary
+
+The deployed memory system is now DynamoDB-backed. The memory agent no longer treats local JSON storage as the deployed persistence model.
+
+That means the agentic design now assumes:
+
+- long-term memory survives App Runner redeploys
+- patient history can be retrieved by the chat assistant and the next consultation
+- persistence failures should be treated as first-class operational incidents
+
+## 10. Coordinator Agent: from text to action
+
+File:
+
+- [coordinator_agent.py](/home/repos/healthcare-saas-aws/api/agent/coordinator_agent.py)
+
+The Coordinator Agent extracts structured next actions from the generated summary. This is where the system starts to move from “documentation assistant” toward “workflow assistant”.
+
+## 11. Chat Agent: grounded co-pilot
+
+File:
+
+- [chat_agent.py](/home/repos/healthcare-saas-aws/api/agent/chat_agent.py)
+
+The Chat Agent is the interactive co-pilot. It combines:
+
+- conversation history
+- current consultation context
+- current summary state
+- recalled patient history
+
+This means the assistant is not stateless. It is grounded in both the current task and the persisted clinical timeline.
+
+## 12. Email Agent: autonomous routing, not just send
+
+File:
+
+- [email_agent.py](/home/repos/healthcare-saas-aws/api/agent/email_agent.py)
+
+The Email Agent is a smaller but important example of agentic routing. It chooses whether the request is:
+
+- direct send
+- translation then send
+
+That is a narrow but real planning decision rather than a static branch in the frontend.
+
+## 13. Current end-to-end reasoning flow
+
+```mermaid
+sequenceDiagram
+    participant UI as Frontend
+    participant SA as Summary Agent
+    participant EA as Extraction Agent
+    participant MA as Memory Agent
+    participant RA as Research Agent
+    participant CA as Critic Agent
+    participant EVA as Evidence Agent
+    participant CO as Coordinator Agent
+
+    UI->>SA: Start summary job
+    SA->>EA: Build visit context
+    EA-->>SA: Normalized inputs
+    SA->>MA: Recall patient history
+    MA-->>SA: Relevant memory
+    SA->>SA: Generate draft
+    SA->>RA: Research if needed
+    RA-->>SA: Research findings
+    SA->>CA: Review draft
+    alt review fails
+        CA-->>SA: Issues
+        SA->>SA: Regenerate
+        SA->>CA: Review again
+    end
+    SA->>EVA: Build evidence map
+    SA->>CO: Extract actions
+    SA->>MA: Persist summary, notes, evidence
+    SA-->>UI: Stream final output
+```
+
+## 14. What changed from the earlier architecture
+
+The major changes from the earlier milestone versions are:
+
+- memory is now durable outside the container via DynamoDB
+- runtime secrets are now part of the deployed architecture through Secrets Manager
+- patient-history retrieval is no longer conceptually “best effort local memory”
+- deploy automation now assumes agent outputs must survive infrastructure rollouts
+
+That means the agentic architecture is no longer just a local application pattern. It is now part of a real deployed system with persistent infrastructure boundaries.
+
+## 15. Why this architecture is defensible
+
+The system is designed this way because the clinical use case requires more than fluent generation.
+
+The design is defensible because it gives the app:
+
+- controlled multimodal ingestion
+- explicit external retrieval boundaries
+- a reflection layer before persistence
+- evidence grounding
+- cross-visit continuity
+- a deploy-safe persistence model
+
+That is the difference between “an LLM app that writes summaries” and “an agentic clinical documentation system that can be operated in production.”
+

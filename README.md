@@ -1,379 +1,377 @@
 # Agentic Healthcare SaaS (AWS)
 
-This project is a sophisticated Healthcare SaaS application featuring a **fully agentic backend architecture**. It utilizes large language models (LLMs) to automate complex clinical workflows, including patient data extraction, consultation summarization, and intelligent email dispatch.
+`healthcare-saas-aws` is a clinician-facing summarization and patient-history product built as a single Next.js + FastAPI application and deployed on AWS App Runner. The current production stack is no longer a purely manual App Runner deployment. It now has a Terraform-managed AWS foundation, GitHub Actions deployment workflow, DynamoDB-backed patient memory, Secrets Manager-backed runtime secrets, and Route53-managed custom-domain routing.
 
-## ✨ Main Features & User Guide
+This document is the product and platform overview. It explains what the app does, how data persists, and how the deployed system is structured today.
 
-The application provides a seamless interface for doctors to manage patient consultations. Here is how to interact with the system:
+For deeper operational detail, also see:
 
-### Asynchronous Job Management & Real-time Streaming
-Leveraging **Upstash Redis**, the system ensures that long-running tasks, like summary generation, are handled efficiently and reliably. This provides real-time updates to the UI and guarantees that your work is always saved and resumable.
+- [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE_medinotes.md)
+- [Backend API and agent details](/home/repos/healthcare-saas-aws/backend.md)
+- [Deployment + ops runbook](/home/repos/healthcare-saas-aws/deployment_runbook.md)
+- [GitHub Actions runbook](/home/repos/healthcare-saas-aws/github_actions_runbook.md)
+- [Terraform infrastructure guide](/home/repos/healthcare-saas-aws/terraform/README.md)
+- [GitHub environment runbook](/home/repos/healthcare-saas-aws/healthcare_github_environment_setup.md)
+- [Infrastructure design and status](/home/repos/healthcare-saas-aws/TERRAFORM_AWS_SPEC.md)
 
-### 1. Intelligent Consultation Capture
-Instead of typing notes manually, you can upload various data sources directly through the UI:
-*   **Audio Recordings:** Upload MP3/WAV files of your consultation. The system will automatically transcribe them.
-*   **Handwritten Notes:** Take a photo of your handwritten prescriptions or notes. The Vision Agent will digitize them.
-*   **Existing Documents:** Upload PDF or DOCX referral letters or past history.
+## 1. What the application does
 
-### 2. Auto-Generated Clinical Summaries
-Once your data is uploaded:
-1.  Click **"Generate Summary"**.
-2.  The **Summary Agent** analyzes all inputs (notes, transcripts, images) and cross-references them.
-3.  It produces a structured clinical note (SOAP, Discharge Summary, etc.) based on your selected template.
-4.  The result streams in real-time to your dashboard.
+The app is designed for doctors who want to capture consultation inputs, generate structured clinical summaries, recall longitudinal patient context, and send patient-friendly follow-up communication without manually stitching together documents, notes, and past visits.
 
-### 3. Smart Email Dispatch (Agentic)
-After reviewing the summary:
-1.  Go to the **"Email Patient"** tab.
-2.  Review the drafted email.
-3.  **Language Selection:** If you select a language other than English (e.g., Spanish), the **Email Agent** will automatically detect this intent, translate the content using a specialized tool, and then send it.
-4.  Click **"Send"** to dispatch via Resend.
+At a high level, the product provides:
 
-### 4. Autonomous Action Coordinator
-The system doesn't just summarize; it plans.
-*   **Action Extraction:** It automatically parses the "Next Steps" of your summary.
-*   **Structured Cards:** It presents actionable items (e.g., "Schedule Follow-up", "Prescribe Amoxicillin") as structured cards, ready for future one-click execution.
+- multi-source consultation capture
+- agentic summary generation with research and quality review
+- patient-memory retrieval across prior visits
+- evidence-linked summaries
+- patient-history browsing and visit restore/delete workflows
+- assistant chat grounded in current context plus historical patient memory
+- patient email drafting and dispatch
 
-### 5. Long-Term Patient Memory (RAG)
-The agent remembers.
-*   **Context Retrieval:** Before every summary, the **Memory Agent** searches the patient's history.
-*   **Continuity:** The generated summary automatically flags changes from previous visits (e.g., "Condition has improved since Jan 12").
-*   **Plain-Text Storage:** Summaries are stored as plain text to keep chat/RAG results readable.
+## 2. Main user workflows
 
-#### DynamoDB-backed persistence
-The memory store now uses DynamoDB only. Local file-backed memory storage is no longer used.
+### 2.1 Consultation capture
 
-Required in every environment:
-*   `DYNAMODB_TABLE_NAME=<your-table-name>`
-*   `AWS_REGION` or `DEFAULT_AWS_REGION`
+Clinicians can provide one or more of the following:
 
-Table schema:
-*   Partition key: `pk` (String)
-*   Sort key: `sk` (String)
+- typed notes
+- uploaded PDFs, DOCX, TXT, or Markdown files
+- audio recordings for transcription
+- images of prescriptions or handwritten notes
 
-Local development only:
-*   Set `DYNAMODB_ENDPOINT_URL=http://localhost:8001`
-*   Use dummy AWS credentials if you are pointing at DynamoDB Local
-*   Start DynamoDB Local with `docker compose -f docker-compose.local.yml up -d`
+The backend normalizes those inputs into a single visit context that downstream agents can reason over.
 
-AWS deployment:
-*   Do not set `DYNAMODB_ENDPOINT_URL`
-*   The app will automatically use real AWS DynamoDB in the configured region
+### 2.2 Summary generation
 
-Create the table with the helper script:
+When the user clicks **Generate Summary**, the backend starts a resumable summary job. The pipeline:
+
+1. extracts text from all available inputs
+2. recalls prior patient memory
+3. optionally performs research and medication/guideline checks
+4. drafts the summary
+5. runs a critic review
+6. regenerates if the critic rejects the draft
+7. maps evidence to the final summary
+8. stores visit memory for future retrieval
+
+The response streams back to the UI as Server-Sent Events so the user sees progress and intermediate status in real time.
+
+### 2.3 Patient history workspace
+
+The app includes a patient-history workspace rather than treating memory as an invisible backend-only feature.
+
+Current supported behavior:
+
+- paginated patient list
+- patient timeline browsing
+- date filtering and keyword filtering
+- soft delete and restore
+- reuse-versus-regenerate behavior for repeated encounters
+
+The important operational change is that this history is no longer ephemeral. It now persists in DynamoDB and survives redeploys and App Runner instance replacement.
+
+### 2.4 MediNotes Assistant
+
+The assistant is not a generic chatbot. It has access to:
+
+- the current in-progress consultation state
+- the persisted patient history from DynamoDB-backed memory
+- the current summary draft when one exists
+
+This lets it answer questions like:
+
+- “What happened at the patient’s last visit?”
+- “Summarize what I just uploaded.”
+- “What medications were previously prescribed?”
+
+### 2.5 Patient email dispatch
+
+After a summary is reviewed, the app can draft and send a patient-facing email. The email path uses Resend and can translate content before dispatch when the requested language is not English.
+
+## 3. Agentic backend model
+
+The backend is intentionally split into cooperating agents rather than one large summary function.
+
+The core agents are:
+
+- `extraction_agent.py`: parses uploads, audio, and prescription images
+- `summary_agent.py`: orchestrates the full clinical synthesis flow
+- `research_agent.py`: performs external clinical retrieval
+- `critic_agent.py`: reviews output quality and correctness
+- `evidence_agent.py`: grounds summary statements in source evidence
+- `memory_agent.py`: persists and retrieves patient visit memory
+- `coordinator_agent.py`: extracts next actions
+- `email_agent.py`: handles translation and final send
+- `chat_agent.py`: powers the MediNotes Assistant
+
+This architecture matters operationally because persistence now crosses multiple layers:
+
+- Upstash Redis persists resumable summary job state and event streams
+- DynamoDB persists long-term patient memory
+- Secrets Manager supplies runtime secrets to the deployed application
+
+## 4. Current persistence model
+
+This section is the most important change from earlier versions of the app.
+
+### 4.1 Long-term patient memory now uses DynamoDB
+
+The old local file-backed memory model is gone. There is no JSON fallback path in production code anymore. The application now requires a DynamoDB table for patient memory.
+
+The store implementation lives in:
+
+- [vector_store.py](/home/repos/healthcare-saas-aws/api/memory/vector_store.py)
+- [memory_agent.py](/home/repos/healthcare-saas-aws/api/agent/memory_agent.py)
+
+The app writes documents such as:
+
+- `visit_summary`
+- `visit_notes`
+- `visit_evidence`
+
+Each stored document includes:
+
+- patient key
+- document id
+- visit date
+- document type
+- embedding
+- source text
+- metadata
+- optional payload
+
+The current DynamoDB table schema is:
+
+- partition key: `pk`
+- sort key: `sk`
+- GSI: `doc_id-index`
+
+The application stores patient documents under a patient partition, for example:
+
+- `pk = PATIENT#juan dela cruz`
+- `sk = DOC#<doc_id>`
+
+The store also keeps a dedupe key derived from:
+
+- patient name
+- visit date
+- document type
+- template id
+- encounter id
+
+That dedupe behavior is why repeated saves of the same encounter update the existing logical visit memory rather than growing unbounded duplicate rows.
+
+### 4.2 Upstash Redis is still used, but for jobs and streaming
+
+Upstash Redis did not disappear. It simply serves a different persistence boundary.
+
+It is used for:
+
+- resumable summary jobs
+- SSE event persistence
+- reconnect-safe streaming
+- job deduplication
+
+It is not the patient-history database.
+
+### 4.3 Secrets Manager is now part of the runtime design
+
+The deployed app no longer depends on manually typed secret values living directly inside the App Runner configuration as the desired long-term model.
+
+Terraform creates secret containers in AWS Secrets Manager and the deploy process writes their values at deploy time. App Runner then reads those secrets by ARN at runtime.
+
+Current managed runtime secrets include:
+
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `GROK_API_KEY`
+- `RESEND_API_KEY`
+- `CLERK_SECRET_KEY`
+- `CLERK_JWKS_URL`
+- `BRAVE_API_KEY`
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+
+This design keeps secret values out of Terraform state while still making the deployed service fully reproducible.
+
+## 5. Current AWS deployment topology
+
+The deployed production stack is intentionally simpler than the `ideagen` stack because this application does not need private RDS networking.
+
+Current AWS components:
+
+- App Runner for the web application
+- ECR for the container image
+- DynamoDB for long-term patient memory
+- Secrets Manager for runtime secret values
+- Route53 for the custom domain
+- S3 + DynamoDB for Terraform remote state and locking
+
+Not part of the current healthcare stack:
+
+- VPC
+- private subnets
+- NAT gateway
+- RDS
+- security groups for database connectivity
+
+### 5.1 Production names currently in use
+
+The production environment was adopted from an existing manual deployment, so its names are intentionally aligned to live resources rather than freshly generated defaults.
+
+Current production values:
+
+- App Runner service: `consultation-app-service`
+- App Runner service URL: `ymwpjvxcjn.ap-southeast-1.awsapprunner.com`
+- custom domain: `medinotes.agentairg.site`
+- ECR repository: `consultation-app`
+- DynamoDB table: `medinotes-prod-memory`
+- secret prefix: `medinotes-prod/app/*`
+
+This is important because the repo now supports:
+
+- redeploying the adopted existing service
+- destroying the Terraform-managed stack
+- recreating the stack from scratch later
+
+### 5.2 DNS ownership
+
+The custom domain is now Terraform-managed. That means a destroy/recreate cycle no longer leaves Route53 pointing at an old App Runner target.
+
+Production DNS currently resolves through:
+
+- hosted zone: `agentairg.site`
+- record: `medinotes.agentairg.site`
+
+## 6. GitHub Actions and deployment model
+
+The repo now has a real CI/CD workflow rather than manual AWS console updates only.
+
+Current workflows:
+
+- [ci.yml](/home/repos/healthcare-saas-aws/.github/workflows/ci.yml)
+- [deploy.yml](/home/repos/healthcare-saas-aws/.github/workflows/deploy.yml)
+- [destroy.yml](/home/repos/healthcare-saas-aws/.github/workflows/destroy.yml)
+
+### 6.1 Current branch behavior
+
+Current behavior is intentionally **prod-only on push**:
+
+- push to `healthcare-saas-aws` runs test, docker build, and `Deploy / prod`
+
+`dev` still exists as a Terraform environment and a GitHub environment, but it is no longer auto-deployed on push. It is for manual workflow execution when needed.
+
+### 6.2 GitHub environment model
+
+The repo uses:
+
+- `healthcare-dev`
+- `healthcare-prod`
+
+These are not the same as Terraform `dev` and `prod`. GitHub environments exist to scope deployment secrets and the AWS OIDC role.
+
+Both healthcare GitHub environments intentionally use the same dedicated AWS role today:
+
+- `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
+
+That role is restricted by GitHub environment in its trust policy, which is what gives you branch/environment isolation even though the ARN is the same in both healthcare environments.
+
+### 6.3 Deploy order
+
+The deploy flow is designed to avoid the App Runner race conditions that came up in other repos:
+
+1. initialize remote Terraform backend
+2. select the Terraform workspace
+3. apply Terraform prerequisites and configuration
+4. sync runtime secrets into Secrets Manager
+5. build and push the Docker image to ECR
+6. let App Runner auto-deploy the new image
+7. wait for the service to return to `RUNNING`
+8. verify the health endpoint
+
+This order matters because it ensures the service already has the correct runtime configuration and secret references before the new image is rolled out.
+
+## 7. Local development model
+
+Local development is intentionally different from AWS production where it should be different.
+
+### 7.1 Local app runtime
+
+The application can still run locally with:
+
+- `npm run dev`
+
+and the Python backend in the same repository.
+
+### 7.2 Local DynamoDB
+
+Local testing of patient-memory behavior now uses DynamoDB Local rather than a JSON file.
+
+Start DynamoDB Local:
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+```
+
+Required local environment variables:
+
+```bash
+export DYNAMODB_TABLE_NAME=medinotes-memory
+export DYNAMODB_ENDPOINT_URL=http://localhost:8001
+export AWS_REGION=ap-southeast-1
+export AWS_ACCESS_KEY_ID=dummy
+export AWS_SECRET_ACCESS_KEY=dummy
+```
+
+Create the local table:
+
 ```bash
 bash tools/create_memory_table.sh medinotes-memory
 ```
 
-### 5b. Patient History Workspace
-Clinicians can browse prior visits without leaving the app.
-*   **Searchable roster:** Paginated patient list with last-visit metadata and sort.
-*   **Filters & timeline:** Year-to-date default range, keyword filter, timeline pills that mirror deleted/restore state.
-*   **Soft delete/restore:** Visits can be hidden and restored; “Show deleted” toggles styling.
-*   **Reuse vs regenerate:** Matching uploads/template/date trigger a modal to reuse the previous output or regenerate.
+### 7.3 Deployed AWS runtime
 
-### 6. Quality Review (Critic Loop)
-The system self-corrects.
-*   **Critic Pass:** A dedicated Critic Agent reviews the summary against source notes, uploads, and patient history.
-*   **Issue Detection:** Flags hallucinations, missing facts, and contradictions.
-*   **Auto-Regeneration:** The summary is regenerated until it satisfies the critic criteria.
+When deployed to AWS:
 
-### 7. Evidence-Linked Summaries
-Summaries are backed by proof.
-*   **Evidence Mapping:** Key summary statements are linked to source snippets (notes, uploads, research, guidelines).
-*   **External Links:** Research and guideline findings include clickable source URLs.
-*   **Audit Trail:** Evidence text is stored alongside the visit memory for later recall.
+- `DYNAMODB_ENDPOINT_URL` must be unset
+- App Runner uses the runtime role to reach DynamoDB and Secrets Manager directly
+- the deployed service reads its non-secret config from environment variables and its secret config from Secrets Manager
 
-### 8. User Interface Customization (Theme Toggle)
-The application offers basic UI customization to enhance user experience:
-*   **Theme Toggle:** Easily switch between light and dark modes to suit your preference and reduce eye strain.
+## 8. Operational expectations
 
----
+### 8.1 What survives redeploys
 
-## 🤖 The MediNotes Assistant: A Detailed Look
+These survive a normal image redeploy:
 
-The centerpiece of the user experience is the **MediNotes Assistant**, an interactive chat co-pilot that provides on-demand clinical and administrative support. It is more than a simple chatbot; it is a stateful, context-aware agent.
+- DynamoDB patient memory
+- Secrets Manager secret values
+- Route53 custom-domain records
+- ECR repository and image history
 
-### Core Capabilities
+### 8.2 What does not survive a destroy
 
-1.  **Proactive Patient Briefing:**
-    *   **Automatic Context:** As soon as a doctor enters a patient's name in the main form (or selects one via the "Switch" button), the Assistant automatically queries the **Memory Agent**.
-    *   **Immediate Insight:** If a patient history exists, the Assistant proactively provides a one-sentence summary (e.g., *"Juan was last seen on Jan 21 for a headache..."*), giving the doctor immediate context without needing to ask.
+If the Terraform stack is destroyed, infrastructure resources are removed. However, the destroy path has been hardened so that:
 
-2.  **Context-Aware Q&A:**
-    *   **Dual Context:** The Assistant has access to two sources of truth: the **current, in-progress consultation** (notes, uploads) and the **long-term patient history** (past visits stored in the RAG system).
-    *   **Intelligent Disambiguation:** When asked a question like "What was the last prescription?", it knows to check the RAG memory. When asked, "Summarize what I just wrote," it focuses on the current session.
+- ECR images are emptied before repository deletion
+- Secrets Manager secret names are immediately reusable
+- Route53 records are removed with the stack
 
-3.  **On-Demand Document Generation:**
-    *   The Assistant can be prompted to perform tasks that extend beyond the main summary. For example:
-        *   *"Draft a referral letter to a cardiologist based on this visit."*
-        *   *"Create a simple list of instructions for the patient."*
-        *   *"Compare the blood pressure from this visit to the last three visits."*
+### 8.3 What the application now guarantees better than before
 
-4.  **Application User Guide:**
-    *   The Assistant is programmed with knowledge of its own capabilities. A new user can ask:
-        *   *"How do I upload an audio file?"*
-        *   *"What does the Premium plan include?"*
-    *   This turns the chat into a dynamic, interactive help manual.
+Compared with the earlier manual deployment model, the current app now has:
 
-### How it Works: The Agentic Loop
+- persistent patient memory outside the container filesystem
+- deploy-time secret synchronization into AWS Secrets Manager
+- reproducible AWS infrastructure
+- Route53 ownership under Terraform
+- GitHub Actions deployment using environment-scoped credentials
 
-The Assistant is powered by the `chat_agent.py` and follows a sophisticated loop for every user message:
+## 9. Where to look next
 
-1.  **State Injection:** The frontend passes the user's message history, the current `patientName`, and the current `summary` text to the `/api/chat` endpoint.
-2.  **Memory Recall (RAG):** The `ChatAgent` takes the user's last message and the `patientName` and sends a query to the `MemoryAgent`. The `MemoryAgent` performs a semantic search on the DynamoDB-backed vector store to find the most relevant historical documents.
-3.  **Prompt Engineering:** The `ChatAgent` dynamically constructs a rich prompt for the LLM, including:
-    *   Its core persona ("You are MediNotes Pro...").
-    *   The full conversation history.
-    *   The retrieved patient history from the Memory Agent.
-    *   The current, in-progress summary from the main form.
-4.  **LLM Generation (Streaming):** The request is sent to the designated model (e.g., Gemini 2.5), which streams the response back.
-5.  **SSE Formatting:** The backend formats the response as Server-Sent Events (SSE) to handle multi-line text and ensure a smooth, real-time typing effect on the frontend.
+If you are trying to understand a specific layer:
 
-This entire process happens in seconds, providing a seamless, conversational experience that is deeply integrated with the application's data and state.
-
----
-
-## 🧠 Agentic Architecture
-
-Unlike traditional monolithic applications, this backend is composed of specialized **AI Agents**, each responsible for a distinct domain of the clinical workflow. This "Agentic" approach allows for:
-
-1.  **Separation of Concerns:** Each agent handles its own logic, tools, and error recovery.
-2.  **Intelligent Routing:** Agents can dynamically decide which tools to use (e.g., "Should I translate this email?") based on context rather than hard-coded rules.
-3.  **Resilience:** Failures in one agent (e.g., translation) can be handled gracefully with retries and fallbacks without crashing the entire request.
-
-### Core Agents
-
-The system is powered by eight primary agents located in `api/agent/`:
-
-#### 1. Extraction Agent (`extraction_agent.py`)
-*   **Role:** The "senses" of the system. It handles the ingestion of unstructured medical data.
-*   **Capabilities:**
-    *   **File Parsing:** Extracts text from PDF, DOCX, and TXT files.
-    *   **Audio Transcription:** Uses OpenAI Whisper to transcribe audio consultation recordings (MP3, WAV, etc.).
-    *   **Vision Processing:** Uses GPT-4o Vision to transcribe handwritten medical prescriptions from images.
-    *   **Entity Extraction:** Structurally extracts doctor and patient contact details from raw text.
-*   **Pattern:** **Async Pipeline**. It runs multiple extraction tasks in parallel to minimize latency.
-
-#### 2. Summary Agent (`summary_agent.py`)
-*   **Role:** The "brain" of the clinical synthesis.
-*   **Capabilities:**
-    *   **Orchestration:** Orchestrates the entire pipeline: calls the Extraction Agent -> aggregates context -> prompts the LLM -> streams the result.
-    *   **Contextual Summarization:** Generates medical summaries (SOAP, Discharge, Referral) based on the specific visit type.
-    *   **Streaming:** Returns data to the frontend token-by-token for a responsive UX.
-    *   **Quality Control:** Runs the Critic Agent after generation and regenerates until it passes review.
-    *   **Evidence Linking:** Calls the Evidence Agent after generation and streams the evidence map to the UI.
-*   **Pattern:** **Orchestrator Pipeline**. It acts as a controller that manages the flow of data between sub-components.
-
-#### 3. Coordinator Agent (`coordinator_agent.py`)
-*   **Role:** The "planner".
-*   **Capabilities:**
-    *   **Intent Recognition:** Reads the generated summary to identify implicit tasks.
-    *   **Structured Output:** Converts unstructured text (e.g., "See patient in 2 weeks") into structured JSON data (e.g., `{"type": "schedule", "date": "2025-02-14"}`).
-*   **Pattern:** **Extractor**. It runs as a post-processing step to turn text into data.
-
-#### 4. Memory Agent (`memory_agent.py`)
-*   **Role:** The "hippocampus".
-*   **Capabilities:**
-    *   **RAG (Retrieval-Augmented Generation):** Stores summaries, original notes, and evidence links in a vector database (`vector_store.py`).
-    *   **Recall:** Retrieves relevant past summaries for the current patient to provide historical context to the LLM.
-*   **Pattern:** **State Manager**. It maintains long-term persistence across sessions.
-
-#### 5. Research Agent (`research_agent.py`)
-*   **Role:** The "safety checker".
-*   **Capabilities:**
-    *   **MCP Integration:** Uses the Brave MCP server (via `npx @brave/brave-search-mcp-server --transport stdio`) for web retrieval.
-    *   **Drug Interaction Checks:** `check_drug_interactions(medications)` runs when two or more medications are detected.
-    *   **Guideline Lookup:** `search_medical_guidelines(condition)` runs when the summary flow infers a relevant condition.
-    *   **Summary Injection:** Findings are injected into the summary prompt to generate a **Clinical Safety Note** and **Guideline Note** in the Assessment/Plan.
-    *   **Concise Output:** Returns short findings with source URLs for evidence linking.
-*   **Pattern:** **Tool-Backed Researcher**. It delegates retrieval to MCP tools and summarizes results via the LLM.
-
-#### 6. Critic Agent (`critic_agent.py`)
-*   **Role:** The "Medical Director" ensuring clinical quality and accuracy.
-*   **Capabilities:**
-    *   **Review:** Compares the generated summary against all source materials (notes, uploads, patient history, and research findings).
-    *   **Issue Extraction:** Returns a structured list of issues (hallucinations, missing facts, contradictions) along with a quality score.
-    *   **Two-Step Regeneration Process:**
-        1.  **Initial Draft & Review:** A single summary is generated and reviewed. If it passes, the process ends.
-        2.  **Parallel Tournament:** If the initial draft fails, the agent triggers a "Best-of-N" tournament (N=5). It generates five new candidates in parallel, critiques them all, and selects the highest-scoring summary, ensuring both speed and quality.
-*   **Pattern:** **Reviewer + Tournament Regenerator**. This pattern is more efficient than a simple loop, as it only escalates to a more expensive parallel generation when the first attempt fails.
-
-#### 7. Evidence Agent (`evidence_agent.py`)
-*   **Role:** The "Auditor" responsible for grounding the summary in verifiable facts.
-*   **Capabilities:**
-    *   **Sentence Analysis:** Breaks the final, plain-text summary into individual clinical sentences, filtering out headings and boilerplate.
-    *   **Evidence Mapping:** For each meaningful sentence, it searches all source text chunks (from notes, uploads, research, etc.) to find the single best piece of supporting evidence.
-    *   **Snippet Generation:** Extracts a direct quote from the source chunk to serve as a snippet.
-    *   **URL Propagation:** If the source chunk comes from the Research or Guideline agent, it correctly attaches the source URLs to the citation, making them clickable in the UI.
-*   **Pattern:** **Post-Processor & Grounding Agent**. This runs at the end of the pipeline and provides the final layer of verifiability and trust.
-
-#### 8. Email Agent (`email_agent.py`)
-*   **Role:** The "dispatcher".
-*   **Capabilities:**
-    *   **Intelligent Routing:** Uses an **Agent Loop** to analyze the request and decide on the necessary steps.
-    *   **Tool Usage:**
-        *   `translate_email`: Dynamically translates content if the target language is not English.
-        *   `send_email_final`: Dispatches the final email via Resend.
-*   **Pattern:** **Router + Tools**. Unlike a standard script, this agent *decides* its course of action. For example, if asked to send an email in Spanish, it autonomously recognizes the need to call the translation tool first, then the sending tool.
-
----
-
-## 🛠️ Reliability Engineering
-
-To ensure production-grade reliability, the system implements:
-
-### Model Fallback Strategy (`api/agent/utils/__init__.py`)
-We do not rely on a single AI model. The system uses a **Cascading Fallback Chain**:
-1.  **Primary:** `gpt-5-nano` (Hypothetical efficient model) - Optimized for speed and cost.
-2.  **Secondary:** `gpt-4o-mini` - Reliable standard model.
-3.  **Fallback:** `gpt-3.5-turbo` - Legacy robust model.
-
-If the primary model fails (rate limit, outage, or server error), the system **automatically retries** with the next model in the chain, ensuring high availability for critical clinical tasks.
-
-### Observability
-All agents utilize a centralized logging system (`get_logger`) to trace:
-*   Tool execution flow (e.g., "Agent calling tool: translate_email").
-*   Model fallback events (e.g., "Error with model gpt-5-nano, retrying with gpt-4o-mini").
-*   Pipeline stages.
-
-### Asynchronous Job Management & Real-time Streaming (Upstash Redis)
-For handling long-running summary generation jobs and enabling real-time updates to the frontend, the system leverages Upstash Redis:
-*   **Job Persistence:** Summary job states and events are stored in Redis, ensuring resilience and resumability.
-*   **Real-time SSE Streaming:** Server-Sent Events (SSE) chunks are stored in Redis lists, allowing clients to receive real-time updates and seamlessly reconnect to ongoing streams.
-*   **Job Deduplication:** Redis is used to track and reuse existing jobs for identical requests, optimizing resource usage.
-
----
-
-## 🚀 Getting Started
-
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-### Environment Variables
-
-Ensure you have the following keys in your `.env.local`:
-*   `OPENAI_API_KEY`: For LLM, Vision, and Audio services.
-*   `BRAVE_API_KEY`: For the Brave MCP research tool.
-*   `RESEND_API_KEY`: For sending emails.
-*   `CLERK_JWKS_URL`: For authentication.
-*   `UPSTASH_REDIS_REST_URL`: The REST URL for Upstash Redis, used for job persistence and real-time streaming.
-*   `UPSTASH_REDIS_REST_TOKEN`: The API token for authenticating with Upstash Redis.
-*   `DYNAMODB_TABLE_NAME`: The memory table name.
-
-For local development against DynamoDB Local only:
-*   `DYNAMODB_ENDPOINT_URL=http://localhost:8001`
-*   `AWS_ACCESS_KEY_ID=dummy`
-*   `AWS_SECRET_ACCESS_KEY=dummy`
-
-For AWS deployment:
-*   leave `DYNAMODB_ENDPOINT_URL` unset so boto3 connects to AWS DynamoDB
-
-Node.js (`npx`) is required at runtime to launch the Brave MCP server.
-
-## Folder Structure
-
-*   `api/agent/`: Contains all agent logic.
-    *   `extraction_agent.py`: File/Audio/Image processing.
-    *   `summary_agent.py`: Summarization logic & pipeline orchestration.
-    *   `research_agent.py`: MCP-backed research and safety checks.
-    *   `memory_agent.py`: Long-term patient memory (RAG).
-    *   `coordinator_agent.py`: Action extraction from summaries.
-    *   `email_agent.py`: Agentic router for email dispatch.
-    *   `utils/`: Shared utilities (Fallback logic, Logging, HTML normalization, Templates).
-    *   `models.py`: Shared Pydantic data models.
-*   `api/index.py`: API Gateway/Router that delegates requests to specific agents.
-
-# Local Docker Deployment
-Start DynamoDB Local first:
-
-```bash
-docker compose -f docker-compose.local.yml up -d
-export DYNAMODB_TABLE_NAME=medinotes-memory
-export DYNAMODB_ENDPOINT_URL=http://localhost:8001
-export AWS_REGION=${AWS_REGION:-ap-southeast-1}
-export AWS_ACCESS_KEY_ID=dummy
-export AWS_SECRET_ACCESS_KEY=dummy
-bash tools/create_memory_table.sh "$DYNAMODB_TABLE_NAME"
-```
-
-export $(cat .env | grep -v '^#' | xargs)
-
-docker build \
-  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
-  --build-arg NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
-  -t consultation-app .
-
- docker run -p 8000:8000 \
-  --add-host=host.docker.internal:host-gateway \
-  -e CLERK_SECRET_KEY="$CLERK_SECRET_KEY" \
-  -e CLERK_JWKS_URL="$CLERK_JWKS_URL" \
-  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-  -e RESEND_API_KEY="$RESEND_API_KEY" \
-  -e GEMINI_API_KEY="$GEMINI_API_KEY" \
-  -e GEMINI_API_URL="$GEMINI_API_URL" \
-  -e BRAVE_API_KEY="$BRAVE_API_KEY" \
-  -e DEEPSEEK_API_URL="$DEEPSEEK_API_URL" \
-  -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -e DYNAMODB_TABLE_NAME="$DYNAMODB_TABLE_NAME" \
-  -e DYNAMODB_ENDPOINT_URL="http://host.docker.internal:8001" \
-  -e AWS_REGION="$AWS_REGION" \
-  -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-  -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-  -e NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
-  consultation-app 
-
-## AWS DEPLOYMENT ECR
-
-For AWS deployment, do not set `DYNAMODB_ENDPOINT_URL`. The app should use:
-*   `DYNAMODB_TABLE_NAME=<aws-table-name>`
-*   `AWS_REGION=<aws-region>`
-
-# aws configure
-
-Enter:
-
-AWS Access Key ID: (paste your key)
-AWS Secret Access Key: (paste your secret)
-Default region: Choose based on your location:
-US East Coast: us-east-1 (N. Virginia)
-US West Coast: us-west-2 (Oregon)
-Europe: eu-west-1 (Ireland)
-Asia: ap-southeast-1 (Singapore)
-Pick the closest region for best performance!
-Default output format: json
-Important: Remember your region choice
-
-
-# 1. Authenticate Docker to ECR (using your .env values!)
-aws ecr get-login-password --region $DEFAULT_AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com
-
-docker build --platform linux/amd64 \
-  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
-  --build-arg NEXT_PUBLIC_CLERK_JWT_TEMPLATE="$NEXT_PUBLIC_CLERK_JWT_TEMPLATE" \
-  -t consultation-app .
-
-# 3. Tag your image (using your .env values!)
-docker tag consultation-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/consultation-app:latest
-
-# 4. Push to ECR
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/consultation-app:latest
-
-
-
-docker build --platform linux/amd64 -t autonomous-trader:latest .
-docker tag consultation-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/autonomous-trader:latest
-
-
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$DEFAULT_AWS_REGION.amazonaws.com/autonomous-trader:latest
+- app behavior and system topology: [Architecture](/home/repos/healthcare-saas-aws/ARCHITECTURE_medinotes.md)
+- API, agents, and request lifecycle: [backend.md](/home/repos/healthcare-saas-aws/backend.md)
+- infrastructure resources and deploy/destroy semantics: [terraform/README.md](/home/repos/healthcare-saas-aws/terraform/README.md)
+- GitHub environments, IAM role, and branch policies: [healthcare_github_environment_setup.md](/home/repos/healthcare-saas-aws/healthcare_github_environment_setup.md)

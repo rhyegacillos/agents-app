@@ -1,133 +1,200 @@
-# 🗺️ Agentic Roadmap
+# Agentic Roadmap
 
-This document tracks the evolution of the application from a "Pipeline" architecture to a **Fully Agentic System**.
+This roadmap now reflects the system after the AWS deployment, DynamoDB persistence rollout, and GitHub/Terraform operationalization. It is not the original pre-deployment wishlist anymore.
 
-## ✅ Phase 1: Foundation (Completed)
-- [x] **Agentic Backend Structure:** Modular agents (`extraction`, `summary`, `email`) in `api/agent/`.
-- [x] **Intelligent Email Routing:** `email_agent` uses a Router+Tool pattern to decide on translation.
-- [x] **Extraction Pipeline:** Parallel processing of Audio, Vision, and Text.
-- [x] **Reliability:** Model fallback chains and structured logging.
+## 1. Completed foundation
 
----
+These are no longer roadmap ideas. They are implemented and part of the current system.
 
-## 🚧 Phase 2: The "Thinking" App (Planned)
+### 1.1 Agentic backend structure
 
-The goal is to move from *processing* data to *understanding and acting* on it.
+Completed:
 
-### 1. 📅 Autonomous Coordinator (Next Actions)
-**Status:** ✅ Completed
-**Goal:** Turn "Next Steps" text into executable actions.
-- [x] **Feature:** Parse generated summaries for dates ("Follow up in 2 weeks") and tasks ("Prescribe X").
-- [x] **Agent:** `coordinator_agent.py`
-- [ ] **Tools:**
-    - `extract_actionable_items(text)` (Completed)
-    - `check_calendar_availability(date)` (Mock/Google Calendar)
-    - `draft_calendar_invite(details)`
-- [x] **UX:** Display "Suggested Actions" cards below the summary (e.g., "Book Follow-up").
+- modular agent layout under `api/agent/`
+- separate orchestration, retrieval, critique, evidence, and communication responsibilities
+- provider-routed model usage
+- shared fallback and logging utilities
 
-### 2. 🧠 Long-Term Patient Memory (RAG)
-**Status:** ✅ Completed
-**Goal:** Enable the agent to "know" the patient's history.
-- [x] **Feature:** Retrieve past summaries during generation to highlight changes/trends.
-- [x] **Agent:** `memory_agent.py`
-- [x] **Tech:** Vector Database (DynamoDB-backed VectorStore).
-- [x] **Tools:**
-    - `store_visit_summary` (Completed)
-    - `query_patient_history` (Completed)
+### 1.2 Intelligent email routing
 
-### 3. 💬 Interactive Clinical Co-pilot
-**Status:** ✅ Completed
-**Goal:** Allow doctors to converse with the data.
-- [x] **Feature:** Chat interface to query the transcript or request edits.
-- [x] **Endpoint:** `/api/chat`
-- [x] **Tools:**
-    - `search_transcript(query)` (Implicit via RAG)
-    - `update_summary_section(section, new_content)`
-    - `draft_referral_letter(to_doctor)`
+Completed:
 
-### 4. 📚 Clinical Decision Support (Research)
-**Status:** ✅ Completed
-**Goal:** Proactive safety checks and information retrieval.
-- [x] **Feature:** Auto-detect drug interactions from the summary flow.
-- [x] **Agent:** `research_agent.py`
-- [x] **Tool:** `check_drug_interactions(medications)` via MCP (Brave Search).
-- [x] **Tool:** `search_medical_guidelines(condition)`
+- email agent decides whether translation is required before send
+- Resend-backed delivery path
 
-### 5. 🕵️ Critic / Reflexion Loop
-**Status:** ✅ Completed
-**Goal:** Self-correcting quality assurance.
-- [x] **Feature:** "Critic Agent" reviews the summary against source notes, uploads, and history.
-- [x] **Logic:**
-    - Step 1: Generate Summary.
-    - Step 2: Critic reviews for hallucinations, missing facts, and contradictions.
-    - Step 3: Regenerate with corrections until criteria pass.
+### 1.3 Multimodal extraction pipeline
 
----
+Completed:
 
-## 🧭 Phase 3: Fully Agentic System (Planned)
+- uploaded document parsing
+- audio transcription
+- image-based prescription extraction
 
-The goal is to move from single-request workflows to **autonomous, long-running agents** that can plan, act, and self-correct across time.
+### 1.4 Research-backed clinical assistance
 
-### 1. 🗂️ Task Engine & Schedulers
-**Status:** 🔴 Not Started
-**Goal:** Allow agents to execute multi-step workflows over time.
-- [ ] **Feature:** Task queue for "follow-up in 2 weeks" and "call patient if symptoms worsen."
-- [ ] **Tool:** `schedule_task(action, date, metadata)`
-- [ ] **Tool:** `run_task(task_id)` with retries + audit logs.
-- [ ] **UX:** Background task panel with status + history.
+Completed:
 
-### 2. 🧰 Tool Registry & Permissioning
-**Status:** 🔴 Not Started
-**Goal:** Centralize tool discovery with safety and approval rules.
-- [ ] **Feature:** Dynamic tool registry with allowlist/denylist per plan.
-- [ ] **Tool:** `request_approval(action)` for high-risk outputs.
-- [ ] **Policy:** "Human-in-the-loop" for prescriptions, referrals, and bookings.
+- drug interaction checks
+- guideline search
+- research findings injected into the summary pipeline
 
-### 3. 🧪 Proposer / Critic / Verifier Loop
-**Status:** 🔴 Not Started
-**Goal:** Enforce consistency and reduce hallucinations.
-- [ ] **Feature:** Separate "Critic Agent" scores summary quality vs transcript.
-- [ ] **Feature:** "Verifier Agent" checks safety claims and guideline notes.
-- [ ] **Logic:** Regenerate if risk score crosses threshold.
+### 1.5 Critic and regeneration loop
 
-### 3b. 🩺 Patient History Workspace (UI + API)
-**Status:** 🟢 In Progress  
-**Goal:** Give clinicians a dedicated space to browse longitudinal records with filters.  
-- [x] **Feature:** Patient History tab with list/detail views and visit cards.  
-- [x] **UX:** Searchable patient dropdown with pagination and last-visit metadata.  
-- [x] **Filter:** Date range filtering for visits.  
-- [x] **Detail:** Click-through to full visit text with return-to-list control.  
-- [x] **API:** Persist evidence snippets per visit for citation surfacing.  
-- [x] **API:** Server-side search within visits (by keyword).  
-- [x] **UX:** Timeline visualization and “copy summary” actions.  
-- [ ] **Backfill:** Optionally regenerate older visits to attach structured evidence.  
-- [x] **UX:** Regeneration modal to reuse prior outputs when uploaded notes, template, and visit date match an existing visit; soft-deleted items skip the prompt.  
-- [x] **UX:** “Back to main” navigation pill; default date range set to current year-to-date; timeline pills and visit cards reflect deleted/restored state.  
+Completed:
 
-### 4. 🧾 Evidence-Linked Summaries
-**Status:** ✅ Completed
-**Goal:** Tie clinical summaries to evidence.
-- [x] **Feature:** Generate evidence-linked citations for summary statements.
-- [x] **Storage:** Save source snippets and links in memory for audit (`visit_evidence`).
-- [x] **UX:** Evidence panel toggle with source snippets and research/guideline links.
+- review for hallucinations, omissions, contradictions, and safety concerns
+- regeneration path when the critic rejects a draft
 
-### 5. 🧭 Persistent Care Plans
-**Status:** 🔴 Not Started
-**Goal:** Keep unresolved tasks and goals across visits.
-- [ ] **Feature:** Patient goals (e.g., BP target) tracked over time.
-- [ ] **Feature:** Open tasks carry forward until resolved.
-- [ ] **Tool:** `update_care_plan(patient_id, changes)`
+### 1.6 Patient history and long-term memory
 
-### 6. 🧬 Evaluation & Monitoring Harness
-**Status:** 🔴 Not Started
-**Goal:** Continuous reliability tracking.
-- [ ] **Feature:** Regression suite for summaries, actions, and tool use.
-- [ ] **Metrics:** Hallucination rate, tool success, safety note accuracy.
-- [ ] **Dashboards:** Daily/weekly reports with failure samples.
+Completed:
 
----
+- long-term patient memory
+- patient-history browsing
+- visit retrieval
+- soft delete and restore
+- assistant recall from prior visits
 
-## 📉 Backlog / Nice-to-Have
-- [ ] **Voice Interface:** Voice-to-voice interaction with the agent.
-- [ ] **Multi-Modal Output:** Generate PDF reports with charts/graphs of vitals.
-- [ ] **Integration:** EHR (Epic/Cerner) integration via FHIR.
+### 1.7 Production deployment model
+
+Completed:
+
+- Terraform stack
+- GitHub Actions deployment workflows
+- App Runner runtime
+- ECR image delivery
+- DynamoDB-backed memory persistence
+- Secrets Manager-backed runtime secrets
+- Route53-managed custom domain
+
+## 2. Current platform state
+
+The app is now beyond prototype stage. The current platform supports:
+
+- deployed production runtime
+- persistent patient memory outside the container
+- secure runtime secret flow
+- reproducible deploys
+- destroy/recreate support
+
+That means the next roadmap items are no longer “how do we get this running at all.” They are feature and quality improvements on top of a working platform.
+
+## 3. In-progress and near-term work
+
+### 3.1 Patient history workspace hardening
+
+Status: In progress
+
+Current state already includes:
+
+- patient list
+- visit timeline
+- filters and pagination
+- soft delete and restore
+- reuse-versus-regenerate behavior
+
+Likely next improvements:
+
+- evidence backfill for older visits
+- better historical comparison views
+- stronger visit-level summary reuse controls
+
+### 3.2 Retrieval quality and scale
+
+Status: In progress
+
+Current state:
+
+- DynamoDB stores memory documents durably
+- semantic ranking is still done in application code
+
+Possible next steps:
+
+- better query-time filtering
+- more efficient retrieval paths for rename/delete/restore
+- alternative vector-search architecture if scale requires it
+
+### 3.3 Evaluation and monitoring
+
+Status: Needed
+
+Next useful work:
+
+- regression suite for summary quality
+- explicit hallucination and omission tracking
+- evaluation datasets for critic effectiveness
+- operational dashboards for deploy and runtime issues
+
+## 4. Planned product evolution
+
+### 4.1 Task engine and longitudinal care workflows
+
+Status: Not started
+
+Potential additions:
+
+- scheduled follow-up tasks
+- unresolved action carry-forward
+- care-plan persistence across visits
+
+### 4.2 Stronger human-in-the-loop controls
+
+Status: Not started
+
+Potential additions:
+
+- explicit approval gates for high-risk actions
+- configurable tool permissions
+- stronger separation between drafting and executing actions
+
+### 4.3 Expanded clinician workflow outputs
+
+Status: Partially complete
+
+Possible additions:
+
+- referral-letter generation
+- patient-instruction document generation
+- structured care-plan views
+- richer export/report outputs
+
+## 5. Long-term architecture opportunities
+
+These are not immediate blockers, but they are reasonable future directions.
+
+### 5.1 More specialized verification layers
+
+Potential future agents:
+
+- verifier agent distinct from critic
+- drug-safety or medication-specific specialist checks
+- structured consistency checker between summary, evidence, and actions
+
+### 5.2 More advanced memory infrastructure
+
+Potential future changes:
+
+- more efficient vector retrieval backend
+- additional indexes for visit-history workloads
+- archival strategy for older patient documents
+
+### 5.3 External system integration
+
+Potential future scope:
+
+- EHR/FHIR integration
+- external scheduling integrations
+- downstream handoff into clinical operations systems
+
+## 6. Roadmap summary
+
+The biggest milestone is already complete:
+
+- the app is now a deployed agentic system with durable memory, secrets management, and infrastructure as code
+
+The roadmap should therefore be read as:
+
+- refinement of quality and retrieval
+- expansion of workflow capabilities
+- gradual movement from documentation assistant toward broader clinical workflow assistant
+

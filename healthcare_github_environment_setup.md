@@ -1,24 +1,30 @@
 # Healthcare GitHub Environment Setup Runbook
 
-This document is the full reference for how `healthcare-saas-aws` is isolated in GitHub Actions and how to recreate or repair that setup.
+This runbook explains the current GitHub Actions environment model for `healthcare-saas-aws`, how it relates to Terraform, which AWS IAM role it uses, which secrets and variables belong where, and how to recreate or repair the setup without guessing.
 
-It covers:
+This document is intentionally detailed. It is the operational reference for the healthcare deployment path.
 
-- why separate GitHub environments are required
-- the exact GitHub environments and branch policies used
-- which local values are copied into GitHub
-- how the sync script works internally
-- the dedicated AWS role used by healthcare
-- how the workflows consume the environments
-- how to verify and troubleshoot the setup
+## 1. Why this repo uses GitHub environments at all
 
-This is not just a summary. It is the operational runbook for this repo.
+This repository shares a GitHub repository with other deployment paths. That means repository-level secrets alone are not a strong enough isolation boundary.
 
-## 1. Deployment model
+If only repo-level secrets were used, then:
 
-This repo uses two different concepts of “environment”:
+- different branches could assume the same role unintentionally
+- a deployment path could read a secret intended for another app
+- workflow changes on one branch could accidentally use the wrong AWS identity
 
-### Terraform environment
+The healthcare deployment path therefore uses GitHub environments as the controlling boundary for:
+
+- AWS OIDC role assumption
+- environment-scoped application secrets
+- branch restrictions for deployment jobs
+
+## 2. Two different meanings of “environment”
+
+This repo uses two environment systems and they are intentionally not the same thing.
+
+### 2.1 Terraform environments
 
 Terraform uses:
 
@@ -30,434 +36,138 @@ These map to:
 - `terraform/dev.tfvars`
 - `terraform/prod.tfvars`
 - Terraform workspaces `dev` and `prod`
-- remote state keys:
+- remote state keys under:
   - `medinotes/dev/terraform.tfstate`
   - `medinotes/prod/terraform.tfstate`
 
-### GitHub Actions environment
+### 2.2 GitHub environments
 
 GitHub Actions uses:
 
 - `healthcare-dev`
 - `healthcare-prod`
 
-These are branch-isolated secret containers for GitHub jobs.
+These are not Terraform inputs. They are GitHub deployment-security containers that supply:
 
-### Why both exist
+- `AWS_ROLE_ARN`
+- model/provider secrets
+- Clerk secrets
+- Upstash secrets
+- other environment-scoped config values
 
-The workflows need Terraform to keep using `dev` and `prod`, but GitHub needs branch-isolated deploy credentials and secrets.
+### 2.3 Why the split exists
 
-So the separation is:
+Terraform needs stable infra names like `dev` and `prod`. GitHub needs branch-isolated secrets and IAM role trust restrictions. The names remain separate so each system can do its own job cleanly.
 
-- Terraform target: `dev` or `prod`
-- GitHub environment: `healthcare-dev` or `healthcare-prod`
+## 3. Current branch and workflow model
 
-## 2. Current intended mapping
-
-### Branch to GitHub environment
-
-- branch `dev` -> GitHub environment `healthcare-dev`
-- branch `healthcare-saas-aws` -> GitHub environment `healthcare-prod`
-
-### Branch to Terraform environment
-
-- branch `dev` -> Terraform `dev`
-- branch `healthcare-saas-aws` -> Terraform `prod`
-
-### Current workflow wiring
-
-This is implemented in:
+The current workflow implementation is:
 
 - [ci.yml](/home/repos/healthcare-saas-aws/.github/workflows/ci.yml)
 - [deploy.yml](/home/repos/healthcare-saas-aws/.github/workflows/deploy.yml)
 - [destroy.yml](/home/repos/healthcare-saas-aws/.github/workflows/destroy.yml)
 
-Behavior:
+### 3.1 Current automatic deploy behavior
 
-- push to `dev` triggers `Deploy / dev` with GitHub environment `healthcare-dev`
-- push to `healthcare-saas-aws` triggers `Deploy / prod` with GitHub environment `healthcare-prod`
-- manual destroy selects `healthcare-dev` or `healthcare-prod` based on the destroy target
+Current automatic deployment behavior is intentionally **prod-only on push**.
 
-## 3. Why repository secrets are not enough
+- push to branch `healthcare-saas-aws`
+  - runs `Test`
+  - runs `Docker Build`
+  - runs `Deploy / prod`
+  - uses GitHub environment `healthcare-prod`
+  - targets Terraform environment `prod`
 
-This repository shares a single GitHub repo with other deployment paths. Repository secrets are shared across branches by default.
+### 3.2 Current manual behavior
 
-That creates two problems:
+Manual `workflow_dispatch` deploy still supports:
 
-1. one branch can accidentally deploy with another branch’s AWS role
-2. one branch can accidentally deploy with another branch’s runtime secrets
+- `dev`
+- `prod`
 
-The correct pattern is:
+Manual destroy also supports:
 
-- one GitHub environment per deployment path
-- one AWS IAM role per deployment path
-- branch restrictions on each GitHub environment
-- environment-scoped secrets used by the deploy and destroy workflows
+- `dev`
+- `prod`
+
+and maps to the matching GitHub environment:
+
+- `dev` -> `healthcare-dev`
+- `prod` -> `healthcare-prod`
+
+### 3.3 Why `dev` is not auto-deployed on push anymore
+
+The repo previously supported a separate `dev` push path. The current design intentionally avoids that. `dev` still exists, but only as a manual deployment target. This reduces accidental branch-based infrastructure churn while keeping the environment available for controlled testing.
 
 ## 4. Current live GitHub environment state
 
-The following environments have already been created in GitHub:
+The following GitHub environments exist:
 
 - `healthcare-dev`
 - `healthcare-prod`
 
-The following deployment branch policies have already been applied:
-
-- `healthcare-dev` allows only branch `dev`
-- `healthcare-prod` allows only branch `healthcare-saas-aws`
-
-This was applied by [sync_github_environments.sh](/home/repos/healthcare-saas-aws/tools/sync_github_environments.sh).
-
-The following dedicated AWS role now exists for healthcare:
-
-- role name: `github-actions-healthcare-deploy`
-- role ARN: `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-
-This healthcare-specific role is used by both:
+The following branch restrictions are intended:
 
 - `healthcare-dev`
+  - allowed branch: `dev`
 - `healthcare-prod`
+  - allowed branch: `healthcare-saas-aws`
 
-That is intentional because both healthcare environments currently deploy the same AWS stack shape and share the same AWS account/resources model.
+These branch restrictions matter because the AWS role trust policy is also scoped by GitHub environment. The environment is the identity boundary, not just a convenient secret bucket.
 
-The repository-level `AWS_ROLE_ARN` secret was left untouched. Healthcare is no longer intended to depend on that repo-wide secret. The intended source for healthcare is now the environment-scoped `AWS_ROLE_ARN` in:
+## 5. Current AWS role used by healthcare
 
-- `healthcare-dev`
-- `healthcare-prod`
-
-## 5. Required GitHub environment secrets
-
-Each environment is expected to contain these secrets:
-
-- `AWS_ROLE_ARN`
-- `BRAVE_API_KEY`
-- `CLERK_JWKS_URL`
-- `CLERK_SECRET_KEY`
-- `DEEPSEEK_API_KEY`
-- `DEEPSEEK_API_URL`
-- `GEMINI_API_KEY`
-- `GEMINI_API_URL`
-- `GROK_API_KEY`
-- `GROK_API_URL`
-- `NEXT_PUBLIC_CLERK_JWT_TEMPLATE`
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
-- `OPENAI_API_KEY`
-- `RESEND_API_KEY`
-- `RESEND_FROM`
-- `UPSTASH_REDIS_REST_TOKEN`
-- `UPSTASH_REDIS_REST_URL`
-
-Notes:
-
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is public by design, but it is still stored at environment scope for consistency.
-- `RESEND_FROM` falls back in the workflow to `MediNotes <no-reply@agentairg.site>` if not present, but it should still be set explicitly.
-- `DEEPSEEK_API_URL`, `GEMINI_API_URL`, and `GROK_API_URL` are treated as secrets in the workflow, even though they are configuration values.
-
-## 6. Required GitHub environment variables
-
-Each environment is expected to contain these variables:
-
-- `AWS_ACCOUNT_ID`
-- `DEFAULT_AWS_REGION`
-- `RESEND_DOMAIN`
-
-Current local values that were copied:
-
-- `AWS_ACCOUNT_ID=348375262167`
-- `DEFAULT_AWS_REGION=ap-southeast-1`
-- `RESEND_DOMAIN=agentairg.site`
-
-## 7. What was copied automatically
-
-The sync process already copied all locally available values from:
-
-- `.env`
-- `.env.local`
-
-into:
-
-- `healthcare-dev`
-- `healthcare-prod`
-
-The healthcare-specific AWS role ARN is now also stored locally through environment-specific override keys:
-
-- `HEALTHCARE_DEV_AWS_ROLE_ARN=arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-- `HEALTHCARE_PROD_AWS_ROLE_ARN=arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-
-Those override keys are the intended source of truth for syncing `AWS_ROLE_ARN` into GitHub for healthcare.
-
-## 8. Sync script reference
-
-The environment automation lives in:
-
-- [sync_github_environments.sh](/home/repos/healthcare-saas-aws/tools/sync_github_environments.sh)
-
-### What the script does
-
-For each of these pairs:
-
-- `healthcare-dev : dev`
-- `healthcare-prod : healthcare-saas-aws`
-
-the script performs:
-
-1. loads `.env` if present
-2. loads `.env.local` if present
-3. creates or updates the GitHub environment
-4. enables custom branch policies for that environment
-5. deletes any existing branch policy entries on that environment
-6. creates the single expected branch policy
-7. writes matching secrets into the environment using `gh secret set`
-8. writes matching variables into the environment using `gh variable set`
-
-### What the script does not do
-
-The script does not:
-
-- read back existing GitHub secret values
-- create AWS IAM roles
-- verify that the values are correct for production
-- remove repository-level secrets
-
-### Script source of truth
-
-The script uses these arrays internally:
-
-#### Secrets copied
-
-- `AWS_ROLE_ARN`
-- `BRAVE_API_KEY`
-- `CLERK_JWKS_URL`
-- `CLERK_SECRET_KEY`
-- `DEEPSEEK_API_KEY`
-- `DEEPSEEK_API_URL`
-- `GEMINI_API_KEY`
-- `GEMINI_API_URL`
-- `GROK_API_KEY`
-- `GROK_API_URL`
-- `NEXT_PUBLIC_CLERK_JWT_TEMPLATE`
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
-- `OPENAI_API_KEY`
-- `RESEND_API_KEY`
-- `RESEND_FROM`
-- `UPSTASH_REDIS_REST_TOKEN`
-- `UPSTASH_REDIS_REST_URL`
-
-#### Variables copied
-
-- `AWS_ACCOUNT_ID`
-- `DEFAULT_AWS_REGION`
-- `RESEND_DOMAIN`
-
-### Default behavior in the script
-
-If `RESEND_FROM` is missing locally, the script uses:
-
-- `MediNotes <no-reply@agentairg.site>`
-
-### Per-environment overrides
-
-If a value should be different for `healthcare-dev` and `healthcare-prod`, export an override before running the script.
-
-Naming format:
-
-- `HEALTHCARE_DEV_<KEY>`
-- `HEALTHCARE_PROD_<KEY>`
-
-Examples:
-
-```bash
-export HEALTHCARE_DEV_AWS_ROLE_ARN="arn:aws:iam::348375262167:role/github-actions-healthcare-deploy"
-export HEALTHCARE_PROD_AWS_ROLE_ARN="arn:aws:iam::348375262167:role/github-actions-healthcare-deploy"
-
-export HEALTHCARE_DEV_RESEND_FROM="MediNotes Dev <no-reply@agentairg.site>"
-export HEALTHCARE_PROD_RESEND_FROM="MediNotes <no-reply@agentairg.site>"
-
-cd /home/repos/healthcare-saas-aws
-./tools/sync_github_environments.sh
-```
-
-Override precedence is:
-
-1. `HEALTHCARE_<ENV>_<KEY>`
-2. plain env var loaded from `.env` or `.env.local`
-3. `RESEND_FROM` fallback only
-
-## 9. Exact setup process from scratch
-
-If you need to recreate the setup from zero, use this process.
-
-### Step 1. Authenticate GitHub CLI
-
-Verify:
-
-```bash
-gh auth status
-```
-
-Required scopes:
-
-- `repo`
-- `workflow`
-
-### Step 2. Ensure local env files are present
-
-At least one of these should exist:
-
-- `.env`
-- `.env.local`
-
-They should contain the app values you want to copy.
-
-### Step 3. Export per-environment overrides if needed
-
-Use this especially for:
-
-- `AWS_ROLE_ARN`
-- any value that differs between dev and prod
-
-Example:
-
-```bash
-export HEALTHCARE_DEV_AWS_ROLE_ARN="arn:aws:iam::348375262167:role/github-actions-healthcare-deploy"
-export HEALTHCARE_PROD_AWS_ROLE_ARN="arn:aws:iam::348375262167:role/github-actions-healthcare-deploy"
-```
-
-### Step 4. Run the sync script
-
-```bash
-cd /home/repos/healthcare-saas-aws
-./tools/sync_github_environments.sh
-```
-
-### Step 5. Verify GitHub environments
-
-List environments:
-
-```bash
-gh api repos/rhyegacillos/agents-app/environments
-```
-
-Check dev branch policy:
-
-```bash
-gh api repos/rhyegacillos/agents-app/environments/healthcare-dev/deployment-branch-policies
-```
-
-Check prod branch policy:
-
-```bash
-gh api repos/rhyegacillos/agents-app/environments/healthcare-prod/deployment-branch-policies
-```
-
-Check environment secrets:
-
-```bash
-gh secret list --repo rhyegacillos/agents-app --env healthcare-dev
-gh secret list --repo rhyegacillos/agents-app --env healthcare-prod
-```
-
-Check environment variables:
-
-```bash
-gh variable list --repo rhyegacillos/agents-app --env healthcare-dev
-gh variable list --repo rhyegacillos/agents-app --env healthcare-prod
-```
-
-## 10. AWS IAM role setup
-
-The script does not create AWS IAM roles. Those must exist already.
+Healthcare has its own dedicated deploy role. It does not rely on the repo-wide role as the intended long-term source.
 
 Current live role:
 
-- `github-actions-healthcare-deploy`
-
-Current GitHub environment secret mapping:
-
-- `AWS_ROLE_ARN` in `healthcare-dev` -> `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-- `AWS_ROLE_ARN` in `healthcare-prod` -> `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-
-### Trust policy pattern
-
-The healthcare role should be restricted to the healthcare GitHub environments only.
-
-Allowed OIDC subjects:
-
-- `repo:rhyegacillos/agents-app:environment:healthcare-dev`
-- `repo:rhyegacillos/agents-app:environment:healthcare-prod`
-
-The exact OIDC provider used by the role is:
-
-- `arn:aws:iam::348375262167:oidc-provider/token.actions.githubusercontent.com`
-
-The exact audience restriction used by the role is:
-
-- `token.actions.githubusercontent.com:aud = sts.amazonaws.com`
-
-### Current trust policy
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::348375262167:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": [
-            "repo:rhyegacillos/agents-app:environment:healthcare-dev",
-            "repo:rhyegacillos/agents-app:environment:healthcare-prod"
-          ]
-        }
-      }
-    }
-  ]
-}
-```
-
-### Current live role metadata
-
-The current AWS role metadata is:
-
 - role name: `github-actions-healthcare-deploy`
 - role ARN: `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-- path: `/`
-- description: `GitHub Actions deploy role for healthcare-saas-aws`
-- max session duration: `3600`
 
-### Current attached managed policies
+### 5.1 Why both healthcare environments use the same ARN
 
-The current live healthcare role has these AWS-managed policies attached:
+This was a deliberate design choice for healthcare:
+
+- `healthcare-dev` uses the same role ARN
+- `healthcare-prod` uses the same role ARN
+
+This does not eliminate isolation because the trust policy still restricts assumption by GitHub environment. The same physical role can still be limited to specific GitHub environment identities.
+
+## 6. OIDC trust model
+
+The role is assumed through GitHub OIDC using:
+
+- federated principal:
+  - `arn:aws:iam::348375262167:oidc-provider/token.actions.githubusercontent.com`
+
+The current trust model should allow:
+
+- `token.actions.githubusercontent.com:aud = sts.amazonaws.com`
+- `token.actions.githubusercontent.com:sub = repo:rhyegacillos/agents-app:environment:healthcare-dev`
+- `token.actions.githubusercontent.com:sub = repo:rhyegacillos/agents-app:environment:healthcare-prod`
+
+This is the important point:
+
+- the healthcare role is not just “any workflow in the repo”
+- it is specifically constrained to healthcare GitHub environments
+
+## 7. Current permissions on the healthcare deploy role
+
+The live role currently uses these managed policies:
 
 - `AmazonEC2ContainerRegistryPowerUser`
-  - required for ECR login, image push, tag operations, and repository management during deploy/destroy
 - `AWSAppRunnerFullAccess`
-  - required for App Runner service create, update, describe, custom-domain association, and deployment status checks
 - `SecretsManagerReadWrite`
-  - required because the workflow syncs GitHub environment secrets into AWS Secrets Manager before deployment
 - `AmazonDynamoDBFullAccess`
-  - required for Terraform-managed DynamoDB table create, update, describe, and destroy
 - `AmazonRoute53FullAccess`
-  - required for custom-domain DNS record creation and updates in `agentairg.site`
 - `AmazonS3FullAccess`
-  - required for Terraform remote state bucket bootstrap and access
 - `IAMReadOnlyAccess`
-  - required for read-only IAM inspection during Terraform role lifecycle operations
 
-### Current inline policy
+It also has an inline policy:
 
-The current live healthcare role also has an inline policy:
+- `github-actions-healthcare-iam`
 
-- policy name: `github-actions-healthcare-iam`
-
-This inline policy grants the mutation permissions that `IAMReadOnlyAccess` does not provide.
-
-Current action set:
+The inline policy covers the IAM mutation actions Terraform needs for App Runner-related roles, including actions such as:
 
 - `iam:CreateRole`
 - `iam:DeleteRole`
@@ -476,321 +186,239 @@ Current action set:
 - `iam:ListInstanceProfilesForRole`
 - `sts:GetCallerIdentity`
 
-This inline policy is currently scoped to:
+### 7.1 Why these permissions are needed
 
-- `Resource = "*"`
+The GitHub role is not just pushing Docker images. It must support the entire deployment lifecycle:
 
-That broad resource scope matches the current Terraform pattern used for creating and updating the App Runner IAM roles. If the IAM scope is tightened later, it must still allow the workflow and Terraform to manage:
+- Terraform backend access through S3 and DynamoDB
+- ECR push and image management
+- App Runner create/update/read operations
+- Secrets Manager write during deploy
+- Route53 updates for the custom domain
+- IAM role creation/update/pass for App Runner runtime and ECR access roles
 
-- `${project_name}-${environment}-apprunner-ecr-access`
-- `${project_name}-${environment}-apprunner-instance`
+## 8. Secrets that belong in the GitHub environments
 
-### Why the role is shaped this way
+Each healthcare environment should hold the full set of runtime secrets and secret-like configuration required by the deploy workflow.
 
-The role must be able to support this stack:
+Current expected secrets:
 
-- Terraform backend bootstrap:
-  - S3
-  - DynamoDB
-- Terraform-managed infra:
-  - DynamoDB
-  - ECR
-  - App Runner
-  - Secrets Manager
-  - Route53
-  - IAM role creation for App Runner runtime/build roles
+- `AWS_ROLE_ARN`
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `GROK_API_KEY`
+- `RESEND_API_KEY`
+- `CLERK_SECRET_KEY`
+- `CLERK_JWKS_URL`
+- `BRAVE_API_KEY`
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `NEXT_PUBLIC_CLERK_JWT_TEMPLATE`
+- `GEMINI_API_URL`
+- `DEEPSEEK_API_URL`
+- `GROK_API_URL`
+- `RESEND_FROM`
 
-That is why the live role uses:
+### 8.1 Why some non-secret values still live in secrets
 
-- broad service-level managed policies for AWS services
-- read-only managed access for IAM inspection
-- a narrow inline IAM mutation policy for Terraform-managed role creation and updates
+Some of these values are configuration rather than true secrets, for example:
 
-This is the same operational pattern that was used in `ideagen`, adapted for the healthcare stack.
+- `GEMINI_API_URL`
+- `DEEPSEEK_API_URL`
+- `GROK_API_URL`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
 
-## 11. Terraform-managed IAM roles inside the stack
+They are still environment-scoped so that deploy configuration stays aligned with the rest of the environment material and does not drift across branches.
 
-Separate from the GitHub Actions deploy role, Terraform creates App Runner service roles inside the target healthcare stack.
+## 9. Variables that belong in the GitHub environments
 
-These are not GitHub roles. They are runtime roles used by App Runner itself.
+Current expected GitHub environment variables:
 
-### App Runner ECR access role
+- `AWS_ACCOUNT_ID`
+- `DEFAULT_AWS_REGION`
+- `RESEND_DOMAIN`
 
-Terraform resource:
+Typical healthcare values today:
 
-- [main.tf](/home/repos/healthcare-saas-aws/terraform/main.tf) `aws_iam_role.apprunner_ecr_access`
+- `AWS_ACCOUNT_ID=348375262167`
+- `DEFAULT_AWS_REGION=ap-southeast-1`
+- `RESEND_DOMAIN=agentairg.site`
 
-Role name pattern:
+## 10. Local source of truth for syncing GitHub environments
 
-- `${project_name}-${environment}-apprunner-ecr-access`
+The repo includes:
 
-Assumed by:
+- [sync_github_environments.sh](/home/repos/healthcare-saas-aws/tools/sync_github_environments.sh)
 
-- `build.apprunner.amazonaws.com`
+This script is the local automation entry point for environment setup and repair.
 
-Attached managed policy:
+### 10.1 What the script loads
 
-- `service-role/AWSAppRunnerServicePolicyForECRAccess`
+The script reads:
 
-Purpose:
+- `.env`
+- `.env.local`
 
-- let App Runner pull the container image from the managed ECR repository
+if present.
 
-### App Runner instance role
+### 10.2 What the script creates or updates
 
-Terraform resource:
+For each pair:
 
-- [main.tf](/home/repos/healthcare-saas-aws/terraform/main.tf) `aws_iam_role.apprunner_instance`
+- `healthcare-dev` -> branch `dev`
+- `healthcare-prod` -> branch `healthcare-saas-aws`
 
-Role name pattern:
+the script:
 
-- `${project_name}-${environment}-apprunner-instance`
+1. ensures the GitHub environment exists
+2. enables custom branch policies
+3. deletes old branch-policy entries
+4. writes the single intended branch policy
+5. writes environment secrets with `gh secret set`
+6. writes environment variables with `gh variable set`
 
-Assumed by:
+### 10.3 What the script does not do
 
-- `tasks.apprunner.amazonaws.com`
+The script does not:
 
-Inline runtime policy:
+- read existing secret values back out of GitHub
+- create AWS IAM roles
+- validate that a secret value is semantically correct
+- delete the repo-level secret copies
 
-- [main.tf](/home/repos/healthcare-saas-aws/terraform/main.tf) `aws_iam_role_policy.apprunner_instance_runtime`
+## 11. Per-environment local override model
 
-Granted secret access:
+Healthcare uses explicit local override keys so the shared deploy role ARN can be re-synced reliably into both GitHub environments.
 
-- `secretsmanager:GetSecretValue`
-- `secretsmanager:DescribeSecret`
+Current intended local keys:
 
-Granted DynamoDB access:
+- `HEALTHCARE_DEV_AWS_ROLE_ARN=arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
+- `HEALTHCARE_PROD_AWS_ROLE_ARN=arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
 
-- `dynamodb:BatchWriteItem`
-- `dynamodb:DeleteItem`
-- `dynamodb:DescribeTable`
-- `dynamodb:GetItem`
-- `dynamodb:PutItem`
-- `dynamodb:Query`
-- `dynamodb:Scan`
-- `dynamodb:UpdateItem`
+These are the source of truth for syncing `AWS_ROLE_ARN` into:
 
-Granted KMS access:
+- `healthcare-dev`
+- `healthcare-prod`
 
-- `kms:Decrypt`
+## 12. How the workflows consume the environments
 
-KMS decrypt is condition-limited to:
+### 12.1 CI workflow
 
-- `kms:ViaService = secretsmanager.${aws_region}.amazonaws.com`
+[ci.yml](/home/repos/healthcare-saas-aws/.github/workflows/ci.yml) performs:
 
-The role is scoped to the Terraform-created healthcare resources:
+- Python syntax validation
+- npm install
+- Terraform fmt/init/validate
+- Docker build validation
 
-- the healthcare Secrets Manager secret ARNs
-- the healthcare DynamoDB table ARN
-- the healthcare DynamoDB index ARNs
+and then calls the reusable deploy workflow only for production push.
 
-This is the runtime permission model for the app itself. GitHub Actions does not use this role directly.
+### 12.2 Deploy workflow
 
-## 12. How workflows consume these environments
+[deploy.yml](/home/repos/healthcare-saas-aws/.github/workflows/deploy.yml) does the actual deploy work.
 
-### CI entrypoint
+Important behaviors:
 
-[ci.yml](/home/repos/healthcare-saas-aws/.github/workflows/ci.yml) does the branch routing:
+- the workflow job is attached to the selected GitHub environment
+- `aws-actions/configure-aws-credentials` reads `secrets.AWS_ROLE_ARN` from that environment
+- the deploy step injects runtime values only into the deploy step, not globally across the whole job
+- `scripts/deploy.sh` performs the ordered deployment procedure
 
-- `dev` branch -> reusable deploy workflow with:
-  - `environment: dev`
-  - `github_environment: healthcare-dev`
-- `healthcare-saas-aws` branch -> reusable deploy workflow with:
-  - `environment: prod`
-  - `github_environment: healthcare-prod`
+### 12.3 Destroy workflow
 
-### Deploy workflow
+[destroy.yml](/home/repos/healthcare-saas-aws/.github/workflows/destroy.yml) requires:
 
-[deploy.yml](/home/repos/healthcare-saas-aws/.github/workflows/deploy.yml) uses:
+- manual dispatch
+- a typed confirmation of `DESTROY`
 
-- `inputs.environment` for:
-  - `TFVARS_FILE`
-  - `TFVARS_NAME`
-  - `DEPLOY_ENV`
-  - workspace selection
-- `inputs.github_environment` for:
-  - GitHub environment-scoped secrets
+and then uses the environment-specific `AWS_ROLE_ARN` to run `scripts/destroy.sh`.
 
-This workflow expects:
+## 13. How secret values flow during deployment
 
-- `AWS_ROLE_ARN` in the selected GitHub environment
-- all runtime secrets in the selected GitHub environment
+This is the full path for runtime secret propagation.
 
-It then:
+1. secret values live in the GitHub environment
+2. the deploy workflow loads them into the deploy step
+3. `scripts/deploy.sh` syncs them into AWS Secrets Manager
+4. App Runner runtime secret references point to those Secrets Manager ARNs
+5. the container receives them as environment variables at runtime
 
-1. validates tfvars
-2. assumes the environment-specific AWS role
-3. bootstraps the Terraform backend
-4. selects the Terraform workspace
-5. bootstraps infra on first deploy
-6. syncs runtime secrets into AWS Secrets Manager
-7. pushes the image to ECR
-8. creates or rolls App Runner
-9. waits for `/health`
+This means:
 
-### Destroy workflow
+- GitHub is the operator-facing source of current deploy-time values
+- Secrets Manager is the runtime source the deployed app actually reads from
 
-[destroy.yml](/home/repos/healthcare-saas-aws/.github/workflows/destroy.yml) picks the GitHub environment based on the requested target:
+## 14. Verification commands
 
-- destroy `dev` -> `healthcare-dev`
-- destroy `prod` -> `healthcare-prod`
-
-So destroy also depends on the correct `AWS_ROLE_ARN` in both GitHub environments.
-
-## 13. Exact verification commands
-
-These commands verify the live GitHub and AWS role state.
-
-### Verify GitHub environments
+### 14.1 Check GitHub environments
 
 ```bash
 gh api repos/rhyegacillos/agents-app/environments
 gh api repos/rhyegacillos/agents-app/environments/healthcare-dev/deployment-branch-policies
 gh api repos/rhyegacillos/agents-app/environments/healthcare-prod/deployment-branch-policies
+```
+
+### 14.2 Check secrets and variables
+
+```bash
 gh secret list --repo rhyegacillos/agents-app --env healthcare-dev
 gh secret list --repo rhyegacillos/agents-app --env healthcare-prod
 gh variable list --repo rhyegacillos/agents-app --env healthcare-dev
 gh variable list --repo rhyegacillos/agents-app --env healthcare-prod
 ```
 
-### Verify the healthcare deploy role
+### 14.3 Check the AWS role
 
 ```bash
 aws iam get-role --role-name github-actions-healthcare-deploy
 aws iam list-attached-role-policies --role-name github-actions-healthcare-deploy
 aws iam list-role-policies --role-name github-actions-healthcare-deploy
-aws iam get-role-policy --role-name github-actions-healthcare-deploy --policy-name github-actions-healthcare-iam
 ```
 
-### Verify the local override source of truth
+## 15. Common failure modes
 
-```bash
-grep '^HEALTHCARE_DEV_AWS_ROLE_ARN=' .env
-grep '^HEALTHCARE_PROD_AWS_ROLE_ARN=' .env
-```
+### 15.1 `AWS_ROLE_ARN` exists at repo level but not in the environment
 
-## 14. Verification checklist
+That is not the desired healthcare setup. Healthcare should use environment-scoped `AWS_ROLE_ARN` values in `healthcare-dev` and `healthcare-prod`.
 
-Use this after any environment update.
+### 15.2 Deploy works locally but fails in GitHub
 
-### GitHub checks
+Common causes:
 
-1. `healthcare-dev` exists
-2. `healthcare-prod` exists
-3. `healthcare-dev` has only `dev` as deployment branch policy
-4. `healthcare-prod` has only `healthcare-saas-aws` as deployment branch policy
-5. both environments contain `AWS_ROLE_ARN`
-6. both environments contain the expected secrets and variables
+- missing environment-scoped secret
+- stale `AWS_ROLE_ARN`
+- branch restriction mismatch
+- GitHub environment missing a required value such as Upstash or Clerk secrets
 
-### Workflow checks
+### 15.3 GitHub environment exists but branch cannot deploy
 
-1. push a test commit to `dev`
-2. confirm `Deploy / dev` runs under `healthcare-dev`
-3. push a test commit to `healthcare-saas-aws`
-4. confirm `Deploy / prod` runs under `healthcare-prod`
-5. confirm `configure-aws-credentials` succeeds in both environments
+Check:
 
-### AWS checks
+- custom branch policy is enabled
+- the correct branch is the only allowed branch
+- the workflow job is targeting the intended GitHub environment name
 
-1. the assumed role in the workflow matches the environment-specific role
-2. the workflow can bootstrap the Terraform state bucket and lock table
-3. the workflow can write application secrets to Secrets Manager
-4. the workflow can push to ECR
-5. the workflow can create or update App Runner
+### 15.4 Secret value is present in GitHub but deployed app still uses the old value
 
-## 13. Troubleshooting
+Remember the full chain:
 
-### Problem: `AWS_ROLE_ARN` missing
+- GitHub environment secret
+- workflow deploy step
+- Secrets Manager sync
+- App Runner rollout
 
-Symptom:
+If any of those steps did not run successfully, the deployed service may still be using the old runtime value.
 
-- `configure-aws-credentials` fails immediately
+## 16. Current intended operational source of truth
 
-Fix:
+For healthcare today, the intended source of truth is:
 
-- set `HEALTHCARE_DEV_AWS_ROLE_ARN`
-- set `HEALTHCARE_PROD_AWS_ROLE_ARN`
-- rerun:
+- GitHub environment secrets and variables for deploy-time inputs
+- AWS Secrets Manager for runtime secrets after deployment
+- Terraform for infrastructure and DNS
+- GitHub environment OIDC role trust for deployment identity
 
-```bash
-./tools/sync_github_environments.sh
-```
+The repo-level shared `AWS_ROLE_ARN` secret should be treated as legacy compatibility, not as the intended healthcare configuration.
 
-or enter `AWS_ROLE_ARN` manually in the GitHub UI for both environments
-
-### Problem: script says “Skipped secret … (no local value)”
-
-Meaning:
-
-- the key was not present in `.env`
-- and not present in `.env.local`
-- and no per-environment override was exported
-
-Fix:
-
-- add the value locally or export an override, then rerun the script
-
-### Problem: branch policy becomes wrong
-
-Meaning:
-
-- someone changed the GitHub environment manually
-
-Fix:
-
-- rerun:
-
-```bash
-./tools/sync_github_environments.sh
-```
-
-The script deletes existing deployment branch policies for the managed environments and recreates the expected single policy.
-
-### Problem: GitHub API transient failure during sync
-
-Meaning:
-
-- network or GitHub API issue interrupted the run
-
-Fix:
-
-- rerun the script
-
-The script is idempotent:
-
-- environments are updated in place
-- branch policy is reset to the expected value
-- secrets and variables are overwritten with the same values
-
-## 14. What this setup does not change
-
-This setup does not:
-
-- remove repository-level secrets
-- migrate repo-level secrets automatically
-- read back GitHub secret values
-- create the AWS IAM roles for you
-- change local DynamoDB behavior
-- provision Upstash resources
-
-It only isolates GitHub Actions deployment configuration for this app.
-
-## 15. Current state
-
-The healthcare GitHub environment setup is now fully defined as:
-
-- dedicated AWS role: `github-actions-healthcare-deploy`
-- dedicated ARN used in both healthcare environments:
-  - `arn:aws:iam::348375262167:role/github-actions-healthcare-deploy`
-- local override keys:
-  - `HEALTHCARE_DEV_AWS_ROLE_ARN`
-  - `HEALTHCARE_PROD_AWS_ROLE_ARN`
-
-If you rerun:
-
-```bash
-cd /home/repos/healthcare-saas-aws
-./tools/sync_github_environments.sh
-```
-
-the script should keep both healthcare GitHub environments pinned to that dedicated healthcare role.
