@@ -43,7 +43,6 @@ has_managed_apprunner() {
 bootstrap_without_apprunner() {
   log "First deploy detected. Bootstrapping prerequisite infrastructure without App Runner"
   terraform -chdir="${TF_DIR}" apply -auto-approve -var-file="${TFVARS_FILE}" \
-    "${TERRAFORM_OVERRIDE_ARGS[@]}" \
     -target=aws_vpc.main \
     -target=aws_internet_gateway.main \
     -target=aws_subnet.public \
@@ -78,36 +77,15 @@ bootstrap_without_apprunner() {
     -target=aws_secretsmanager_secret.resend_api_key
 }
 
-export_matching_tf_vars() {
-  local variables_file="$1"
-  local matched=()
-  local var_name=""
-  local env_name=""
-
-  while IFS= read -r var_name; do
-    env_name="$(printf '%s' "${var_name}" | tr '[:lower:]' '[:upper:]')"
-    if [[ -n "${!env_name:-}" ]]; then
-      export "TF_VAR_${var_name}=${!env_name}"
-      matched+=("${var_name}")
-    fi
-  done < <(awk -F'"' '/^variable "/ {print $2}' "${variables_file}")
-
-  if [[ ${#matched[@]} -gt 0 ]]; then
-    log "Terraform env overrides from .env: ${matched[*]}"
-  fi
-}
-
-build_terraform_override_args() {
-  TERRAFORM_OVERRIDE_ARGS=()
-
+export_terraform_secret_env_vars() {
   local mappings=(
-    "allowed_hosts:ALLOWED_HOSTS"
     "next_public_clerk_publishable_key:NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
     "clerk_jwks_url:CLERK_JWKS_URL"
     "gemini_api_url:GEMINI_API_URL"
     "deepseek_api_url:DEEPSEEK_API_URL"
     "grok_api_url:GROK_API_URL"
     "email_from:EMAIL_FROM"
+    "existing_app_runner_service_arn:EXISTING_APP_RUNNER_SERVICE_ARN"
   )
 
   local mapping=""
@@ -119,21 +97,24 @@ build_terraform_override_args() {
     tf_name="${mapping%%:*}"
     env_name="${mapping##*:}"
     if [[ -n "${!env_name:-}" ]]; then
-      TERRAFORM_OVERRIDE_ARGS+=("-var=${tf_name}=${!env_name}")
+      export "TF_VAR_${tf_name}=${!env_name}"
       matched+=("${tf_name}")
     fi
   done
 
   if [[ ${#matched[@]} -gt 0 ]]; then
-    log "Terraform explicit overrides: ${matched[*]}"
+    log "Terraform secret env overrides from .env: ${matched[*]}"
   fi
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+READ_TFVARS_VALUE_SCRIPT="${SCRIPT_DIR}/read_tfvars_value.sh"
 PROJECT_NAME="ideagen"
+PROJECT_NAME_EXPLICIT="false"
 ENVIRONMENT="dev"
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-1}}"
+AWS_REGION_EXPLICIT="false"
 TF_DIR="terraform"
 ENV_FILE=".env"
 TFVARS_FILE=""
@@ -144,6 +125,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-name)
       PROJECT_NAME="$2"
+      PROJECT_NAME_EXPLICIT="true"
       shift 2
       ;;
     --environment)
@@ -152,6 +134,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --region)
       AWS_REGION="$2"
+      AWS_REGION_EXPLICIT="true"
       shift 2
       ;;
     --terraform-dir)
@@ -185,6 +168,10 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   fail "Env file not found: ${ENV_FILE}"
 fi
 
+if [[ ! -x "${READ_TFVARS_VALUE_SCRIPT}" ]]; then
+  chmod +x "${READ_TFVARS_VALUE_SCRIPT}"
+fi
+
 log "Loading environment from ${ENV_FILE}"
 set -a
 source "${ENV_FILE}"
@@ -202,12 +189,28 @@ if [[ ! -f "${TFVARS_FILE}" ]]; then
   fail "Terraform var-file not found: ${TFVARS_FILE}"
 fi
 
-TFVARS_ENVIRONMENT="$(awk -F= '/^[[:space:]]*environment[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+TFVARS_ENVIRONMENT="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" environment)"
+TFVARS_PROJECT_NAME="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" project_name)"
+TFVARS_AWS_REGION="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" aws_region)"
 if [[ -n "${TFVARS_ENVIRONMENT}" && "${TFVARS_ENVIRONMENT}" != "${ENVIRONMENT}" ]]; then
   fail "Environment mismatch: script requested '${ENVIRONMENT}' but ${TFVARS_FILE} is set to '${TFVARS_ENVIRONMENT}'."
 fi
 
-for required in NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY OPENAI_API_KEY GEMINI_API_KEY DEEPSEEK_API_KEY GROK_API_KEY RESEND_API_KEY; do
+if [[ -n "${TFVARS_PROJECT_NAME}" ]]; then
+  if [[ "${PROJECT_NAME_EXPLICIT}" == "true" && "${PROJECT_NAME}" != "${TFVARS_PROJECT_NAME}" ]]; then
+    fail "Project mismatch: script requested '${PROJECT_NAME}' but ${TFVARS_FILE} is set to '${TFVARS_PROJECT_NAME}'."
+  fi
+  PROJECT_NAME="${TFVARS_PROJECT_NAME}"
+fi
+
+if [[ -n "${TFVARS_AWS_REGION}" ]]; then
+  if [[ "${AWS_REGION_EXPLICIT}" == "true" && "${AWS_REGION}" != "${TFVARS_AWS_REGION}" ]]; then
+    fail "AWS region mismatch: script requested '${AWS_REGION}' but ${TFVARS_FILE} is set to '${TFVARS_AWS_REGION}'."
+  fi
+  AWS_REGION="${TFVARS_AWS_REGION}"
+fi
+
+for required in CLERK_JWKS_URL NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY OPENAI_API_KEY GEMINI_API_KEY DEEPSEEK_API_KEY GROK_API_KEY RESEND_API_KEY; do
   if [[ -z "${!required:-}" ]]; then
     fail "${required} is required in ${ENV_FILE}."
   fi
@@ -216,8 +219,7 @@ done
 export AWS_REGION
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${AWS_REGION}}"
 
-export_matching_tf_vars "${REPO_ROOT}/${TF_DIR}/variables.tf"
-build_terraform_override_args
+export_terraform_secret_env_vars
 
 log "Bootstrapping Terraform backend for ${PROJECT_NAME} in ${AWS_REGION}"
 BACKEND_OUTPUT="$("${SCRIPT_DIR}/bootstrap_tf_backend.sh" \
@@ -281,7 +283,7 @@ if [[ "${SKIP_APP_RUNNER}" == "true" ]]; then
   log "Infrastructure, secrets, and image push completed. App Runner apply was skipped."
   log "Run again without --skip-app-runner to create or update App Runner."
 else
-  EXISTING_SERVICE_ARN="$(awk -F= '/^[[:space:]]*existing_app_runner_service_arn[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}" 2>/dev/null || true)"
+  EXISTING_SERVICE_ARN="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" existing_app_runner_service_arn || true)"
 
   if [[ -n "${TF_VAR_existing_app_runner_service_arn:-}" || -n "${EXISTING_SERVICE_ARN}" ]]; then
     log "Updating configured existing App Runner service via AWS CLI"
@@ -289,7 +291,6 @@ else
   else
     log "Applying Terraform with App Runner enabled"
     terraform -chdir="${TF_DIR}" apply -auto-approve -var-file="${TFVARS_FILE}" \
-      "${TERRAFORM_OVERRIDE_ARGS[@]}" \
       -var="app_runner_enabled=true" \
       -var="ecr_image_tag=${IMAGE_TAG}"
 

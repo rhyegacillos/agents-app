@@ -3,9 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+READ_TFVARS_VALUE_SCRIPT="${SCRIPT_DIR}/read_tfvars_value.sh"
 PROJECT_NAME="ideagen"
+PROJECT_NAME_EXPLICIT="false"
 ENVIRONMENT="dev"
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-1}}"
+AWS_REGION_EXPLICIT="false"
 TF_DIR="terraform"
 ENV_FILE=".env"
 TFVARS_FILE=""
@@ -16,6 +19,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-name)
       PROJECT_NAME="$2"
+      PROJECT_NAME_EXPLICIT="true"
       shift 2
       ;;
     --environment)
@@ -24,6 +28,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --region)
       AWS_REGION="$2"
+      AWS_REGION_EXPLICIT="true"
       shift 2
       ;;
     --terraform-dir)
@@ -58,6 +63,10 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+if [[ ! -x "${READ_TFVARS_VALUE_SCRIPT}" ]]; then
+  chmod +x "${READ_TFVARS_VALUE_SCRIPT}"
+fi
+
 set -a
 source "${ENV_FILE}"
 set +a
@@ -75,10 +84,28 @@ if [[ ! -f "${TFVARS_FILE}" ]]; then
   exit 1
 fi
 
-TFVARS_ENVIRONMENT="$(awk -F= '/^[[:space:]]*environment[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/"/, "", $2); print $2; exit}' "${TFVARS_FILE}")"
+TFVARS_ENVIRONMENT="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" environment)"
+TFVARS_PROJECT_NAME="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" project_name)"
+TFVARS_AWS_REGION="$("${READ_TFVARS_VALUE_SCRIPT}" "${TFVARS_FILE}" aws_region)"
 if [[ -n "${TFVARS_ENVIRONMENT}" && "${TFVARS_ENVIRONMENT}" != "${ENVIRONMENT}" ]]; then
   echo "Environment mismatch: script requested '${ENVIRONMENT}' but ${TFVARS_FILE} is set to '${TFVARS_ENVIRONMENT}'." >&2
   exit 1
+fi
+
+if [[ -n "${TFVARS_PROJECT_NAME}" ]]; then
+  if [[ "${PROJECT_NAME_EXPLICIT}" == "true" && "${PROJECT_NAME}" != "${TFVARS_PROJECT_NAME}" ]]; then
+    echo "Project mismatch: script requested '${PROJECT_NAME}' but ${TFVARS_FILE} is set to '${TFVARS_PROJECT_NAME}'." >&2
+    exit 1
+  fi
+  PROJECT_NAME="${TFVARS_PROJECT_NAME}"
+fi
+
+if [[ -n "${TFVARS_AWS_REGION}" ]]; then
+  if [[ "${AWS_REGION_EXPLICIT}" == "true" && "${AWS_REGION}" != "${TFVARS_AWS_REGION}" ]]; then
+    echo "AWS region mismatch: script requested '${AWS_REGION}' but ${TFVARS_FILE} is set to '${TFVARS_AWS_REGION}'." >&2
+    exit 1
+  fi
+  AWS_REGION="${TFVARS_AWS_REGION}"
 fi
 
 export AWS_REGION
